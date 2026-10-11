@@ -153,6 +153,7 @@ pub struct Graph {
     pub exposed: Vec<Exposed>,
     pub comments: Vec<Comment>,
     pub seed_offset: u32,
+    pub meta: BTreeMap<String, String>,
 }
 
 impl Default for Graph {
@@ -166,6 +167,7 @@ impl Default for Graph {
             exposed: Vec::new(),
             comments: Vec::new(),
             seed_offset: 0,
+            meta: BTreeMap::new(),
         }
     }
 }
@@ -305,6 +307,12 @@ impl Graph {
                 }
                 "seed_offset" => {
                     g.seed_offset = t.get(1).and_then(|s| s.parse::<u32>().ok()).ok_or_else(|| Error::Parse(ln, "seed_offset needs an integer".into()))?;
+                }
+                "meta" => {
+                    if t.len() != 3 {
+                        return Err(Error::Parse(ln, "usage: meta <key> \"value\"".into()));
+                    }
+                    g.meta.insert(t[1].clone(), t[2].clone());
                 }
                 "resource" => {
                     if t.len() != 3 {
@@ -460,6 +468,11 @@ impl Graph {
         let mut s = format!("size {}\n", self.size);
         if self.seed_offset != 0 {
             s.push_str(&format!("seed_offset {}\n", self.seed_offset));
+        }
+        for (k, v) in &self.meta {
+            if !v.is_empty() {
+                s.push_str(&format!("meta {k} \"{}\"\n", v.replace('"', "").replace('#', "").replace('\n', " ")));
+            }
         }
         for (k, v) in &self.resources {
             s.push_str(&format!("resource {k} {}\n", b64_encode(v)));

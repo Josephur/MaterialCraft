@@ -40,6 +40,9 @@ impl App {
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let released = ui.input(|i| i.pointer.any_released());
         let mut acts: Vec<Act> = Vec::new();
+        if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<String>(), pointer) {
+            acts.push(Act::Drop((*payload).clone(), p));
+        }
 
         if resp.hovered() {
             let sc = ui.input(|i| i.raw_scroll_delta.y);
@@ -480,7 +483,7 @@ impl App {
             ui.separator();
         }
 
-        if let Some(id) = self.active.filter(|a| self.g.nodes.contains_key(a)) {
+        if let Some(id) = self.active.filter(|a| self.sel.contains(a) && self.g.nodes.contains_key(a)) {
             let node = self.g.nodes[&id].clone();
             let kind = node.kind.clone();
             ui.horizontal(|ui| {
@@ -579,30 +582,14 @@ impl App {
                 }
             }
             ui.separator();
-        } else if self.sel_comment.is_none() {
-            ui.label("Select a node to edit its parameters.");
-            ui.separator();
+        }
+        if self.sel.is_empty() && self.sel_comment.is_none() {
+            self.graph_props(ui);
+        }
+        if !self.sel.is_empty() || self.sel_comment.is_some() {
+            return;
         }
 
-        egui::CollapsingHeader::new("Graph").default_open(true).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Output size");
-                egui::ComboBox::from_id_salt("gsize").selected_text(format!("{0} x {0}", self.g.size)).show_ui(ui, |ui| {
-                    for s in [128usize, 256, 512, 1024, 2048, 4096] {
-                        ui.selectable_value(&mut self.g.size, s, format!("{s} x {s}"));
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Random seed");
-                let mut so = self.g.seed_offset;
-                if ui.add(egui::DragValue::new(&mut so).speed(1)).changed() {
-                    self.snap();
-                    self.g.seed_offset = so;
-                    self.dirty = true;
-                }
-            });
-        });
         egui::CollapsingHeader::new("Outputs").default_open(true).show(ui, |ui| {
             let mut remove = None;
             for (i, (name, id)) in self.g.outputs.iter().enumerate() {
@@ -661,93 +648,9 @@ impl App {
         });
     }
 
-    // ------------------------------------------------------------ 2D / 3D views
-    fn view2d_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.strong("2D view");
-            if let Some(id) = self.active.filter(|a| self.g.nodes.contains_key(a)) {
-                ui.label(format!("{} #{id}  {}x{}", self.g.nodes[&id].kind.replace('_', " "), self.tex2d_size.0, self.tex2d_size.1));
-            }
-            ui.checkbox(&mut self.tile_preview, "tile 2x2");
-            let before = self.prev_size;
-            egui::ComboBox::from_id_salt("psize").width(70.0).selected_text(format!("{}px", self.prev_size)).show_ui(ui, |ui| {
-                for s in [128usize, 256, 512, 1024] {
-                    ui.selectable_value(&mut self.prev_size, s, format!("{s}px"));
-                }
-            });
-            if before != self.prev_size {
-                self.dirty = true;
-            }
-        });
-        let avail = ui.available_size();
-        let side = avail.x.min(avail.y).max(32.0);
-        let (rect, _) = ui.allocate_exact_size(avail, Sense::hover());
-        let img_rect = Rect::from_center_size(rect.center(), vec2(side, side));
-        ui.painter().rect_filled(img_rect, 0.0, Color32::from_rgb(20, 20, 20));
-        if let Some(t) = &self.tex2d {
-            let uv = if self.tile_preview { Rect::from_min_max(pos2(0.0, 0.0), pos2(2.0, 2.0)) } else { Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)) };
-            ui.painter().image(t.id(), img_rect, uv, Color32::WHITE);
-        } else {
-            ui.painter().text(img_rect.center(), Align2::CENTER_CENTER, "select a node", FontId::proportional(13.0), Color32::from_gray(120));
-        }
-    }
-
-    fn view3d_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.strong("3D view");
-            for (i, n) in ["Sphere", "Cube", "Plane"].iter().enumerate() {
-                if ui.selectable_label(self.view3d.shape == i as u32, *n).clicked() {
-                    self.view3d.shape = i as u32;
-                    self.dirty3d = true;
-                }
-            }
-            let mut ch = false;
-            ch |= ui.add(egui::DragValue::new(&mut self.view3d.tiling).speed(0.05).range(0.25..=16.0).prefix("tile ")).changed();
-            ch |= ui.add(egui::DragValue::new(&mut self.view3d.exposure).speed(0.02).range(0.1..=4.0).prefix("exp ")).changed();
-            ch |= ui.add(egui::DragValue::new(&mut self.view3d.light_intensity).speed(0.05).range(0.0..=10.0).prefix("light ")).changed();
-            if ch {
-                self.dirty3d = true;
-            }
-        });
-        let avail = ui.available_size();
-        let side = avail.x.min(avail.y).max(32.0);
-        let (rect, resp) = ui.allocate_exact_size(avail, Sense::click_and_drag());
-        let img_rect = Rect::from_center_size(rect.center(), vec2(side, side));
-        if resp.dragged() {
-            let d = resp.drag_delta();
-            if ui.input(|i| i.modifiers.shift) {
-                self.view3d.light_yaw -= d.x * 0.01;
-                self.view3d.light_pitch = (self.view3d.light_pitch + d.y * 0.01).clamp(-1.4, 1.4);
-            } else {
-                self.view3d.yaw -= d.x * 0.01;
-                self.view3d.pitch = (self.view3d.pitch + d.y * 0.01).clamp(-1.4, 1.4);
-            }
-            self.dirty3d = true;
-        }
-        if resp.hovered() {
-            let sc = ui.input(|i| i.raw_scroll_delta.y);
-            if sc != 0.0 {
-                self.view3d.dist = (self.view3d.dist * (1.0 - sc * 0.001)).clamp(1.6, 9.0);
-                self.dirty3d = true;
-            }
-        }
-        if let Some(t) = &self.tex3d {
-            ui.painter().image(t.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        }
-        ui.painter().text(rect.left_bottom() + vec2(4.0, -4.0), Align2::LEFT_BOTTOM, "drag: orbit   shift+drag: light   wheel: zoom", FontId::proportional(10.0), Color32::from_gray(120));
-    }
-
     // ------------------------------------------------------------ actions
     fn do_act(&mut self, a: Act) {
         match a {
-            Act::New => {
-                self.parents.clear();
-                self.g = Graph::default();
-                self.file = None;
-                self.clear_history();
-                self.thumbs.clear();
-                self.fit_view();
-            }
             Act::Open => self.open_file(),
             Act::Save => self.save(),
             Act::SaveAs => self.save_as(),
@@ -794,6 +697,15 @@ impl App {
             Act::Search(p) => {
                 let p = p.unwrap_or_else(|| self.canvas_rect.center());
                 self.open_search(p, None);
+            }
+            Act::NewGraph => self.new_dlg.open = true,
+            Act::Home => self.screen = Screen::Home,
+            Act::Drop(key, p) => {
+                let world = self.screen_to_world(p);
+                let w = pos2(world.x - CARD * 0.5, world.y - CARD_H * 0.5);
+                if let Some(e) = self.entries().into_iter().find(|e| e.label == key) {
+                    self.spawn(&e, w, None);
+                }
             }
             Act::SetOutput(name, id) => {
                 self.snap();
@@ -999,298 +911,3 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !ctx.input(|i| i.pointer.any_down()) {
-            self.edit_open = false;
-        }
-        self.poll_eval(ctx);
-        if let Some(rx) = &self.bake.job {
-            match rx.try_recv() {
-                Ok(Ok(files)) => {
-                    self.bake.job = None;
-                    self.bake.msg = format!("Done: {} maps written. Added as bitmap nodes.", files.len());
-                    let base = self.view_center_world();
-                    for (i, f) in files.iter().enumerate() {
-                        let id = self.add_node_at("bitmap", None, pos2(base.x + (i as f32 % 4.0) * (CARD + 20.0), base.y + (i / 4) as f32 * (CARD_H + 30.0)));
-                        if let Some(n) = self.g.nodes.get_mut(&id) {
-                            n.strs.insert("file".into(), f.to_string_lossy().to_string());
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    self.bake.job = None;
-                    self.bake.msg = format!("Bake failed: {e}");
-                }
-                Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => {
-                    self.bake.job = None;
-                    self.bake.msg = "Bake failed unexpectedly.".into();
-                }
-            }
-        }
-        if self.dirty3d {
-            self.render_3d(ctx);
-        }
-
-        // keyboard shortcuts
-        let pointer = ctx.input(|i| i.pointer.hover_pos()).filter(|p| self.canvas_rect.contains(*p));
-        if self.search.is_some() {
-            ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab));
-        } else if !self.text_focus {
-            let tab = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab));
-            if tab {
-                ctx.memory_mut(|m| {
-                    if let Some(id) = m.focused() {
-                        m.surrender_focus(id);
-                    }
-                });
-                self.open_search(pointer.unwrap_or_else(|| self.canvas_rect.center()), None);
-            }
-        }
-        if self.search.is_none() && !self.text_focus {
-            let k = ctx.input_mut(|i| {
-                let redo = i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y);
-                let undo = i.consume_key(Modifiers::COMMAND, Key::Z);
-                let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(Modifiers::COMMAND, Key::C);
-                let cut = i.events.iter().any(|e| matches!(e, egui::Event::Cut)) || i.consume_key(Modifiers::COMMAND, Key::X);
-                let paste = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))) || i.consume_key(Modifiers::COMMAND, Key::V);
-                let dup = i.consume_key(Modifiers::COMMAND, Key::D);
-                let all = i.consume_key(Modifiers::COMMAND, Key::A);
-                let save = i.consume_key(Modifiers::COMMAND, Key::S);
-                let open = i.consume_key(Modifiers::COMMAND, Key::O);
-                let del = i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace);
-                let frame = i.consume_key(Modifiers::NONE, Key::F);
-                let com = i.consume_key(Modifiers::NONE, Key::C);
-                (redo, undo, copy, cut, paste, dup, all, save, open, del, frame, com)
-            });
-            let w = pointer.map(|p| self.screen_to_world(p));
-            for (on, a) in [
-                (k.0, Act::Redo),
-                (k.1, Act::Undo),
-                (k.2, Act::Copy),
-                (k.3, Act::Cut),
-                (k.4, Act::Paste(w)),
-                (k.5, Act::Duplicate),
-                (k.6, Act::SelectAll),
-                (k.7, Act::Save),
-                (k.8, Act::Open),
-                (k.9, Act::Delete),
-                (k.10, Act::FrameAll),
-                (k.11, Act::Comment),
-            ] {
-                if on {
-                    self.acts.push(a);
-                }
-            }
-        }
-
-        let mut acts: Vec<Act> = Vec::new();
-        let in_sub = !self.parents.is_empty();
-        let (can_undo, can_redo, has_sel, has_clip) = (!self.undo.is_empty(), !self.redo.is_empty(), !self.sel.is_empty(), !self.clip.is_empty());
-
-        egui::TopBottomPanel::top("menu").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    for (label, a) in [("New", Act::New), ("Open...   Ctrl+O", Act::Open), ("Save   Ctrl+S", Act::Save), ("Save as...", Act::SaveAs)] {
-                        if ui.button(label).clicked() {
-                            acts.push(a);
-                            ui.close_menu();
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("Import bitmap...").clicked() {
-                        acts.push(Act::ImportBitmap);
-                        ui.close_menu();
-                    }
-                    if ui.button("Export textures...").clicked() {
-                        acts.push(Act::Export);
-                        ui.close_menu();
-                    }
-                    if ui.button("Publish package (.mfa)...").clicked() {
-                        acts.push(Act::Publish);
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Edit", |ui| {
-                    if ui.add_enabled(can_undo, egui::Button::new("Undo   Ctrl+Z")).clicked() {
-                        acts.push(Act::Undo);
-                        ui.close_menu();
-                    }
-                    if ui.add_enabled(can_redo, egui::Button::new("Redo   Ctrl+Y")).clicked() {
-                        acts.push(Act::Redo);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    for (label, a, en) in [
-                        ("Cut   Ctrl+X", Act::Cut, has_sel),
-                        ("Copy   Ctrl+C", Act::Copy, has_sel),
-                        ("Paste   Ctrl+V", Act::Paste(None), has_clip),
-                        ("Duplicate   Ctrl+D", Act::Duplicate, has_sel),
-                        ("Delete   Del", Act::Delete, true),
-                        ("Select all   Ctrl+A", Act::SelectAll, true),
-                    ] {
-                        if ui.add_enabled(en, egui::Button::new(label)).clicked() {
-                            acts.push(a);
-                            ui.close_menu();
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("Add node...   Tab").clicked() {
-                        acts.push(Act::Search(None));
-                        ui.close_menu();
-                    }
-                    if ui.button("Comment frame   C").clicked() {
-                        acts.push(Act::Comment);
-                        ui.close_menu();
-                    }
-                    if ui.add_enabled(has_sel, egui::Button::new("Create subgraph from selection")).clicked() {
-                        acts.push(Act::Subgraph);
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("View", |ui| {
-                    if ui.button("Frame all   F").clicked() {
-                        acts.push(Act::FrameAll);
-                        ui.close_menu();
-                    }
-                    if ui.button("Auto-layout").clicked() {
-                        acts.push(Act::AutoLayout);
-                        ui.close_menu();
-                    }
-                    if ui.add_enabled(in_sub, egui::Button::new("Leave subgraph")).clicked() {
-                        acts.push(Act::ExitSub);
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Tools", |ui| {
-                    if ui.button("Mesh map baker...").clicked() {
-                        acts.push(Act::Bake);
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Help", |ui| {
-                    if ui.button("Keyboard shortcuts").clicked() {
-                        self.show_about = true;
-                        ui.close_menu();
-                    }
-                });
-            });
-        });
-
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let (msg, ok) = &self.status;
-                ui.colored_label(if *ok { Color32::from_gray(170) } else { Color32::from_rgb(255, 120, 110) }, msg);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("{}   |   {} nodes   |   {}%{}", self.title_name(), self.g.nodes.len(), (self.zoom * 100.0) as i32, if self.job.is_some() { "   |   computing..." } else { "" }));
-                });
-            });
-        });
-
-        let mut lib_pick: Option<Entry> = None;
-        egui::SidePanel::left("left").default_width(215.0).show(ctx, |ui| {
-            ui.heading("Explorer");
-            ui.small(format!("Package: {}", self.title_name()));
-            let root_subs: Vec<String> = match self.parents.first() {
-                Some((p, _)) => p.subgraphs.keys().cloned().collect(),
-                None => self.g.subgraphs.keys().cloned().collect(),
-            };
-            let current = self.parents.last().map(|(_, n)| n.clone());
-            if ui.selectable_label(current.is_none(), "Graph (root)").clicked() {
-                for _ in 0..self.parents.len() {
-                    acts.push(Act::ExitSub);
-                }
-            }
-            for name in root_subs {
-                if ui.selectable_label(current.as_deref() == Some(name.as_str()), format!("   subgraph: {name}")).clicked() {
-                    for _ in 0..self.parents.len() {
-                        acts.push(Act::ExitSub);
-                    }
-                    acts.push(Act::EnterSub(name));
-                }
-            }
-            ui.separator();
-            ui.heading("Library");
-            ui.add(egui::TextEdit::singleline(&mut self.lib_filter).hint_text("filter...").desired_width(f32::INFINITY));
-            let f = self.lib_filter.to_lowercase();
-            let all = self.entries();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for cat in ["Generators", "SDF", "Filters", "Utility", "Subgraphs"] {
-                    let items: Vec<&Entry> = all.iter().filter(|e| e.cat == cat && (f.is_empty() || e.label.to_lowercase().contains(&f))).collect();
-                    if items.is_empty() {
-                        continue;
-                    }
-                    egui::CollapsingHeader::new(cat).default_open(true).open(if f.is_empty() { None } else { Some(true) }).show(ui, |ui| {
-                        for e in items {
-                            let r = ui.add_sized([ui.available_width(), 18.0], egui::Button::new(&e.label).fill(kind_color(&e.kind).gamma_multiply(0.35)));
-                            if r.on_hover_text(&e.doc).clicked() {
-                                lib_pick = Some(e.clone());
-                            }
-                        }
-                    });
-                }
-            });
-        });
-
-        egui::SidePanel::right("params").default_width(360.0).show(ctx, |ui| {
-            ui.heading("Parameters");
-            egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
-        });
-
-        egui::TopBottomPanel::bottom("views").resizable(true).default_height(300.0).min_height(120.0).show(ctx, |ui| {
-            ui.columns(2, |cols| {
-                self.view2d_ui(&mut cols[0]);
-                self.view3d_ui(&mut cols[1]);
-            });
-        });
-
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(46, 46, 46))).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                if in_sub && ui.button("< Back").clicked() {
-                    acts.push(Act::ExitSub);
-                }
-                let mut path = String::from("Graph");
-                for (_, n) in &self.parents {
-                    path.push_str(&format!("  >  {n}"));
-                }
-                ui.strong(path);
-                if has_sel {
-                    ui.small(format!("   {} selected", self.sel.len()));
-                }
-            });
-            self.canvas(ui);
-        });
-
-        if let Some(e) = lib_pick {
-            let p = self.view_center_world();
-            self.spawn(&e, p, None);
-        }
-        self.windows(ctx);
-        self.search_ui(ctx);
-
-        self.acts.extend(acts);
-        let todo = std::mem::take(&mut self.acts);
-        for a in todo {
-            self.do_act(a);
-        }
-
-        if self.dirty && self.job.is_none() {
-            self.dirty = false;
-            self.spawn_eval();
-        }
-        if self.job.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(30));
-        }
-        self.text_focus = ctx.wants_keyboard_input();
-    }
-}
-
-fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MatForge"),
-        ..Default::default()
-    };
-    eframe::run_native("MatForge", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
-}

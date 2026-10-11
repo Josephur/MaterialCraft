@@ -7,7 +7,7 @@ use matforge::bake::{self, BakeSettings};
 use matforge::graph::{category, spec, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
 use matforge::render3d::{self, Maps, View};
 use matforge::tex::Tex;
-use matforge::png;
+use matforge::{ops, png};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -16,7 +16,7 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 const CARD: f32 = 92.0;
 const BAR: f32 = 16.0;
 const CARD_H: f32 = BAR + CARD;
-const OUTPUT_NAMES: [&str; 8] = ["basecolor", "normal", "roughness", "metallic", "height", "ambient_occlusion", "opacity", "emissive"];
+const OUTPUT_NAMES: [&str; 11] = ["basecolor", "normal", "roughness", "metallic", "height", "ambient_occlusion", "opacity", "emissive", "diffuse", "specular", "glossiness"];
 const COMMENT_COLORS: [[u8; 3]; 6] = [[90, 140, 200], [200, 160, 60], [90, 180, 110], [190, 90, 90], [150, 100, 200], [150, 150, 150]];
 
 // ---------------------------------------------------------------- parameter tables
@@ -167,7 +167,6 @@ struct SearchState {
 }
 
 enum Act {
-    New,
     Open,
     Save,
     SaveAs,
@@ -191,6 +190,9 @@ enum Act {
     FrameAll,
     Search(Option<Pos2>),
     SetOutput(String, u32),
+    NewGraph,
+    Home,
+    Drop(String, Pos2),
 }
 
 struct EvalResult {
@@ -253,25 +255,49 @@ struct App {
     dirty3d: bool,
     gen: u64,
     job: Option<Receiver<EvalResult>>,
-    lib_filter: String,
+    lib_search: String,
     text_focus: bool,
     export: ExportUi,
     bake: BakeUi,
     show_about: bool,
+    screen: Screen,
+    new_dlg: NewDlg,
+    recent: Vec<PathBuf>,
+    home_filter: String,
+    home_page: u8,
+    skip_home: bool,
+    hide_suggestions: bool,
+    banner: Option<egui::TextureHandle>,
+    banner_rx: Option<Receiver<ColorImage>>,
+    lib_thumbs: HashMap<String, egui::TextureHandle>,
+    lib_rx: Option<Receiver<HashMap<String, ColorImage>>>,
+    lib_cat: String,
+    favorites: BTreeSet<String>,
+    show: [bool; 5],
+    modified: bool,
+    last_title: String,
+    z2d: f32,
+    pan2d: Vec2,
+    left_split: f32,
+    need_fit: bool,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> App {
         apply_theme(&cc.egui_ctx);
-        let mut g = Graph::parse(EXAMPLE).unwrap_or_default();
-        auto_layout(&mut g);
-        let active = g.outputs.first().map(|o| o.1);
+        let mut g = Graph::default();
+        g.meta.insert("identifier".into(), "Untitled_graph".into());
+        let active: Option<u32> = None;
+        let settings = read_lines("settings.txt");
+        let skip_home = settings.iter().any(|l| l == "skip_home=1");
+        let favorites: BTreeSet<String> = settings.iter().find_map(|l| l.strip_prefix("favorites=")).map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect()).unwrap_or_default();
+        let recent: Vec<PathBuf> = read_lines("recent.txt").into_iter().map(PathBuf::from).collect();
         App {
             parents: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             edit_open: false,
-            sel: active.into_iter().collect(),
+            sel: BTreeSet::new(),
             active,
             sel_comment: None,
             clip: Vec::new(),
@@ -299,11 +325,31 @@ impl App {
             dirty3d: true,
             gen: 0,
             job: None,
-            lib_filter: String::new(),
+            lib_search: String::new(),
             text_focus: false,
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false], depth16: false },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
+            screen: if skip_home { Screen::Editor } else { Screen::Home },
+            new_dlg: NewDlg { open: false, sel: 1, name: "Substance_graph".into(), size: 2048, depth16: false },
+            recent,
+            home_filter: String::new(),
+            home_page: 0,
+            skip_home,
+            hide_suggestions: false,
+            banner: None,
+            banner_rx: Some(spawn_banner()),
+            lib_thumbs: HashMap::new(),
+            lib_rx: Some(spawn_library_thumbs()),
+            lib_cat: "Texture generators/Patterns".into(),
+            favorites,
+            show: [true; 5],
+            modified: false,
+            last_title: String::new(),
+            z2d: 1.0,
+            pan2d: Vec2::ZERO,
+            left_split: 0.33,
+            need_fit: false,
             g,
         }
     }
@@ -314,6 +360,7 @@ impl App {
 
     // ------------------------------------------------------------ undo / redo
     fn snap(&mut self) {
+        self.modified = true;
         self.undo.push(self.g.clone());
         if self.undo.len() > 100 {
             self.undo.remove(0);
@@ -420,6 +467,10 @@ impl App {
     }
 
     fn spawn(&mut self, e: &Entry, world: Pos2, link_from: Option<u32>) {
+        if e.kind == "comment" {
+            self.add_comment();
+            return;
+        }
         let id = self.add_node_at(&e.kind, e.sub.as_deref(), world);
         if let Some(src) = link_from {
             let first = slots(&e.kind).first().map(|s| s.0.to_string());
@@ -602,6 +653,7 @@ impl App {
             .filter(|s| s.kind != "subgraph")
             .map(|s| Entry { label: s.kind.to_string(), kind: s.kind.to_string(), sub: None, cat: category(s.kind), doc: s.doc.to_string() })
             .collect();
+        v.push(Entry { label: "comment".into(), kind: "comment".into(), sub: None, cat: "Utility", doc: "comment frame around the selected nodes".into() });
         let mut subs: BTreeSet<String> = self.g.subgraphs.keys().cloned().collect();
         for (p, _) in &self.parents {
             subs.extend(p.subgraphs.keys().cloned());
@@ -613,24 +665,9 @@ impl App {
     }
 
     // ------------------------------------------------------------ file operations
-    fn title_name(&self) -> String {
-        self.file.as_ref().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "untitled.mfg".into())
-    }
-
     fn open_file(&mut self) {
         let Some(p) = rfd::FileDialog::new().add_filter("MatForge graph / package", &["mfg", "mfa"]).pick_file() else { return };
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| Graph::parse_unchecked(&t).map_err(|e| e.to_string())) {
-            Ok(mut g) => {
-                auto_layout_if_unplaced(&mut g);
-                self.parents.clear();
-                self.g = g;
-                self.file = Some(p.clone());
-                self.clear_history();
-                self.fit_view();
-                self.status(format!("Opened {}", p.display()), true);
-            }
-            Err(e) => self.status(format!("Open failed: {e}"), false),
-        }
+        self.open_path(p);
     }
 
     fn save_to(&mut self, p: PathBuf) {
@@ -638,7 +675,9 @@ impl App {
         match std::fs::write(&p, self.g.to_text()) {
             Ok(()) => {
                 self.status(format!("Saved {}", p.display()), true);
+                self.push_recent(&p);
                 self.file = Some(p);
+                self.modified = false;
             }
             Err(e) => self.status(format!("Save failed: {e}"), false),
         }
@@ -813,10 +852,11 @@ impl App {
     fn render_3d(&mut self, ctx: &egui::Context) {
         self.dirty3d = false;
         let (flat, half, zero, one) = (Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 0.5, 1.0]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
+        let inv_gloss = self.maps.get("glossiness").map(ops::invert);
         let m = Maps {
-            base: self.maps.get("basecolor").unwrap_or(&half),
+            base: self.maps.get("basecolor").or_else(|| self.maps.get("diffuse")).unwrap_or(&half),
             normal: self.maps.get("normal").unwrap_or(&flat),
-            rough: self.maps.get("roughness").unwrap_or(&half),
+            rough: self.maps.get("roughness").or(inv_gloss.as_ref()).unwrap_or(&half),
             metal: self.maps.get("metallic").unwrap_or(&zero),
             ao: self.maps.get("ambient_occlusion").unwrap_or(&one),
             emissive: self.maps.get("emissive"),
@@ -889,5 +929,5 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-// part 2 follows (canvas, panels, update loop)
 include!("gui_ui.rs");
+include!("gui_home.rs");
