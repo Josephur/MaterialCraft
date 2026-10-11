@@ -1,0 +1,121 @@
+//! Float RGBA texture with wrapped (tileable) sampling.
+
+#[derive(Clone, Debug)]
+pub struct Tex {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<[f32; 4]>,
+}
+
+pub fn lum(p: [f32; 4]) -> f32 {
+    0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]
+}
+
+fn san(v: f32) -> f32 {
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
+}
+
+impl Tex {
+    pub fn solid(w: usize, h: usize, c: [f32; 4]) -> Tex {
+        Tex { w, h, px: vec![c; w * h] }
+    }
+
+    /// Build a texture from a per-pixel function of (u, v) in [0,1). Runs multi-threaded.
+    pub fn from_fn<F: Fn(f32, f32) -> [f32; 4] + Sync>(w: usize, h: usize, f: F) -> Tex {
+        let w = w.max(1);
+        let h = h.max(1);
+        let mut px = vec![[0.0f32; 4]; w * h];
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+        let rows_per = (h + n - 1) / n;
+        let fref = &f;
+        std::thread::scope(|s| {
+            for (ci, chunk) in px.chunks_mut(rows_per * w).enumerate() {
+                s.spawn(move || {
+                    for (i, p) in chunk.iter_mut().enumerate() {
+                        let idx = ci * rows_per * w + i;
+                        let x = idx % w;
+                        let y = idx / w;
+                        let o = fref((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                        *p = [san(o[0]), san(o[1]), san(o[2]), san(o[3])];
+                    }
+                });
+            }
+        });
+        Tex { w, h, px }
+    }
+
+    pub fn gray_fn<F: Fn(f32, f32) -> f32 + Sync>(w: usize, h: usize, f: F) -> Tex {
+        Tex::from_fn(w, h, |u, v| {
+            let g = f(u, v);
+            [g, g, g, 1.0]
+        })
+    }
+
+    pub fn at(&self, x: i64, y: i64) -> [f32; 4] {
+        let xi = x.rem_euclid(self.w as i64) as usize;
+        let yi = y.rem_euclid(self.h as i64) as usize;
+        self.px[yi * self.w + xi]
+    }
+
+    /// Bilinear, wrapped sampling in uv space.
+    pub fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        let u = if u.is_finite() { u } else { 0.0 };
+        let v = if v.is_finite() { v } else { 0.0 };
+        let x = u * self.w as f32 - 0.5;
+        let y = v * self.h as f32 - 0.5;
+        let x0 = x.floor();
+        let y0 = y.floor();
+        let fx = x - x0;
+        let fy = y - y0;
+        let xi = x0 as i64;
+        let yi = y0 as i64;
+        let a = self.at(xi, yi);
+        let b = self.at(xi + 1, yi);
+        let c = self.at(xi, yi + 1);
+        let d = self.at(xi + 1, yi + 1);
+        let mut o = [0.0; 4];
+        for i in 0..4 {
+            let top = a[i] + (b[i] - a[i]) * fx;
+            let bot = c[i] + (d[i] - c[i]) * fx;
+            o[i] = top + (bot - top) * fy;
+        }
+        o
+    }
+
+    pub fn map<F: Fn([f32; 4]) -> [f32; 4] + Sync>(&self, f: F) -> Tex {
+        let mut out = self.clone();
+        for p in out.px.iter_mut() {
+            *p = f(*p);
+        }
+        out
+    }
+
+    pub fn gray_at(&self, x: i64, y: i64) -> f32 {
+        lum(self.at(x, y))
+    }
+}
+
+/// Parallel map over 0..n, preserving order.
+pub fn par_map<T: Send + Default + Clone, F: Fn(usize) -> T + Sync>(n: usize, f: F) -> Vec<T> {
+    let mut out = vec![T::default(); n];
+    if n == 0 {
+        return out;
+    }
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let per = (n + threads - 1) / threads;
+    let fref = &f;
+    std::thread::scope(|s| {
+        for (ci, chunk) in out.chunks_mut(per).enumerate() {
+            s.spawn(move || {
+                for (i, slot) in chunk.iter_mut().enumerate() {
+                    *slot = fref(ci * per + i);
+                }
+            });
+        }
+    });
+    out
+}

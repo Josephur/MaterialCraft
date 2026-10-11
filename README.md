@@ -1,0 +1,25 @@
+# MatForge
+
+Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
+
+## Build & run
+    cargo run --release --features gui --bin matforge-gui     # visual editor
+    cargo run --release -- render examples/brick.mfg out --size 1024 --render3d   # CLI
+
+Requires a current stable Rust toolchain (https://rustup.rs). On Windows the MSVC build tools are needed.
+The core library has zero dependencies; the editor uses egui/eframe + rfd (native file dialogs).
+
+## Editor
+Tab = add node at cursor · drag a link into empty space = add + auto-connect · Ctrl+Z/Y undo/redo ·
+Ctrl+C/X/V/D · rubber-band & Shift/Ctrl multi-select · C = comment frame · double-click a subgraph to edit it ·
+F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
+
+## CLI
+    matforge render <graph.mfg|.mfa> <outdir> [--sizes 512,1024] [--depth 16] [--param "Label=0.5"] [--variations 8] [--render3d]
+    matforge publish <graph.mfg> <out.mfa>      # embeds bitmaps, flattens editor data
+    matforge bake <low.obj> <high.obj> <outdir> [--size 1024]
+    matforge nodes | check | params | testmesh | example
+
+## Not implemented (honest list)
+FX-Maps, splines/paths, function graphs, SVG/font/AxF import, OCIO/ACE colour management, scripting API,
+JPEG/TIFF export, displacement/path-traced 3D rendering, custom mesh import in the 3D viewer, binary .sbs/.sbsar compatibility.
