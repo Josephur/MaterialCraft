@@ -51,14 +51,11 @@ fn template_graph(t: &Template, name: &str, size: usize, depth16: bool) -> Graph
     let mut g = Graph { size, ..Default::default() };
     g.meta.insert("identifier".into(), name.to_string());
     g.meta.insert("output_format".into(), if depth16 { "16" } else { "8" }.into());
-    for (i, (out, c)) in t.outs.iter().enumerate() {
+    for (i, (out, _)) in t.outs.iter().enumerate() {
         let id = i as u32 + 1;
-        let mut n = Node { kind: "color".into(), pos: [(i / 3) as f32 * (CARD + 70.0), (i % 3) as f32 * (CARD_H + 40.0)], ..Default::default() };
-        n.nums.insert("r".into(), c[0]);
-        n.nums.insert("g".into(), c[1]);
-        n.nums.insert("b".into(), c[2]);
+        let mut n = Node { kind: "output".into(), pos: [(i / 3) as f32 * (CARD + 80.0), (i % 3) as f32 * (CARD_H + 44.0)], ..Default::default() };
+        n.strs.insert("usage".into(), out.to_string());
         g.nodes.insert(id, n);
-        g.outputs.push((out.to_string(), id));
     }
     g
 }
@@ -66,16 +63,16 @@ fn template_graph(t: &Template, name: &str, size: usize, depth16: bool) -> Graph
 // ---------------------------------------------------------------- config / recent files
 fn config_dir() -> PathBuf {
     if let Ok(a) = std::env::var("APPDATA") {
-        return PathBuf::from(a).join("MatForge");
+        return PathBuf::from(a).join("MaterialCraft");
     }
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(x).join("matforge");
+        return PathBuf::from(x).join("materialcraft");
     }
     if let Ok(h) = std::env::var("HOME") {
         let base = PathBuf::from(h);
-        return if cfg!(target_os = "macos") { base.join("Library/Application Support/MatForge") } else { base.join(".config/matforge") };
+        return if cfg!(target_os = "macos") { base.join("Library/Application Support/MaterialCraft") } else { base.join(".config/materialcraft") };
     }
-    std::env::temp_dir().join("matforge")
+    std::env::temp_dir().join("materialcraft")
 }
 
 fn read_lines(name: &str) -> Vec<String> {
@@ -133,28 +130,12 @@ fn spawn_library_thumbs() -> Receiver<HashMap<String, ColorImage>> {
     std::thread::spawn(move || {
         let mut out = HashMap::new();
         for s in SPECS {
-            if matches!(s.kind, "input" | "subgraph" | "bitmap") {
-                continue;
-            }
-            let mut t = String::from("size 64\nnode 100 fbm scale=4 octaves=4 seed=2\nnode 101 gradient angle=0.1\nnode 102 sdf_shape shape=0 size=0.3\nnode 103 sdf_shape shape=1 size=0.25 x=0.15\n");
-            let sdf = matches!(s.kind, "sdf_op" | "sdf_mask");
-            let srcs = if sdf { [102, 103] } else { [100, 101] };
-            let mut line = format!("node 1 {}", s.kind);
-            match s.kind {
-                "pixel_processor" => line += " expr=\"sin(u*20)*0.5+0.5\"",
-                "colorize" => line += " p0=0 r0=0.1 g0=0.1 b0=0.35 p1=1 r1=1 g1=0.8 b1=0.3",
-                "merge" => line += " r=@100 g=@101 b=@100",
-                _ => {}
-            }
-            for (i, slot) in s.req.iter().enumerate() {
-                line += &format!(" {slot}=@{}", srcs[i % 2]);
-            }
-            t += &line;
-            t += "\noutput o 1\n";
-            if let Ok(g) = Graph::parse(&t) {
-                if let Ok(m) = g.evaluate(Some(64)) {
-                    if let Some(tex) = m.get("o") {
-                        out.insert(s.kind.to_string(), qimg(tex));
+            if let Some(text) = materialcraft::graph::demo_graph_for(s.kind) {
+                if let Ok(g) = Graph::parse(&text) {
+                    if let Ok(m) = g.evaluate(Some(64)) {
+                        if let Some(tex) = m.get("o") {
+                            out.insert(s.kind.to_string(), qimg(tex));
+                        }
                     }
                 }
             }
@@ -179,6 +160,9 @@ enum Ic {
     Link,
     Grid,
     Star,
+    Sphere,
+    Dot,
+    Input,
 }
 
 fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
@@ -246,6 +230,21 @@ fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
                 l((-7.0, k), (7.0, k));
             }
         }
+        Ic::Sphere => {
+            p.circle_stroke(c, 6.0, st);
+            let pts: Vec<Pos2> = (0..=20).map(|k| { let a = k as f32 / 20.0 * std::f32::consts::TAU; pos2(c.x + a.cos() * 6.0, c.y + a.sin() * 2.4) }).collect();
+            p.add(egui::Shape::line(pts, Stroke::new(1.0, col)));
+        }
+        Ic::Dot => {
+            p.circle_stroke(c, 5.0, st);
+            p.circle_filled(c, 1.8, col);
+        }
+        Ic::Input => {
+            p.rect_stroke(r(-2.0, -6.0, 8.0, 12.0), 1.0, st);
+            l((-8.0, 0.0), (1.0, 0.0));
+            l((-3.5, -3.5), (1.0, 0.0));
+            l((-3.5, 3.5), (1.0, 0.0));
+        }
         Ic::Star => {
             let mut pts = Vec::new();
             for i in 0..10 {
@@ -255,6 +254,22 @@ fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
             }
             p.add(egui::Shape::closed_line(pts, st));
         }
+    }
+}
+
+fn entry_icon(kind: &str) -> Ic {
+    match kind {
+        "output" => Ic::Sphere,
+        "comment" => Ic::Comment,
+        "frame" => Ic::Frame,
+        "dot" => Ic::Dot,
+        "input" => Ic::Input,
+        "subgraph" => Ic::Subgraph,
+        _ => match materialcraft::graph::category(kind) {
+            "Generators" => Ic::Grid,
+            "Material" => Ic::Subgraph,
+            _ => Ic::Layout,
+        },
     }
 }
 
@@ -285,14 +300,42 @@ fn panel_header(ui: &mut egui::Ui, title: &str, closable: bool) -> bool {
     clicked
 }
 
+/// Draggable panel edge. edge: 0 = right edge of a left panel, 1 = left edge of a right panel, 2 = top edge of a bottom panel.
+/// Returns the size change requested this frame.
+fn size_handle(ui: &mut egui::Ui, id: &str, panel: Rect, edge: u8) -> f32 {
+    let t = 6.0;
+    let r = match edge {
+        0 => Rect::from_min_max(pos2(panel.right() - t, panel.top()), panel.right_bottom()),
+        1 => Rect::from_min_max(panel.left_top(), pos2(panel.left() + t, panel.bottom())),
+        _ => Rect::from_min_max(panel.left_top(), pos2(panel.right(), panel.top() + t)),
+    };
+    let resp = ui.interact(r, Id::new(("size_handle", id)), Sense::drag());
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(if edge == 2 { egui::CursorIcon::ResizeVertical } else { egui::CursorIcon::ResizeHorizontal });
+        ui.painter().rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(235, 130, 20, 120));
+    }
+    let d = resp.drag_delta();
+    match edge {
+        0 => d.x,
+        1 => -d.x,
+        _ => -d.y,
+    }
+}
+
 fn lib_group(kind: &str) -> (&'static str, &'static str) {
     match kind {
-        "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "voronoi" => ("Texture generators", "Noises"),
-        "color" | "gradient" | "circle" | "rect" | "polygon" | "checker" | "bricks" | "tile_sampler" | "pixel_processor" => ("Texture generators", "Patterns"),
+        "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma" => ("Texture generators", "Noises"),
+        "color" | "gradient" | "gradient_axial" | "gradient_circular" | "checker" | "bricks" | "stripes" | "weave" | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" => ("Texture generators", "Patterns"),
+        "shape" | "circle" | "rect" | "polygon" | "star" => ("Texture generators", "Shapes"),
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => ("Texture generators", "SDF"),
-        "normal" | "normal_blend" | "ao" | "curvature" | "edge_detect" | "emboss" => ("Material filters", ""),
-        "bitmap" | "input" | "subgraph" | "comment" => ("Graph items", ""),
-        _ => ("Filters", ""),
+        "levels" | "adjust" | "invert" | "threshold" | "histogram_scan" | "histogram_range" | "quantize" | "clamp" | "hsl" | "colorize" | "tint" | "to_gray" | "channel" | "merge" | "switch" | "color_match" | "highpass" => ("Filters", "Adjustments"),
+        "blur" | "blur_hq" | "directional_blur" | "sharpen" | "warp" | "directional_warp" | "vector_warp" | "slope_blur" | "swirl" => ("Filters", "Blur and warp"),
+        "transform" | "mirror" | "make_it_tile_photo" | "make_it_tile_patch" => ("Filters", "Transform"),
+        "distance" | "bevel" | "edge_detect" | "emboss" | "flood_fill" | "flood_fill_random" | "flood_fill_color" | "flood_fill_gradient" => ("Filters", "Masks and regions"),
+        "normal" | "normal_blend" | "ao" | "curvature" | "curvature_smooth" | "height_blend" => ("Material filters", ""),
+        "edge_wear" | "dirt" | "dust" => ("Mesh-based generators", ""),
+        "bitmap" | "input" | "subgraph" | "comment" | "frame" | "dot" | "output" => ("Graph items", ""),
+        _ => ("Filters", "Adjustments"),
     }
 }
 
@@ -302,9 +345,10 @@ const LIB_TREE: &[(&str, &[&str])] = &[
     ("Atomic nodes", &[]),
     ("FxMap nodes", &[]),
     ("Function nodes", &[]),
-    ("Texture generators", &["Noises", "Patterns", "SDF"]),
-    ("Filters", &[]),
+    ("Texture generators", &["Noises", "Patterns", "Shapes", "SDF"]),
+    ("Filters", &["Adjustments", "Blur and warp", "Transform", "Masks and regions"]),
     ("Material filters", &[]),
+    ("Mesh-based generators", &[]),
 ];
 
 fn meta_field(ui: &mut egui::Ui, meta: &mut BTreeMap<String, String>, label: &str, key: &str, multi: bool) {
@@ -337,7 +381,7 @@ fn two_lines(label: &str) -> (String, String) {
 impl App {
     fn gname(&self) -> String {
         let root = self.parents.first().map(|p| &p.0).unwrap_or(&self.g);
-        root.meta.get("identifier").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| "Untitled_graph".into())
+        root.meta.get("identifier").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| "Graph".into())
     }
 
     fn package_label(&self) -> String {
@@ -367,6 +411,7 @@ impl App {
     fn open_path(&mut self, p: PathBuf) {
         match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| Graph::parse_unchecked(&t).map_err(|e| e.to_string())) {
             Ok(mut g) => {
+                g.migrate_outputs();
                 auto_layout_if_unplaced(&mut g);
                 if !g.meta.contains_key("identifier") {
                     g.meta.insert("identifier".into(), p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
@@ -390,7 +435,7 @@ impl App {
         let t = &TEMPLATES[self.new_dlg.sel.min(TEMPLATES.len() - 1)];
         let mut name: String = self.new_dlg.name.trim().replace(' ', "_");
         if name.is_empty() {
-            name = "Substance_graph".into();
+            name = "Graph".into();
         }
         self.parents.clear();
         self.g = template_graph(t, &name, self.new_dlg.size, self.new_dlg.depth16);
@@ -407,6 +452,7 @@ impl App {
 
     fn open_example(&mut self) {
         if let Ok(mut g) = Graph::parse(EXAMPLE) {
+            g.migrate_outputs();
             auto_layout(&mut g);
             g.meta.insert("identifier".into(), "Brick_wall".into());
             self.parents.clear();
@@ -426,11 +472,14 @@ impl App {
         egui::TopBottomPanel::top("home_top").exact_height(58.0).frame(egui::Frame::none().fill(Color32::from_rgb(45, 45, 45))).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(22.0);
-                let (r, _) = ui.allocate_exact_size(vec2(30.0, 26.0), Sense::hover());
-                ui.painter().rect_filled(r, 3.0, Color32::from_rgb(28, 45, 8));
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, "Mf", FontId::proportional(16.0), Color32::from_rgb(140, 220, 0));
+                let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
+                let c = r.center();
+                let hex: Vec<Pos2> = (0..6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2; c + vec2(a.cos(), a.sin()) * 14.0 }).collect();
+                ui.painter().add(egui::Shape::convex_polygon(hex, Color32::from_rgb(214, 88, 64), Stroke::new(1.6, Color32::from_rgb(250, 196, 120))));
+                let arc: Vec<Pos2> = (0..=18).map(|k| { let a = (45.0 + k as f32 / 18.0 * 270.0).to_radians(); c + vec2(a.cos(), a.sin()) * 6.2 }).collect();
+                ui.painter().add(egui::Shape::line(arc, Stroke::new(2.4, Color32::WHITE)));
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("MatForge").size(15.0).color(Color32::from_gray(210)));
+                ui.label(egui::RichText::new("MaterialCraft").size(15.0).color(Color32::from_gray(210)));
             });
         });
         egui::SidePanel::left("home_left")
@@ -479,7 +528,7 @@ impl App {
                         self.show_about = true;
                     }
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(format!("MatForge {}  -  pure Rust CPU engine", env!("CARGO_PKG_VERSION"))).size(11.0).color(Color32::from_gray(130)));
+                    ui.label(egui::RichText::new(format!("MaterialCraft {}  -  pure Rust CPU engine", env!("CARGO_PKG_VERSION"))).size(11.0).color(Color32::from_gray(130)));
                 });
             });
         egui::CentralPanel::default().frame(egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(26.0, 0.0))).show(ctx, |ui| {
@@ -489,7 +538,7 @@ impl App {
                 return;
             }
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Welcome to MatForge").size(19.0).strong().color(Color32::from_gray(235)));
+                ui.label(egui::RichText::new("Welcome to MaterialCraft").size(19.0).strong().color(Color32::from_gray(235)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(egui::Button::new(if self.hide_suggestions { "Show suggestions" } else { "Hide suggestions" }).frame(false)).clicked() {
                         self.hide_suggestions = !self.hide_suggestions;
@@ -524,7 +573,7 @@ impl App {
                 p.text(
                     rect.left_top() + vec2(40.0, 96.0),
                     Align2::LEFT_TOP,
-                    "Create seamless materials, patterns and image filters with infinite variations\nthanks to node-based authoring. Publish parametric packages (.mfa) and bake\nmesh maps - all in a dependency-free Rust engine.",
+                    "Create seamless materials, patterns and image filters with infinite variations\nthanks to node-based authoring. Publish parametric packages (.mca) and bake\nmesh maps - all in a dependency-free Rust engine.",
                     FontId::proportional(12.5),
                     Color32::from_gray(235),
                 );
@@ -617,7 +666,7 @@ impl App {
             "Press Tab over the graph to add a node at the cursor, or drag a link into empty space to add one and connect it.",
             "Drag nodes from the Library onto the graph. Right-click a library item to favorite it.",
             "Select nodes and use Edit > Create subgraph to build reusable pieces. Double-click a subgraph to edit it.",
-            "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mfa asset.",
+            "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mca asset.",
             "Tools > Mesh map baker bakes normal, AO, curvature, thickness, position and ID maps from OBJ meshes.",
         ] {
             ui.label(format!("  -  {t}"));
@@ -641,7 +690,7 @@ impl App {
         let mut open = true;
         let mut create = false;
         let mut cancel = false;
-        egui::Window::new("New Substance Graph").open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).fixed_size(vec2(780.0, 470.0)).show(ctx, |ui| {
+        egui::Window::new("New Graph").open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).fixed_size(vec2(780.0, 470.0)).show(ctx, |ui| {
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(vec2(340.0, 400.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.label(egui::RichText::new("TEMPLATES").size(12.0).color(Color32::from_gray(200)));
@@ -716,7 +765,7 @@ impl App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("RESET").clicked() {
-                    self.new_dlg.name = "Substance_graph".into();
+                    self.new_dlg.name = "Graph".into();
                     self.new_dlg.size = 2048;
                     self.new_dlg.sel = 1;
                     self.new_dlg.depth16 = false;
@@ -800,7 +849,7 @@ impl App {
                 let (m, sub) = lib_group(&e.kind);
                 match cat.as_str() {
                     "Favorites" => self.favorites.contains(&e.label),
-                    "Atomic nodes" => e.kind != "subgraph" && e.kind != "comment",
+                    "Atomic nodes" => !matches!(e.kind.as_str(), "subgraph" | "comment" | "frame"),
                     c => match c.split_once('/') {
                         Some((cm, cs)) => m == cm && sub == cs,
                         None => m == c,
@@ -880,12 +929,7 @@ impl App {
                                 }
                                 _ => {
                                     p.rect_filled(tr, 3.0, kind_color(&e.kind).gamma_multiply(0.55));
-                                    let ic = match e.kind.as_str() {
-                                        "comment" => Ic::Comment,
-                                        "subgraph" => Ic::Subgraph,
-                                        _ => Ic::Layout,
-                                    };
-                                    draw_icon(p, tr.center(), ic, Color32::WHITE);
+                                    draw_icon(p, tr.center(), entry_icon(&e.kind), Color32::WHITE);
                                 }
                             }
                             if self.favorites.contains(&e.label) {
@@ -1204,7 +1248,7 @@ impl App {
                         }
                     }
                     ui.separator();
-                    for (label, a) in [("Import bitmap...", Act::ImportBitmap), ("Export textures...", Act::Export), ("Publish package (.mfa)...", Act::Publish)] {
+                    for (label, a) in [("Import bitmap...", Act::ImportBitmap), ("Export textures...", Act::Export), ("Publish package (.mca)...", Act::Publish)] {
                         if ui.button(label).clicked() {
                             acts.push(a);
                             ui.close_menu();
@@ -1312,13 +1356,15 @@ impl App {
                 ui.colored_label(if *ok { Color32::from_gray(170) } else { Color32::from_rgb(255, 120, 110) }, msg);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-                    ui.label(format!("MatForge Engine: CPU ({threads} threads){}    Version: {}", if self.job.is_some() { "   computing..." } else { "" }, env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("MaterialCraft Engine: CPU ({threads} threads){}    Version: {}", if self.job.is_some() { "   computing..." } else { "" }, env!("CARGO_PKG_VERSION")));
                 });
             });
         });
 
+        let (mut d_props, mut d_left, mut d_views) = (0.0f32, 0.0f32, 0.0f32);
         if self.show[4] {
-            egui::SidePanel::right("props").default_width(330.0).width_range(240.0..=620.0).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+            egui::SidePanel::right("props").resizable(false).exact_width(self.w_props).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+                let prect = ui.max_rect();
                 let title = match self.active.filter(|a| self.sel.contains(a)).and_then(|a| self.g.nodes.get(&a).map(|n| n.kind.replace('_', " "))) {
                     Some(k) => format!("{} - PROPERTIES", k.to_uppercase()),
                     None => format!("{} - PROPERTIES", self.gname()),
@@ -1330,11 +1376,13 @@ impl App {
                     ui.add_space(4.0);
                     egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| self.inspector(ui));
                 });
+                d_props = size_handle(ui, "h_props", prect, 1);
             });
         }
 
         if self.show[0] || self.show[1] {
-            egui::SidePanel::left("left").default_width(380.0).width_range(240.0..=800.0).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+            egui::SidePanel::left("left").resizable(false).exact_width(self.w_left).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+                let lrect = ui.max_rect();
                 let total = ui.available_height();
                 let w = ui.available_width();
                 let both = self.show[0] && self.show[1];
@@ -1358,11 +1406,13 @@ impl App {
                     self.library_ui(ui, &mut s);
                     self.lib_search = s;
                 }
+                d_left = size_handle(ui, "h_left", lrect, 0);
             });
         }
 
         if self.show[2] || self.show[3] {
-            egui::TopBottomPanel::bottom("views").resizable(true).default_height(330.0).height_range(140.0..=700.0).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+            egui::TopBottomPanel::bottom("views").resizable(false).exact_height(self.h_views).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
+                let vrect = ui.max_rect();
                 let both = self.show[2] && self.show[3];
                 ui.columns(if both { 2 } else { 1 }, |cols| {
                     let mut i = 0;
@@ -1374,9 +1424,17 @@ impl App {
                         self.view2d_panel(&mut cols[i]);
                     }
                 });
+                d_views = size_handle(ui, "h_views", vrect, 2);
             });
         }
 
+        {
+            let sw = ctx.screen_rect().width();
+            let sh = ctx.screen_rect().height();
+            self.w_props = (self.w_props + d_props).clamp(240.0, (sw * 0.45).max(260.0));
+            self.w_left = (self.w_left + d_left).clamp(240.0, (sw * 0.5).max(260.0));
+            self.h_views = (self.h_views + d_views).clamp(140.0, (sh * 0.7).max(160.0));
+        }
         egui::CentralPanel::default().frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
             panel_header(ui, &format!("{} - GRAPH", self.gname()), false);
             ui.horizontal(|ui| {
@@ -1468,7 +1526,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(60));
         }
 
-        let title = format!("MatForge - {}{}", self.package_label(), if self.modified { "*" } else { "" });
+        let title = format!("MaterialCraft - {}{}", self.package_label(), if self.modified { "*" } else { "" });
         if title != self.last_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.last_title = title;
@@ -1591,8 +1649,8 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MatForge"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MaterialCraft"),
         ..Default::default()
     };
-    eframe::run_native("MatForge", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("MaterialCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

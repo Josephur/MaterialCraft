@@ -178,7 +178,7 @@ pub fn hsl_adjust(t: &Tex, hue: f32, sat: f32, val: f32) -> Tex {
 }
 
 /// Gradient map. stops: (position, rgb).
-pub fn colorize(t: &Tex, stops: &[(f32, [f32; 3])]) -> Tex {
+pub fn colorize(t: &Tex, stops: &[(f32, [f32; 3])], interp: u32) -> Tex {
     let mut st: Vec<(f32, [f32; 3])> = stops.to_vec();
     st.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     t.map(|p| {
@@ -194,7 +194,12 @@ pub fn colorize(t: &Tex, stops: &[(f32, [f32; 3])]) -> Tex {
             if g <= st[i].0 {
                 let (a, b) = (st[i - 1], st[i]);
                 let d = (b.0 - a.0).max(1e-9);
-                let f = (g - a.0) / d;
+                let mut f = (g - a.0) / d;
+                if interp == 1 {
+                    f = f * f * (3.0 - 2.0 * f);
+                } else if interp == 2 {
+                    f = 0.0;
+                }
                 return [
                     a.1[0] + (b.1[0] - a.1[0]) * f,
                     a.1[1] + (b.1[1] - a.1[1]) * f,
@@ -246,7 +251,7 @@ pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) ->
 }
 
 // ---------- geometry ----------
-pub fn transform(t: &Tex, ox: f32, oy: f32, sx: f32, sy: f32, rot: f32) -> Tex {
+pub fn transform(t: &Tex, ox: f32, oy: f32, sx: f32, sy: f32, rot: f32, tile: bool) -> Tex {
     let (s, c) = (rot * TAU).sin_cos();
     let sx = sx.abs().max(1e-4);
     let sy = sy.abs().max(1e-4);
@@ -255,7 +260,11 @@ pub fn transform(t: &Tex, ox: f32, oy: f32, sx: f32, sy: f32, rot: f32) -> Tex {
         let y = v - 0.5;
         let rx = c * x + s * y;
         let ry = -s * x + c * y;
-        t.sample(rx / sx + 0.5 - ox, ry / sy + 0.5 - oy)
+        let (su, sv) = (rx / sx + 0.5 - ox, ry / sy + 0.5 - oy);
+        if !tile && !(0.0..1.0).contains(&su) || !tile && !(0.0..1.0).contains(&sv) {
+            return [0.0, 0.0, 0.0, 1.0];
+        }
+        t.sample(su, sv)
     })
 }
 
@@ -400,7 +409,7 @@ pub fn bricks(u: f32, v: f32, rows: f32, cols: f32, mortar: f32, bevel: f32, off
 
 // ---------- scattering ----------
 #[allow(clippy::too_many_arguments)]
-pub fn tile_sampler(
+pub fn splatter(
     w: usize,
     h: usize,
     pattern: Option<&Tex>,
@@ -576,4 +585,446 @@ pub fn sdf_form(u: f32, v: f32, shape: u32, size: f32, repeat: f32, round: f32, 
         }
     }
     0.0
+}
+
+// =====================================================================================
+// Additional nodes
+// =====================================================================================
+use crate::noise::{rnd, voronoi_ext};
+
+pub fn contrast_invert(t: &Tex, contrast: f32, invert: bool) -> Tex {
+    t.map(|p| {
+        let mut o = p;
+        for c in 0..3 {
+            let v = ((p[c] - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
+            o[c] = if invert { 1.0 - v } else { v };
+        }
+        o
+    })
+}
+
+/// Procedural shape. kind: 0 square, 1 disc, 2 paraboloid, 3 gaussian, 4 diamond, 5 pyramid, 6 half sphere, 7 cone.
+#[allow(clippy::too_many_arguments)]
+pub fn shape_value(kind: u32, u: f32, v: f32, px: f32, py: f32, sx: f32, sy: f32, rot: f32, tiling: f32, soft: f32) -> f32 {
+    let t = tiling.round().clamp(1.0, 32.0);
+    let x = ((u - 0.5 - px) * t + 0.5).rem_euclid(1.0) - 0.5;
+    let y = ((v - 0.5 - py) * t + 0.5).rem_euclid(1.0) - 0.5;
+    let (s, c) = (rot * TAU).sin_cos();
+    let (rx, ry) = (c * x + s * y, -s * x + c * y);
+    let nx = rx / (sx.max(1e-3) * 0.5);
+    let ny = ry / (sy.max(1e-3) * 0.5);
+    let r = (nx * nx + ny * ny).sqrt();
+    let so = soft.clamp(0.0, 1.0).max(1e-3);
+    match kind {
+        0 => 1.0 - sm(1.0 - so, 1.0, nx.abs().max(ny.abs())),
+        1 => 1.0 - sm(1.0 - so, 1.0, r),
+        2 => (1.0 - r * r).clamp(0.0, 1.0),
+        3 => (-(r * 1.8).powi(2)).exp(),
+        4 => 1.0 - sm(1.0 - so, 1.0, nx.abs() + ny.abs()),
+        5 => (1.0 - nx.abs().max(ny.abs())).clamp(0.0, 1.0),
+        6 => (1.0 - r * r).max(0.0).sqrt(),
+        _ => (1.0 - r).clamp(0.0, 1.0),
+    }
+}
+
+pub struct TileP {
+    pub nx: f32,
+    pub ny: f32,
+    pub size: f32,
+    pub size_rand: f32,
+    pub rot: f32,
+    pub rot_rand: f32,
+    pub pos_rand: f32,
+    pub color: f32,
+    pub color_rand: f32,
+    pub offset: f32,
+    pub seed: u32,
+    pub thresh: f32,
+    pub default_disc: bool,
+    pub brick: bool,
+}
+
+/// Grid of pattern instances (Tile Sampler / Tile Generator).
+pub fn tile_grid(w: usize, h: usize, pattern: Option<&Tex>, mask: Option<&Tex>, p: &TileP) -> Tex {
+    let nx = p.nx.round().clamp(1.0, 64.0) as i32;
+    let ny = p.ny.round().clamp(1.0, 64.0) as i32;
+    let (fnx, fny) = (nx as f32, ny as f32);
+    Tex::from_fn(w, h, |u, v| {
+        let (ci, cj) = ((u * fnx).floor() as i32, (v * fny).floor() as i32);
+        let mut best = 0.0f32;
+        for dj in -1..=1 {
+            for di in -1..=1 {
+                let (i, j) = (ci + di, cj + dj);
+                let (wi, wj) = (i.rem_euclid(nx), j.rem_euclid(ny));
+                let shift = if p.brick && (wj & 1) == 1 { p.offset } else { 0.0 };
+                let (r1, r2, r3, r4) = (rnd(wi, wj, p.seed), rnd(wi, wj, p.seed.wrapping_add(1)), rnd(wi, wj, p.seed.wrapping_add(2)), rnd(wi, wj, p.seed.wrapping_add(3)));
+                let cx = (i as f32 + 0.5 + shift) / fnx + (r1 - 0.5) * p.pos_rand / fnx;
+                let cy = (j as f32 + 0.5) / fny + (r2 - 0.5) * p.pos_rand / fny;
+                if let Some(m) = mask {
+                    if lum(m.sample(cx, cy)) < p.thresh {
+                        continue;
+                    }
+                }
+                let s = (p.size * (1.0 + (r3 - 0.5) * 2.0 * p.size_rand)).max(0.01);
+                let ang = (p.rot + (r4 - 0.5) * 2.0 * p.rot_rand) * TAU;
+                let col = p.color * (1.0 - p.color_rand * rnd(wi, wj, p.seed.wrapping_add(9)));
+                let dx = (u - cx + 0.5).rem_euclid(1.0) - 0.5;
+                let dy = (v - cy + 0.5).rem_euclid(1.0) - 0.5;
+                let (sn, cs) = ang.sin_cos();
+                let lx = (cs * dx + sn * dy) * fnx / s + 0.5;
+                let ly = (-sn * dx + cs * dy) * fny / s + 0.5;
+                if !(0.0..=1.0).contains(&lx) || !(0.0..=1.0).contains(&ly) {
+                    continue;
+                }
+                let val = match pattern {
+                    Some(pt) => lum(pt.sample(lx, ly)),
+                    None if p.default_disc => 1.0 - sm(0.85, 1.0, (((lx - 0.5) * 2.0).powi(2) + ((ly - 0.5) * 2.0).powi(2)).sqrt()),
+                    None => 1.0,
+                };
+                best = best.max(val * col);
+            }
+        }
+        [best, best, best, 1.0]
+    })
+}
+
+/// Instances placed on a circle.
+#[allow(clippy::too_many_arguments)]
+pub fn splatter_circular(w: usize, h: usize, pattern: Option<&Tex>, n: u32, radius: f32, size: f32, size_rand: f32, rot: f32, rot_rand: f32, pos_rand: f32, seed: u32) -> Tex {
+    let n = n.clamp(1, 256);
+    let inst: Vec<(f32, f32, f32, f32)> = (0..n)
+        .map(|k| {
+            let i = k as i32;
+            let a = k as f32 / n as f32 * TAU;
+            let cx = 0.5 + radius * a.cos() + (rnd(i, 1, seed) - 0.5) * pos_rand * 0.2;
+            let cy = 0.5 + radius * a.sin() + (rnd(i, 2, seed) - 0.5) * pos_rand * 0.2;
+            let s = (size * (1.0 + (rnd(i, 3, seed) - 0.5) * 2.0 * size_rand)).max(0.005);
+            let r = (rot + (rnd(i, 4, seed) - 0.5) * 2.0 * rot_rand) * TAU;
+            (cx, cy, s, r)
+        })
+        .collect();
+    Tex::from_fn(w, h, |u, v| {
+        let mut best = 0.0f32;
+        for &(cx, cy, s, r) in &inst {
+            let (dx, dy) = (u - cx, v - cy);
+            let (sn, cs) = r.sin_cos();
+            let (lx, ly) = ((cs * dx + sn * dy) / s + 0.5, (-sn * dx + cs * dy) / s + 0.5);
+            if !(0.0..=1.0).contains(&lx) || !(0.0..=1.0).contains(&ly) {
+                continue;
+            }
+            let val = match pattern {
+                Some(p) => lum(p.sample(lx, ly)),
+                None => 1.0 - sm(0.85, 1.0, (((lx - 0.5) * 2.0).powi(2) + ((ly - 0.5) * 2.0).powi(2)).sqrt()),
+            };
+            best = best.max(val);
+        }
+        [best, best, best, 1.0]
+    })
+}
+
+// ---------------- flood fill family ----------------
+pub fn flood_fill(t: &Tex, thresh: f32) -> Tex {
+    let (w, h) = (t.w, t.h);
+    let n = w * h;
+    let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > thresh).collect();
+    let mut label = vec![0u32; n];
+    let mut bbox: Vec<[u32; 4]> = vec![[0; 4]];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut count = 0u32;
+    for s in 0..n {
+        if !mask[s] || label[s] != 0 {
+            continue;
+        }
+        count += 1;
+        label[s] = count;
+        stack.push(s);
+        let mut bb = [w as u32, h as u32, 0u32, 0u32];
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % w, i / w);
+            bb = [bb[0].min(x as u32), bb[1].min(y as u32), bb[2].max(x as u32), bb[3].max(y as u32)];
+            for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                let nx = (x as i64 + dx).rem_euclid(w as i64) as usize;
+                let ny = (y as i64 + dy).rem_euclid(h as i64) as usize;
+                let j = ny * w + nx;
+                if mask[j] && label[j] == 0 {
+                    label[j] = count;
+                    stack.push(j);
+                }
+            }
+        }
+        bbox.push(bb);
+    }
+    let px = (0..n)
+        .map(|i| {
+            if label[i] == 0 {
+                return [0.0, 0.0, 0.0, 1.0];
+            }
+            let b = bbox[label[i] as usize];
+            let (x, y) = (i % w, i / w);
+            let gx = ((x as f32 - b[0] as f32) + 0.5) / ((b[2] - b[0] + 1) as f32);
+            let gy = ((y as f32 - b[1] as f32) + 0.5) / ((b[3] - b[1] + 1) as f32);
+            [0.1 + 0.9 * rnd(label[i] as i32, 3, 17), gx, gy, 1.0]
+        })
+        .collect();
+    Tex { w, h, px }
+}
+
+fn region_id(p: [f32; 4]) -> Option<i32> {
+    if p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0 {
+        None
+    } else {
+        Some((p[0] * 100_000.0) as i32)
+    }
+}
+
+pub fn flood_fill_random(t: &Tex, seed: u32, lo: f32, hi: f32) -> Tex {
+    t.map(|p| match region_id(p) {
+        None => [0.0, 0.0, 0.0, 1.0],
+        Some(id) => {
+            let g = lo + (hi - lo) * rnd(id, 5, seed);
+            [g, g, g, 1.0]
+        }
+    })
+}
+
+pub fn flood_fill_color(t: &Tex, seed: u32) -> Tex {
+    t.map(|p| match region_id(p) {
+        None => [0.0, 0.0, 0.0, 1.0],
+        Some(id) => [0.2 + 0.8 * rnd(id, 6, seed), 0.2 + 0.8 * rnd(id, 7, seed), 0.2 + 0.8 * rnd(id, 8, seed), 1.0],
+    })
+}
+
+pub fn flood_fill_gradient(t: &Tex, angle: f32, variation: f32, seed: u32) -> Tex {
+    t.map(|p| match region_id(p) {
+        None => [0.0, 0.0, 0.0, 1.0],
+        Some(id) => {
+            let a = angle * TAU + (rnd(id, 9, seed) - 0.5) * variation * TAU;
+            let (s, c) = a.sin_cos();
+            let g = (0.5 + ((p[1] - 0.5) * c + (p[2] - 0.5) * s) / (c.abs() + s.abs()).max(1e-3)).clamp(0.0, 1.0);
+            [g, g, g, 1.0]
+        }
+    })
+}
+
+// ---------------- distance / bevel ----------------
+/// Approximate Euclidean distance (pixels) from each `true` pixel to the nearest `false` pixel. Wraps (tileable).
+pub fn distance_field(mask: &[bool], w: usize, h: usize) -> Vec<f32> {
+    let mut d: Vec<f32> = mask.iter().map(|&m| if m { 1e9 } else { 0.0 }).collect();
+    let idx = |x: i64, y: i64| (y.rem_euclid(h as i64) as usize) * w + x.rem_euclid(w as i64) as usize;
+    for _ in 0..2 {
+        for y in 0..h as i64 {
+            for x in 0..w as i64 {
+                let i = idx(x, y);
+                for (dx, dy, c) in [(-1i64, 0i64, 1.0f32), (0, -1, 1.0), (-1, -1, 1.414), (1, -1, 1.414)] {
+                    let j = idx(x + dx, y + dy);
+                    d[i] = d[i].min(d[j] + c);
+                }
+            }
+        }
+        for y in (0..h as i64).rev() {
+            for x in (0..w as i64).rev() {
+                let i = idx(x, y);
+                for (dx, dy, c) in [(1i64, 0i64, 1.0f32), (0, 1, 1.0), (1, 1, 1.414), (-1, 1, 1.414)] {
+                    let j = idx(x + dx, y + dy);
+                    d[i] = d[i].min(d[j] + c);
+                }
+            }
+        }
+    }
+    d
+}
+
+pub fn bevel(t: &Tex, dist_px: f32, smoothing: f32, thr: f32) -> Tex {
+    let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > thr).collect();
+    let d = distance_field(&mask, t.w, t.h);
+    let px = d
+        .iter()
+        .zip(&mask)
+        .map(|(d, m)| {
+            if !*m {
+                return [0.0, 0.0, 0.0, 1.0];
+            }
+            let tt = (d / dist_px.max(1.0)).clamp(0.0, 1.0);
+            let g = tt + (tt * tt * (3.0 - 2.0 * tt) - tt) * smoothing.clamp(0.0, 1.0);
+            [g, g, g, 1.0]
+        })
+        .collect();
+    Tex { w: t.w, h: t.h, px }
+}
+
+/// mode: 0 inside, 1 outside, 2 both (0.5 = edge).
+pub fn distance(t: &Tex, range_px: f32, thr: f32, mode: u32) -> Tex {
+    let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > thr).collect();
+    let inside = distance_field(&mask, t.w, t.h);
+    let inv: Vec<bool> = mask.iter().map(|m| !m).collect();
+    let outside = distance_field(&inv, t.w, t.h);
+    let r = range_px.max(1.0);
+    let px = (0..mask.len())
+        .map(|i| {
+            let (a, b) = ((inside[i] / r).clamp(0.0, 1.0), (outside[i] / r).clamp(0.0, 1.0));
+            let g = match mode {
+                0 => a,
+                1 => b,
+                _ => 0.5 + (a - b) * 0.5,
+            };
+            [g, g, g, 1.0]
+        })
+        .collect();
+    Tex { w: t.w, h: t.h, px }
+}
+
+// ---------------- warps ----------------
+pub fn vector_warp(t: &Tex, vecmap: &Tex, intensity: f32) -> Tex {
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let m = vecmap.sample(u, v);
+        t.sample(u + (m[0] - 0.5) * 2.0 * intensity, v + (m[1] - 0.5) * 2.0 * intensity)
+    })
+}
+
+/// mode: 0 blur (average), 1 min, 2 max.
+pub fn slope_blur(t: &Tex, slope: &Tex, samples: u32, intensity: f32, mode: u32) -> Tex {
+    let g = Tex::from_fn(slope.w, slope.h, |u, v| {
+        let x = (u * slope.w as f32) as i64;
+        let y = (v * slope.h as f32) as i64;
+        [slope.gray_at(x + 1, y) - slope.gray_at(x - 1, y), slope.gray_at(x, y + 1) - slope.gray_at(x, y - 1), 0.0, 1.0]
+    });
+    let n = samples.clamp(1, 64);
+    let step = intensity / n as f32;
+    let gain = slope.w as f32 * 0.5;
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let (mut pu, mut pv) = (u, v);
+        let mut acc = match mode {
+            1 => [1.0f32; 4],
+            2 => [0.0f32; 4],
+            _ => [0.0f32; 4],
+        };
+        for _ in 0..n {
+            let p = t.sample(pu, pv);
+            for c in 0..4 {
+                acc[c] = match mode {
+                    1 => acc[c].min(p[c]),
+                    2 => acc[c].max(p[c]),
+                    _ => acc[c] + p[c] / n as f32,
+                };
+            }
+            let gv = g.sample(pu, pv);
+            let l = (gv[0] * gv[0] + gv[1] * gv[1]).sqrt().max(1e-6);
+            let mag = (l * gain).min(1.0);
+            pu += gv[0] / l * mag * step;
+            pv += gv[1] / l * mag * step;
+        }
+        acc
+    })
+}
+
+pub fn swirl(t: &Tex, amount: f32, radius: f32) -> Tex {
+    let rad = radius.max(1e-3);
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let (x, y) = (u - 0.5, v - 0.5);
+        let r = (x * x + y * y).sqrt();
+        let k = (1.0 - r / rad).clamp(0.0, 1.0);
+        let a = amount * k * k * TAU;
+        let (s, c) = a.sin_cos();
+        t.sample(0.5 + c * x - s * y, 0.5 + s * x + c * y)
+    })
+}
+
+pub fn highpass(t: &Tex, radius: f32) -> Tex {
+    let b = blur(t, radius);
+    let mut o = t.clone();
+    for (i, p) in o.px.iter_mut().enumerate() {
+        for c in 0..3 {
+            p[c] = (t.px[i][c] - b.px[i][c] + 0.5).clamp(0.0, 1.0);
+        }
+    }
+    o
+}
+
+// ---------------- colour / mask helpers ----------------
+pub fn color_match(t: &Tex, reference: &Tex, strength: f32) -> Tex {
+    let stats = |x: &Tex| -> ([f32; 3], [f32; 3]) {
+        let n = x.px.len().max(1) as f32;
+        let mut m = [0.0f32; 3];
+        for p in &x.px {
+            for c in 0..3 {
+                m[c] += p[c] / n;
+            }
+        }
+        let mut sd = [0.0f32; 3];
+        for p in &x.px {
+            for c in 0..3 {
+                sd[c] += (p[c] - m[c]).powi(2) / n;
+            }
+        }
+        (m, [sd[0].sqrt(), sd[1].sqrt(), sd[2].sqrt()])
+    };
+    let ((m1, s1), (m2, s2)) = (stats(t), stats(reference));
+    t.map(|p| {
+        let mut o = p;
+        for c in 0..3 {
+            let matched = (p[c] - m1[c]) * (s2[c] / s1[c].max(1e-4)) + m2[c];
+            o[c] = (p[c] + (matched - p[c]) * strength.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        }
+        o
+    })
+}
+
+/// Curvature from a tangent-space normal map (divergence of the normal), smoothed by `smooth_px`.
+pub fn curvature_from_normal(n: &Tex, smooth_px: f32, intensity: f32) -> Tex {
+    let c = Tex::from_fn(n.w, n.h, |u, v| {
+        let (x, y) = ((u * n.w as f32) as i64, (v * n.h as f32) as i64);
+        let div = (n.at(x + 1, y)[0] - n.at(x - 1, y)[0]) - (n.at(x, y + 1)[1] - n.at(x, y - 1)[1]);
+        let g = (0.5 + div * intensity).clamp(0.0, 1.0);
+        [g, g, g, 1.0]
+    });
+    blur(&c, smooth_px)
+}
+
+/// Returns (height, blend factor).
+pub fn height_blend(bg: &Tex, fg: &Tex, mask: Option<&Tex>, opacity: f32, contrast: f32) -> (Tex, Tex) {
+    let mut h = bg.clone();
+    let mut f = bg.clone();
+    for i in 0..h.px.len() {
+        let m = mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0) * opacity;
+        let (b, g) = (lum(bg.px[i]), lum(fg.px.get(i).copied().unwrap_or([0.0; 4])));
+        let score = (g + (m - 0.5) * 2.0) - b;
+        let k = (0.5 + score * contrast.max(0.05) * 2.0).clamp(0.0, 1.0) * sm(0.0, 0.08, m);
+        let out = b + (g - b) * k;
+        h.px[i] = [out, out, out, 1.0];
+        f.px[i] = [k, k, k, 1.0];
+    }
+    (h, f)
+}
+
+pub fn make_tile_photo(t: &Tex, width: f32) -> Tex {
+    let w = width.clamp(0.1, 1.0);
+    let a = |x: f32| sm(0.0, w, 1.0 - (2.0 * x - 1.0).abs());
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let (au, av) = (a(u), a(v));
+        let s = |du: f32, dv: f32| t.sample((u + du).rem_euclid(1.0), (v + dv).rem_euclid(1.0));
+        let (c00, c10, c01, c11) = (s(0.0, 0.0), s(0.5, 0.0), s(0.0, 0.5), s(0.5, 0.5));
+        let (w00, w10, w01, w11) = (au * av, (1.0 - au) * av, au * (1.0 - av), (1.0 - au) * (1.0 - av));
+        let mut o = [0.0; 4];
+        for c in 0..4 {
+            o[c] = c00[c] * w00 + c10[c] * w10 + c01[c] * w01 + c11[c] * w11;
+        }
+        o
+    })
+}
+
+pub fn make_tile_patch(t: &Tex, patches: f32, softness: f32, seed: u32) -> Tex {
+    let p = patches.round().clamp(2.0, 32.0) as i32;
+    let soft = softness.clamp(0.01, 1.0) * 0.3;
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let vr = voronoi_ext(u, v, p, p, seed, 1.0);
+        let off = |id: f32| ((id * 10_000.0) as i32, rnd((id * 10_000.0) as i32, 1, seed), rnd((id * 10_000.0) as i32, 2, seed));
+        let (a, b) = (off(vr.id1), off(vr.id2));
+        let (s1, s2) = (t.sample(u + a.1, v + a.2), t.sample(u + b.1, v + b.2));
+        let k = 0.5 + 0.5 * sm(0.0, soft, vr.f2 - vr.f1);
+        let mut o = [0.0; 4];
+        for c in 0..4 {
+            o[c] = s2[c] + (s1[c] - s2[c]) * k;
+        }
+        o
+    })
 }

@@ -110,3 +110,47 @@ pub fn voronoi(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> (f32
     let k = std::f32::consts::FRAC_1_SQRT_2;
     ((f1 * k).clamp(0.0, 1.0), (f2 * k).clamp(0.0, 1.0), id)
 }
+
+pub struct Vor {
+    pub f1: f32,
+    pub f2: f32,
+    pub id1: f32,
+    pub id2: f32,
+    pub dx: f32,
+    pub dy: f32,
+}
+
+/// Tileable Voronoi with the two nearest cells and the vector to the nearest site.
+pub fn voronoi_ext(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> Vor {
+    let px = px.max(1);
+    let py = py.max(1);
+    let x = u * px as f32;
+    let y = v * py as f32;
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let mut r = Vor { f1: f32::MAX, f2: f32::MAX, id1: 0.0, id2: 0.0, dx: 0.0, dy: 0.0 };
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (cx, cy) = (ix + dx, iy + dy);
+            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5) * jitter;
+            let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5) * jitter;
+            let d = ((fx - x).powi(2) + (fy - y).powi(2)).sqrt();
+            let id = rnd(wx, wy, seed.wrapping_add(999));
+            if d < r.f1 {
+                r.f2 = r.f1;
+                r.id2 = r.id1;
+                r.f1 = d;
+                r.id1 = id;
+                r.dx = fx - x;
+                r.dy = fy - y;
+            } else if d < r.f2 {
+                r.f2 = d;
+                r.id2 = id;
+            }
+        }
+    }
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    r.f1 = (r.f1 * k).clamp(0.0, 1.0);
+    r.f2 = (r.f2 * k).clamp(0.0, 1.0);
+    r
+}

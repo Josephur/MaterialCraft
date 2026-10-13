@@ -1,13 +1,13 @@
-//! MatForge visual editor. Run: cargo run --release --features gui --bin matforge-gui
+//! MaterialCraft visual editor. Run: cargo run --release --features gui --bin materialcraft-gui
 use eframe::egui::{
     self, epaint::CubicBezierShape, Align2, Color32, ColorImage, FontId, Id, Key, Modifiers, PointerButton, Pos2, Rect,
     Rounding, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
-use matforge::bake::{self, BakeSettings};
-use matforge::graph::{category, spec, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
-use matforge::render3d::{self, Maps, View};
-use matforge::tex::Tex;
-use matforge::{ops, png};
+use materialcraft::bake::{self, BakeSettings};
+use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
+use materialcraft::render3d::{self, Maps, View};
+use materialcraft::tex::Tex;
+use materialcraft::{ops, png};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -20,107 +20,6 @@ const OUTPUT_NAMES: [&str; 11] = ["basecolor", "normal", "roughness", "metallic"
 const COMMENT_COLORS: [[u8; 3]; 6] = [[90, 140, 200], [200, 160, 60], [90, 180, 110], [190, 90, 90], [150, 100, 200], [150, 150, 150]];
 
 // ---------------------------------------------------------------- parameter tables
-type P = (&'static str, f32, f32, f32); // name, default, min, max
-
-fn params(kind: &str) -> &'static [P] {
-    match kind {
-        "color" => &[("r", 0.5, 0.0, 1.0), ("g", 0.5, 0.0, 1.0), ("b", 0.5, 0.0, 1.0), ("a", 1.0, 0.0, 1.0)],
-        "white_noise" | "gaussian_noise" => &[("seed", 0.0, 0.0, 100.0)],
-        "perlin" => &[("scale", 4.0, 1.0, 64.0), ("seed", 0.0, 0.0, 100.0)],
-        "fbm" => &[("scale", 4.0, 1.0, 64.0), ("octaves", 5.0, 1.0, 10.0), ("gain", 0.5, 0.0, 1.0), ("seed", 0.0, 0.0, 100.0), ("mode", 0.0, 0.0, 2.0)],
-        "voronoi" => &[("scale", 6.0, 1.0, 64.0), ("jitter", 1.0, 0.0, 1.0), ("seed", 0.0, 0.0, 100.0), ("mode", 0.0, 0.0, 3.0)],
-        "gradient" => &[("mode", 0.0, 0.0, 1.0), ("angle", 0.0, 0.0, 1.0)],
-        "circle" => &[("radius", 0.4, 0.0, 0.7), ("softness", 0.01, 0.0, 0.5)],
-        "rect" => &[("width", 0.6, 0.0, 1.0), ("height", 0.4, 0.0, 1.0), ("softness", 0.01, 0.0, 0.5)],
-        "polygon" => &[("sides", 5.0, 3.0, 12.0), ("radius", 0.4, 0.0, 0.7), ("softness", 0.01, 0.0, 0.5), ("rotation", 0.0, 0.0, 1.0)],
-        "checker" => &[("tiles", 8.0, 1.0, 64.0)],
-        "bricks" => &[
-            ("rows", 8.0, 1.0, 32.0),
-            ("cols", 4.0, 1.0, 32.0),
-            ("mortar", 0.03, 0.0, 0.2),
-            ("bevel", 0.05, 0.001, 0.5),
-            ("offset", 0.5, 0.0, 1.0),
-            ("lum_var", 0.3, 0.0, 1.0),
-            ("seed", 0.0, 0.0, 100.0),
-        ],
-        "tile_sampler" => &[
-            ("count", 40.0, 0.0, 500.0),
-            ("scale", 0.1, 0.01, 0.5),
-            ("scale_var", 0.3, 0.0, 1.0),
-            ("rot_var", 1.0, 0.0, 1.0),
-            ("lum_var", 0.0, 0.0, 1.0),
-            ("seed", 0.0, 0.0, 100.0),
-        ],
-        "sdf_shape" => &[
-            ("shape", 0.0, 0.0, 3.0),
-            ("size", 0.25, 0.0, 0.5),
-            ("aspect", 1.0, 0.1, 3.0),
-            ("sides", 5.0, 3.0, 12.0),
-            ("rotation", 0.0, 0.0, 1.0),
-            ("round", 0.0, 0.0, 0.3),
-            ("x", 0.0, -0.5, 0.5),
-            ("y", 0.0, -0.5, 0.5),
-            ("range", 0.25, 0.02, 1.0),
-        ],
-        "sdf_op" => &[("op", 0.0, 0.0, 2.0), ("smooth", 0.0, 0.0, 0.3), ("range", 0.25, 0.02, 1.0)],
-        "sdf_mask" => &[("offset", 0.0, -0.5, 0.5), ("softness", 0.02, 0.0, 0.5)],
-        "sdf_form" => &[
-            ("shape", 0.0, 0.0, 3.0),
-            ("size", 0.3, 0.05, 0.5),
-            ("repeat", 3.0, 1.0, 16.0),
-            ("round", 0.05, 0.0, 0.3),
-            ("scatter", 0.3, 0.0, 1.0),
-            ("height", 1.5, 0.1, 4.0),
-            ("seed", 0.0, 0.0, 100.0),
-        ],
-        "input" => &[("idx", 0.0, 0.0, 3.0)],
-        "blur" => &[("radius", 4.0, 0.0, 32.0)],
-        "directional_blur" => &[("angle", 0.0, 0.0, 1.0), ("length", 0.05, 0.0, 0.3)],
-        "sharpen" => &[("radius", 2.0, 0.0, 16.0), ("amount", 1.0, 0.0, 5.0)],
-        "levels" => &[("low", 0.0, 0.0, 1.0), ("high", 1.0, 0.0, 1.0), ("gamma", 1.0, 0.1, 4.0), ("out_low", 0.0, 0.0, 1.0), ("out_high", 1.0, 0.0, 1.0)],
-        "adjust" => &[("brightness", 0.0, -1.0, 1.0), ("contrast", 1.0, 0.0, 3.0)],
-        "threshold" => &[("threshold", 0.5, 0.0, 1.0), ("softness", 0.0, 0.0, 1.0)],
-        "histogram_scan" => &[("position", 0.5, 0.0, 1.0), ("width", 0.2, 0.0, 1.0)],
-        "quantize" => &[("steps", 4.0, 2.0, 32.0)],
-        "channel" => &[("ch", 0.0, 0.0, 3.0)],
-        "tint" => &[("r", 1.0, 0.0, 1.0), ("g", 1.0, 0.0, 1.0), ("b", 1.0, 0.0, 1.0)],
-        "colorize" => &[
-            ("p0", 0.0, 0.0, 1.0),
-            ("r0", 0.0, 0.0, 1.0),
-            ("g0", 0.0, 0.0, 1.0),
-            ("b0", 0.0, 0.0, 1.0),
-            ("p1", 0.5, 0.0, 1.0),
-            ("r1", 0.5, 0.0, 1.0),
-            ("g1", 0.5, 0.0, 1.0),
-            ("b1", 0.5, 0.0, 1.0),
-            ("p2", 1.0, 0.0, 1.0),
-            ("r2", 1.0, 0.0, 1.0),
-            ("g2", 1.0, 0.0, 1.0),
-            ("b2", 1.0, 0.0, 1.0),
-        ],
-        "hsl" => &[("hue", 0.0, -1.0, 1.0), ("sat", 1.0, 0.0, 2.0), ("val", 1.0, 0.0, 2.0)],
-        "transform" => &[("offset_x", 0.0, -1.0, 1.0), ("offset_y", 0.0, -1.0, 1.0), ("scale_x", 1.0, 0.1, 4.0), ("scale_y", 1.0, 0.1, 4.0), ("rotation", 0.0, 0.0, 1.0)],
-        "mirror" => &[("axis", 0.0, 0.0, 2.0)],
-        "warp" => &[("intensity", 0.05, 0.0, 0.5)],
-        "directional_warp" => &[("angle", 0.0, 0.0, 1.0), ("intensity", 0.1, 0.0, 0.5)],
-        "blend" => &[("mode", 0.0, 0.0, 9.0), ("opacity", 1.0, 0.0, 1.0)],
-        "normal" => &[("strength", 2.0, 0.0, 10.0), ("directx", 0.0, 0.0, 1.0)],
-        "ao" => &[("radius", 6.0, 0.0, 32.0), ("intensity", 2.0, 0.0, 10.0)],
-        "curvature" => &[("radius", 3.0, 0.0, 32.0), ("intensity", 4.0, 0.0, 10.0)],
-        "edge_detect" => &[("intensity", 2.0, 0.0, 10.0)],
-        "emboss" => &[("angle", 0.125, 0.0, 1.0), ("intensity", 4.0, 0.0, 10.0)],
-        _ => &[],
-    }
-}
-
-fn is_int(kind: &str, name: &str) -> bool {
-    match name {
-        "mode" | "seed" | "octaves" | "count" | "sides" | "ch" | "axis" | "steps" | "rows" | "cols" | "tiles" | "directx" | "idx" | "shape" | "op" | "repeat" => true,
-        "scale" => matches!(kind, "perlin" | "fbm" | "voronoi"),
-        _ => false,
-    }
-}
-
 fn slots(kind: &str) -> Vec<(&'static str, bool)> {
     spec(kind)
         .map(|s| s.req.iter().map(|n| (*n, true)).chain(s.opt.iter().map(|n| (*n, false))).collect())
@@ -129,13 +28,15 @@ fn slots(kind: &str) -> Vec<(&'static str, bool)> {
 
 fn kind_color(kind: &str) -> Color32 {
     match kind {
-        "subgraph" => Color32::from_rgb(56, 160, 130),
-        "input" => Color32::from_rgb(120, 120, 120),
-        "bitmap" => Color32::from_rgb(200, 130, 60),
+        "subgraph" => Color32::from_rgb(214, 140, 56),
+        "input" | "dot" => Color32::from_rgb(110, 116, 128),
+        "bitmap" => Color32::from_rgb(188, 118, 70),
+        "output" => Color32::from_rgb(74, 98, 120),
         _ => match category(kind) {
             "Generators" => Color32::from_rgb(176, 76, 66),
             "SDF" => Color32::from_rgb(140, 88, 184),
-            "Utility" => Color32::from_rgb(100, 150, 100),
+            "Material" => Color32::from_rgb(190, 150, 50),
+            "Utility" => Color32::from_rgb(100, 110, 130),
             _ => Color32::from_rgb(64, 112, 176),
         },
     }
@@ -155,6 +56,7 @@ struct Entry {
     sub: Option<String>,
     cat: &'static str,
     doc: String,
+    nums: Vec<(&'static str, f32)>,
 }
 
 struct SearchState {
@@ -189,7 +91,7 @@ enum Act {
     AutoLayout,
     FrameAll,
     Search(Option<Pos2>),
-    SetOutput(String, u32),
+    NewOutput(String, u32),
     NewGraph,
     Home,
     Drop(String, Pos2),
@@ -280,13 +182,16 @@ struct App {
     pan2d: Vec2,
     left_split: f32,
     need_fit: bool,
+    w_left: f32,
+    w_props: f32,
+    h_views: f32,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> App {
         apply_theme(&cc.egui_ctx);
         let mut g = Graph::default();
-        g.meta.insert("identifier".into(), "Untitled_graph".into());
+        g.meta.insert("identifier".into(), "Graph".into());
         let active: Option<u32> = None;
         let settings = read_lines("settings.txt");
         let skip_home = settings.iter().any(|l| l == "skip_home=1");
@@ -331,7 +236,7 @@ impl App {
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
-            new_dlg: NewDlg { open: false, sel: 1, name: "Substance_graph".into(), size: 2048, depth16: false },
+            new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, depth16: false },
             recent,
             home_filter: String::new(),
             home_page: 0,
@@ -350,6 +255,9 @@ impl App {
             pan2d: Vec2::ZERO,
             left_split: 0.33,
             need_fit: false,
+            w_left: 380.0,
+            w_props: 330.0,
+            h_views: 330.0,
             g,
         }
     }
@@ -467,21 +375,44 @@ impl App {
     }
 
     fn spawn(&mut self, e: &Entry, world: Pos2, link_from: Option<u32>) {
-        if e.kind == "comment" {
-            self.add_comment();
-            return;
+        match e.kind.as_str() {
+            "comment" => return self.add_comment_at(Some(world)),
+            "frame" => return self.add_comment_at(None),
+            _ => {}
         }
         let id = self.add_node_at(&e.kind, e.sub.as_deref(), world);
+        let in_sub = !self.parents.is_empty();
+        if let Some(n) = self.g.nodes.get_mut(&id) {
+            for (k, v) in &e.nums {
+                n.nums.insert(k.to_string(), *v);
+            }
+            if e.kind == "output" {
+                n.strs.insert("usage".into(), if in_sub { "out" } else { "basecolor" }.into());
+            }
+        }
         if let Some(src) = link_from {
             let first = slots(&e.kind).first().map(|s| s.0.to_string());
             if let Some(slot) = first {
-                if src != id {
+                if src != id && e.kind != "input" {
                     if let Some(n) = self.g.nodes.get_mut(&id) {
                         n.ins.insert(slot, src);
                     }
                 }
             }
         }
+    }
+
+    fn new_output(&mut self, usage: &str, from: u32) {
+        self.snap();
+        let id = self.g.nodes.keys().max().copied().unwrap_or(0) + 1;
+        let pos = self.g.nodes.get(&from).map(|n| [n.pos[0] + CARD + 70.0, n.pos[1]]).unwrap_or([0.0, 0.0]);
+        let mut node = Node { kind: "output".into(), pos, ..Default::default() };
+        node.strs.insert("usage".into(), usage.to_string());
+        node.ins.insert("in".into(), from);
+        self.g.nodes.insert(id, node);
+        self.sel = [id].into_iter().collect();
+        self.active = Some(id);
+        self.dirty = true;
     }
 
     fn delete_selected(&mut self) {
@@ -545,9 +476,17 @@ impl App {
     }
 
     fn add_comment(&mut self) {
+        self.add_comment_at(None);
+    }
+
+    fn add_comment_at(&mut self, at: Option<Pos2>) {
         self.snap();
         let mut c = Comment { text: "Comment".into(), pos: [0.0, 0.0], size: [320.0, 220.0], color: 0 };
-        if self.sel.is_empty() {
+        if let Some(p) = at {
+            c.pos = [p.x, p.y];
+            c.size = [260.0, 130.0];
+            c.text = "Comment".into();
+        } else if self.sel.is_empty() {
             let p = self.view_center_world();
             c.pos = [p.x - 120.0, p.y - 90.0];
         } else {
@@ -647,26 +586,34 @@ impl App {
     }
 
     fn entries(&self) -> Vec<Entry> {
+        let mk = |label: &str, kind: &str, cat: &'static str, doc: &str, nums: Vec<(&'static str, f32)>| Entry { label: label.to_string(), kind: kind.to_string(), sub: None, cat, doc: doc.to_string(), nums };
+        let in_sub = !self.parents.is_empty();
         let mut v: Vec<Entry> = SPECS
             .iter()
-            .filter(|s| s.kind != "input" || !self.parents.is_empty())
-            .filter(|s| s.kind != "subgraph")
-            .map(|s| Entry { label: s.kind.to_string(), kind: s.kind.to_string(), sub: None, cat: category(s.kind), doc: s.doc.to_string() })
+            .filter(|s| !matches!(s.kind, "input" | "subgraph" | "output" | "dot"))
+            .map(|s| mk(&label(s.kind), s.kind, category(s.kind), s.doc, vec![]))
             .collect();
-        v.push(Entry { label: "comment".into(), kind: "comment".into(), sub: None, cat: "Utility", doc: "comment frame around the selected nodes".into() });
+        v.push(mk("Output", "output", "Utility", "graph output: drives the 3D view and exports a texture", vec![]));
+        if in_sub {
+            v.push(mk("Input Color", "input", "Utility", "color input of the subgraph", vec![("gray", 0.0)]));
+            v.push(mk("Input Grayscale", "input", "Utility", "grayscale input of the subgraph", vec![("gray", 1.0)]));
+        }
+        v.push(mk("Comment", "comment", "Utility", "small note placed at the cursor", vec![]));
+        v.push(mk("Frame", "frame", "Utility", "frame around the selected nodes", vec![]));
+        v.push(mk("Dot Node", "dot", "Utility", "re-route a link", vec![]));
         let mut subs: BTreeSet<String> = self.g.subgraphs.keys().cloned().collect();
         for (p, _) in &self.parents {
             subs.extend(p.subgraphs.keys().cloned());
         }
         for name in subs {
-            v.push(Entry { label: format!("subgraph: {name}"), kind: "subgraph".into(), sub: Some(name.clone()), cat: "Subgraphs", doc: format!("instance of subgraph '{name}'") });
+            v.push(Entry { label: format!("subgraph: {name}"), kind: "subgraph".into(), sub: Some(name.clone()), cat: "Subgraphs", doc: format!("instance of subgraph '{name}'"), nums: vec![] });
         }
         v
     }
 
     // ------------------------------------------------------------ file operations
     fn open_file(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("MatForge graph / package", &["mfg", "mfa"]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() else { return };
         self.open_path(p);
     }
 
@@ -691,7 +638,7 @@ impl App {
     }
 
     fn save_as(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().add_filter("MatForge graph", &["mfg"]).set_file_name("material.mfg").save_file() {
+        if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph", &["mcg"]).set_file_name("material.mcg").save_file() {
             self.save_to(p);
         }
     }
@@ -700,7 +647,7 @@ impl App {
         self.goto_root();
         match self.g.publish() {
             Ok(text) => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("MatForge published asset", &["mfa"]).set_file_name("material.mfa").save_file() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft published asset", &["mca"]).set_file_name("material.mca").save_file() {
                     match std::fs::write(&p, &text) {
                         Ok(()) => self.status(format!("Published {} ({} KB, {} exposed parameters)", p.display(), text.len() / 1024, self.g.exposed.len()), true),
                         Err(e) => self.status(format!("Publish failed: {e}"), false),
@@ -783,7 +730,7 @@ impl App {
     fn spawn_eval(&mut self) {
         let g = self.g.clone();
         let size = self.prev_size;
-        let mut keep: Vec<u32> = g.outputs.iter().map(|o| o.1).collect();
+        let mut keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
         if let Some(a) = self.active {
             keep.push(a);
         }
@@ -793,7 +740,7 @@ impl App {
         self.job = Some(rx);
         std::thread::spawn(move || {
             let r = g.evaluate_all(size, &keep);
-            let _ = tx.send(EvalResult { gen, thumbs: r.thumbs, errors: r.errors, kept: r.kept, outputs: g.outputs.clone() });
+            let _ = tx.send(EvalResult { gen, thumbs: r.thumbs, errors: r.errors, kept: r.kept, outputs: g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect() });
         });
     }
 
@@ -929,5 +876,6 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+include!("gui_params.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");

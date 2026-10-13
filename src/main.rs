@@ -1,26 +1,26 @@
-use matforge::bake::{self, BakeSettings};
-use matforge::graph::{Graph, EXAMPLE, SPECS};
-use matforge::render3d::{self, Maps, View};
-use matforge::{ops, png, tex::Tex};
+use materialcraft::bake::{self, BakeSettings};
+use materialcraft::graph::{Graph, EXAMPLE, SPECS};
+use materialcraft::render3d::{self, Maps, View};
+use materialcraft::{ops, png, tex::Tex};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-const HELP: &str = "matforge - procedural material authoring (pure Rust)
+const HELP: &str = "materialcraft - procedural material authoring (pure Rust)
 
 USAGE:
-  matforge render <graph.mfg|.mfa> <outdir> [--size N | --sizes 256,512] [--depth 8|16]
+  materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16]
                   [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]
-  matforge publish <graph.mfg> <out.mfa>       embed bitmaps + flatten into a distributable package
-  matforge params  <graph.mfg|.mfa>            list exposed parameters
-  matforge check   <graph.mfg>
-  matforge bake    <low.obj> <high.obj> <outdir> [--size N] [--dist D] [--ao-rays N] [--ao-dist D] [--padding N]
-  matforge testmesh <outdir>                   write a demo low/high-poly OBJ pair
-  matforge example <outdir>
-  matforge nodes
+  materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
+  materialcraft params  <graph.mcg|.mca>            list exposed parameters
+  materialcraft check   <graph.mcg>
+  materialcraft bake    <low.obj> <high.obj> <outdir> [--size N] [--dist D] [--ao-rays N] [--ao-dist D] [--padding N]
+  materialcraft testmesh <outdir>                   write a demo low/high-poly OBJ pair
+  materialcraft example <outdir>
+  materialcraft nodes
 
-The visual editor is a separate binary:  cargo run --release --features gui --bin matforge-gui
+The visual editor is a separate binary:  cargo run --release --features gui --bin materialcraft-gui
 ";
 
 fn write_png(path: &Path, t: &Tex, depth: u8) -> Result<(), String> {
@@ -36,24 +36,24 @@ fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("nodes") => {
             for s in SPECS {
-                println!("{:<18} {:<11} inputs: {:<22} {}", s.kind, matforge::graph::category(s.kind), [s.req, s.opt].concat().join(","), s.doc);
+                println!("{:<18} {:<11} inputs: {:<22} {}", s.kind, materialcraft::graph::category(s.kind), [s.req, s.opt].concat().join(","), s.doc);
             }
             Ok(())
         }
         Some("check") => {
-            let g = load(args.get(1).ok_or("usage: matforge check <graph.mfg>")?)?;
+            let g = load(args.get(1).ok_or("usage: materialcraft check <graph.mcg>")?)?;
             println!("OK: {} nodes, {} subgraphs, {} outputs, {}x{}", g.nodes.len(), g.subgraphs.len(), g.outputs.len(), g.size, g.size);
             Ok(())
         }
         Some("params") => {
-            let g = load(args.get(1).ok_or("usage: matforge params <graph>")?)?;
+            let g = load(args.get(1).ok_or("usage: materialcraft params <graph>")?)?;
             for e in &g.exposed {
                 println!("\"{}\"  node {} . {}  range {}..{}", e.label, e.node, e.param, e.min, e.max);
             }
             Ok(())
         }
         Some("publish") => {
-            let (i, o) = (args.get(1).ok_or("usage: matforge publish <in.mfg> <out.mfa>")?, args.get(2).ok_or("missing <out.mfa>")?);
+            let (i, o) = (args.get(1).ok_or("usage: materialcraft publish <in.mcg> <out.mca>")?, args.get(2).ok_or("missing <out.mca>")?);
             let g = load(i)?;
             let text = g.publish().map_err(|e| e.to_string())?;
             fs::write(o, &text).map_err(|e| e.to_string())?;
@@ -61,15 +61,15 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("example") => {
-            let dir = args.get(1).ok_or("usage: matforge example <outdir>")?;
+            let dir = args.get(1).ok_or("usage: materialcraft example <outdir>")?;
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            let p = Path::new(dir).join("brick_wall.mfg");
+            let p = Path::new(dir).join("brick_wall.mcg");
             fs::write(&p, EXAMPLE).map_err(|e| e.to_string())?;
             println!("wrote {}", p.display());
             Ok(())
         }
         Some("testmesh") => {
-            let dir = args.get(1).ok_or("usage: matforge testmesh <outdir>")?;
+            let dir = args.get(1).ok_or("usage: materialcraft testmesh <outdir>")?;
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             fs::write(Path::new(dir).join("low.obj"), bake::uv_sphere_obj(24, 16, 1.0, 0.0)).map_err(|e| e.to_string())?;
             fs::write(Path::new(dir).join("high.obj"), bake::uv_sphere_obj(160, 100, 1.0, 0.04)).map_err(|e| e.to_string())?;
@@ -78,7 +78,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("bake") => {
             if args.len() < 4 {
-                return Err("usage: matforge bake <low.obj> <high.obj> <outdir> [options]".into());
+                return Err("usage: materialcraft bake <low.obj> <high.obj> <outdir> [options]".into());
             }
             let mut s = BakeSettings::default();
             let mut i = 4;
@@ -107,7 +107,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("render") => {
-            let gp = args.get(1).ok_or("usage: matforge render <graph> <outdir> [options]")?;
+            let gp = args.get(1).ok_or("usage: materialcraft render <graph> <outdir> [options]")?;
             let dir = args.get(2).ok_or("missing <outdir>")?;
             let mut g = load(gp)?;
             let (mut sizes, mut depth, mut preview, mut r3d, mut variations) = (vec![g.size], 8u8, false, false, 1u32);

@@ -66,7 +66,6 @@ pub const SPECS: &[Spec] = &[
     s!("polygon", [], [], "sides radius softness rotation"),
     s!("checker", [], [], "tiles"),
     s!("bricks", [], [], "rows cols mortar bevel offset lum_var seed"),
-    s!("tile_sampler", [], ["pattern"], "scatter pattern: count scale scale_var rot_var lum_var seed"),
     s!("pixel_processor", [], ["in"], "per-pixel expr / expr_g / expr_b / expr_a (string params)"),
     s!("sdf_shape", [], [], "2D signed distance shape: shape(0 circle,1 box,2 polygon,3 ring) size aspect sides rotation round x y range"),
     s!("sdf_op", ["a", "b"], [], "combine SDFs: op(0 union,1 subtract,2 intersect) smooth range"),
@@ -75,6 +74,46 @@ pub const SPECS: &[Spec] = &[
     s!("bitmap", [], [], "imported PNG bitmap: file=\"path.png\""),
     s!("input", [], [], "subgraph input: idx"),
     s!("subgraph", [], ["in0", "in1", "in2", "in3"], "instance of a reusable subgraph: graph=\"name\""),
+    s!("shape", [], [], "procedural shape: square, disc, paraboloid, gaussian, diamond, pyramid, half sphere, cone"),
+    s!("tile_sampler", [], ["pattern", "mask"], "grid of pattern instances with random size, rotation, position and color"),
+    s!("tile_generator", [], ["pattern", "mask"], "brick-style tiles with row offset"),
+    s!("splatter", [], ["pattern"], "random scatter of a pattern"),
+    s!("splatter_circular", [], ["pattern"], "instances placed on a circle"),
+    s!("clouds", [], [], "soft cloud noise: scale disorder seed contrast invert"),
+    s!("bnw_spots", [], [], "black and white spots: scale disorder seed contrast invert variant"),
+    s!("crystal", [], [], "faceted crystal cells: scale disorder seed contrast invert variant"),
+    s!("directional_noise", [], [], "stretched noise: scale stretch angle seed (tiles at 0/90 degrees)"),
+    s!("grunge", [], [], "grunge masks: concrete, scratches, spots, smudges"),
+    s!("plasma", [], [], "smooth plasma waves"),
+    s!("stripes", [], [], "stripes: count angle softness width"),
+    s!("weave", [], [], "woven threads: count width"),
+    s!("star", [], [], "star shape: points inner size softness rotation"),
+    s!("gradient_axial", [], [], "symmetric gradient: angle"),
+    s!("gradient_circular", [], [], "angular gradient: offset"),
+    s!("switch", [], ["a", "b", "c", "d"], "pass one of up to four inputs: index"),
+    s!("flood_fill", ["in"], [], "label connected regions of a mask"),
+    s!("flood_fill_random", ["in"], [], "random grayscale per flood-fill region"),
+    s!("flood_fill_color", ["in"], [], "random color per flood-fill region"),
+    s!("flood_fill_gradient", ["in"], [], "gradient across each flood-fill region"),
+    s!("vector_warp", ["in", "vector"], [], "displace by a vector map: intensity"),
+    s!("slope_blur", ["in", "slope"], [], "blur along a slope map: samples intensity mode"),
+    s!("blur_hq", ["in"], [], "high quality blur: intensity quality"),
+    s!("histogram_range", ["in"], [], "select a range of values: position range contrast invert"),
+    s!("bevel", ["in"], [], "bevel a shape: distance smoothing use_as_normal"),
+    s!("distance", ["in"], [], "distance field of a mask: distance mode"),
+    s!("color_match", ["in", "reference"], [], "match colors to a reference: strength"),
+    s!("curvature_smooth", ["in"], [], "smooth curvature from a normal map"),
+    s!("height_blend", ["bg", "fg"], ["mask"], "blend two height maps: opacity contrast output"),
+    s!("make_it_tile_photo", ["in"], [], "make a photo tile: width"),
+    s!("make_it_tile_patch", ["in"], [], "make an image tile with random patches"),
+    s!("clamp", ["in"], [], "clamp values: low high"),
+    s!("highpass", ["in"], [], "high-pass filter: radius"),
+    s!("swirl", ["in"], [], "swirl distortion: amount radius"),
+    s!("edge_wear", ["in"], ["noise"], "edge wear mask from a height map: amount width contrast"),
+    s!("dirt", ["in"], ["noise"], "dirt mask from an ambient occlusion map: amount contrast"),
+    s!("dust", ["in"], ["noise"], "dust mask from a normal map: amount contrast"),
+    s!("output", [], ["in"], "graph output: usage identifier"),
+    s!("dot", ["in"], [], "re-route a link"),
     s!("blur", ["in"], [], "gaussian blur: radius"),
     s!("directional_blur", ["in"], [], "angle length"),
     s!("sharpen", ["in"], [], "radius amount"),
@@ -109,12 +148,108 @@ pub fn spec(kind: &str) -> Option<&'static Spec> {
 
 pub fn category(kind: &str) -> &'static str {
     match kind {
-        "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "voronoi" | "gradient" | "circle" | "rect" | "polygon" | "checker" | "bricks"
-        | "tile_sampler" | "pixel_processor" => "Generators",
+        "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
+        | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
-        "bitmap" | "input" | "subgraph" => "Utility",
+        "bitmap" | "input" | "subgraph" | "output" | "dot" => "Utility",
+        "normal" | "normal_blend" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
         _ => "Filters",
     }
+}
+
+/// Friendly display name for a node kind.
+pub fn label(kind: &str) -> String {
+    let named = match kind {
+        "fbm" => "Fractal Noise",
+        "clouds" => "Clouds",
+        "bnw_spots" => "BnW Spots",
+        "merge" => "RGBA Merge",
+        "colorize" => "Gradient Map",
+        "color" => "Uniform Color",
+        "hsl" => "HSL",
+        "ao" => "Ambient Occlusion",
+        "transform" => "Transform 2D",
+        "blur_hq" => "Blur HQ",
+        "make_it_tile_photo" => "Make It Tile Photo",
+        "make_it_tile_patch" => "Make It Tile Patch",
+        "sdf_shape" => "SDF Shape",
+        "sdf_op" => "SDF Combine",
+        "sdf_mask" => "SDF Mask",
+        "sdf_form" => "SDF 3D Form",
+        "pixel_processor" => "Pixel Processor",
+        "normal" => "Normal From Height",
+        "normal_blend" => "Normal Blend",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    kind.split('_').map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")
+}
+
+pub fn usage_label(usage: &str) -> String {
+    match usage {
+        "basecolor" => "Base Color",
+        "normal" => "Normal",
+        "roughness" => "Roughness",
+        "metallic" => "Metallic",
+        "height" => "Height",
+        "ambient_occlusion" => "Ambient Occlusion",
+        "opacity" => "Opacity",
+        "emissive" => "Emissive",
+        "diffuse" => "Diffuse",
+        "specular" => "Specular",
+        "glossiness" => "Glossiness",
+        "out" => "Output",
+        other => return label(other),
+    }
+    .to_string()
+}
+
+/// Value an unconnected Output node produces.
+pub fn output_default(usage: &str) -> [f32; 4] {
+    match usage {
+        "normal" => [0.5, 0.5, 1.0, 1.0],
+        "metallic" | "emissive" => [0.0, 0.0, 0.0, 1.0],
+        "ambient_occlusion" | "opacity" => [1.0; 4],
+        "specular" => [0.04, 0.04, 0.04, 1.0],
+        _ => [0.5, 0.5, 0.5, 1.0],
+    }
+}
+
+/// Small graph used for library thumbnails and the node smoke test. None = no preview graph.
+pub fn demo_graph_for(kind: &str) -> Option<String> {
+    if matches!(kind, "input" | "subgraph" | "bitmap" | "output" | "dot") {
+        return None;
+    }
+    let sp = spec(kind)?;
+    let mut t = String::from(
+        "size 64\nnode 100 fbm scale=4 octaves=4 seed=2\nnode 101 gradient angle=0.1\nnode 102 sdf_shape shape=0 size=0.3\nnode 103 sdf_shape shape=1 size=0.25 x=0.15\nnode 104 voronoi scale=5 mode=2 seed=3\nnode 105 threshold in=@104 threshold=0.2\nnode 106 flood_fill in=@105\nnode 107 normal in=@100 strength=3\n",
+    )
+    .replace("\\n", "\n");
+    let (a, b) = match kind {
+        "sdf_op" | "sdf_mask" => (102, 103),
+        "flood_fill" => (105, 105),
+        k if k.starts_with("flood_fill_") => (106, 106),
+        "dust" | "curvature_smooth" => (107, 107),
+        "vector_warp" => (100, 107),
+        _ => (100, 101),
+    };
+    let mut line = format!("node 1 {kind}");
+    match kind {
+        "pixel_processor" => line += " expr=\"sin(u*20)*0.5+0.5\"",
+        "colorize" => line += " p0=0 r0=0.1 g0=0.1 b0=0.35 p1=1 r1=1 g1=0.8 b1=0.3",
+        "merge" => line += " r=@100 g=@101 b=@100",
+        "switch" => line += " a=@100 b=@101 index=1",
+        _ => {}
+    }
+    for (i, slot) in sp.req.iter().enumerate() {
+        line += &format!(" {slot}=@{}", if i % 2 == 0 { a } else { b });
+    }
+    t += &line;
+    t += "\noutput o 1\n";
+    Some(t)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -373,15 +508,45 @@ impl Graph {
         Ok(g)
     }
 
+    /// All outputs: (usage, identifier, node id). Includes legacy `output` lines.
+    pub fn output_nodes(&self) -> Vec<(String, String, u32)> {
+        let mut v = Vec::new();
+        for (id, n) in &self.nodes {
+            if n.kind == "output" {
+                let usage = n.strs.get("usage").cloned().unwrap_or_else(|| "basecolor".into());
+                let ident = n.strs.get("identifier").filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| usage.clone());
+                v.push((usage, ident, *id));
+            }
+        }
+        for (name, id) in &self.outputs {
+            v.push((name.clone(), name.clone(), *id));
+        }
+        v
+    }
+
+    /// Convert legacy `output` assignments into real Output nodes.
+    pub fn migrate_outputs(&mut self) {
+        let legacy = std::mem::take(&mut self.outputs);
+        let mut next = self.nodes.keys().max().copied().unwrap_or(0) + 1;
+        for (name, id) in legacy {
+            let pos = self.nodes.get(&id).map(|n| [n.pos[0] + 150.0, n.pos[1]]).unwrap_or([0.0, 0.0]);
+            let mut node = Node { kind: "output".into(), pos, ..Default::default() };
+            node.strs.insert("usage".into(), name.clone());
+            node.ins.insert("in".into(), id);
+            self.nodes.insert(next, node);
+            next += 1;
+        }
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if self.size == 0 || self.size > 8192 {
             return Err(Error::BadSize(self.size));
         }
-        if self.outputs.is_empty() {
+        if self.output_nodes().is_empty() {
             return Err(Error::NoOutputs);
         }
         self.validate_nodes()?;
-        for (name, id) in &self.outputs {
+        for (_, name, id) in &self.output_nodes() {
             if !self.nodes.contains_key(id) {
                 return Err(Error::MissingNode(0, *id));
             }
@@ -508,7 +673,7 @@ impl Graph {
         s
     }
 
-    /// Flatten into a distributable package (.mfa): embeds bitmaps, drops editor-only data.
+    /// Flatten into a distributable package (.mca): embeds bitmaps, drops editor-only data.
     pub fn publish(&self) -> Result<String, Error> {
         self.validate()?;
         let mut g = self.clone();
@@ -549,7 +714,7 @@ impl Graph {
             embed(sub, &mut res, &mut seen, &own)?;
         }
         g.resources = res;
-        Ok(format!("# MatForge published asset\n{}", g.to_text()))
+        Ok(format!("# MaterialCraft published asset\n{}", g.to_text()))
     }
 
     /// Apply exposed-parameter overrides by label.
@@ -570,6 +735,9 @@ impl Graph {
         }
         if self.subgraphs.contains_key(name) {
             return Err(format!("subgraph '{name}' already exists"));
+        }
+        if sel.iter().any(|i| self.nodes[i].kind == "output") {
+            return Err("output nodes cannot be placed inside a subgraph".into());
         }
         let mut sub = Graph { size: self.size, ..Default::default() };
         let mut map: HashMap<u32, u32> = HashMap::new();
@@ -636,7 +804,14 @@ impl Graph {
                 *sel.iter().rev().find(|i| !consumed.contains(i)).unwrap_or_else(|| sel.iter().next_back().unwrap_or(&0))
             }
         };
-        sub.outputs.push(("out".into(), map[&out_id]));
+        {
+            let onode_id = sub.nodes.keys().max().copied().unwrap_or(0) + 1;
+            let opos = sub.nodes.get(&map[&out_id]).map(|n| [n.pos[0] + 150.0, n.pos[1]]).unwrap_or([0.0, 0.0]);
+            let mut o = Node { kind: "output".into(), pos: opos, ..Default::default() };
+            o.strs.insert("usage".into(), "out".into());
+            o.ins.insert("in".into(), map[&out_id]);
+            sub.nodes.insert(onode_id, o);
+        }
         let (mut cx, mut cy) = (0.0, 0.0);
         for id in &sel {
             cx += self.nodes[id].pos[0];
@@ -679,7 +854,7 @@ impl Graph {
         let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
         let mut cache: HashMap<u32, Rc<Tex>> = HashMap::new();
         let mut res = BTreeMap::new();
-        for (name, id) in &self.outputs {
+        for (_, name, id) in &self.output_nodes() {
             let t = eval_node(self, *id, &ctx, &[], &mut cache)?;
             res.insert(name.clone(), (*t).clone());
         }
@@ -751,6 +926,7 @@ fn eval_node(g: &Graph, id: u32, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut
         "input" => {
             let idx = n.nums.get("idx").copied().unwrap_or(0.0).max(0.0) as usize;
             match ext.get(idx).cloned().flatten() {
+                Some(t) if n.nums.get("gray").copied().unwrap_or(0.0) > 0.5 => ops::to_gray(&t),
                 Some(t) => (*t).clone(),
                 None => Tex::solid(ctx.size, ctx.size, [0.0, 0.0, 0.0, 1.0]),
             }
@@ -780,12 +956,12 @@ fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
     }
     let ext: Vec<Option<Rc<Tex>>> = (0..4).map(|i| ins.get(&format!("in{i}")).cloned()).collect();
-    let out_id = sub
-        .outputs
+    let outs = sub.output_nodes();
+    let out_id = outs
         .iter()
-        .find(|(n, _)| n == "out")
-        .or_else(|| sub.outputs.first())
-        .map(|(_, i)| *i)
+        .find(|o| o.0 == "out")
+        .or_else(|| outs.first())
+        .map(|o| o.2)
         .ok_or_else(|| Error::BadParam(id, format!("subgraph '{name}' has no output")))?;
     let c2 = Ctx { size: ctx.size, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1 };
     let mut cache = HashMap::new();
@@ -800,22 +976,173 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
     let seed = (f("seed", 0.0).max(0.0) as u32).wrapping_add(ctx.so);
     let per = |k: &str, d: f32| f(k, d).round().clamp(1.0, 4096.0) as i32;
     let s = ctx.size;
+    let rs = s as f32 / 512.0;
+    let (dis, con, inv) = (f("disorder", 0.0), f("contrast", 1.0), f("invert", 0.0) > 0.5);
+    let warp = move |u: f32, v: f32| -> (f32, f32) {
+        if dis <= 0.0 {
+            (u, v)
+        } else {
+            (u + (noise::perlin(u, v, 3, 3, seed.wrapping_add(101)) - 0.5) * dis * 0.3, v + (noise::perlin(u, v, 3, 3, seed.wrapping_add(202)) - 0.5) * dis * 0.3)
+        }
+    };
+    let fin = |t: Tex| -> Tex {
+        if (con - 1.0).abs() > 1e-4 || inv {
+            ops::contrast_invert(&t, con, inv)
+        } else {
+            t
+        }
+    };
     let out = match n.kind.as_str() {
-        "color" => Tex::solid(s, s, [f("r", 0.0), f("g", 0.0), f("b", 0.0), f("a", 1.0)]),
+        "color" => {
+            if f("gray", 0.0) > 0.5 {
+                let v = f("v", 0.5);
+                Tex::solid(s, s, [v, v, v, f("a", 1.0)])
+            } else {
+                Tex::solid(s, s, [f("r", 0.5), f("g", 0.5), f("b", 0.5), f("a", 1.0)])
+            }
+        }
+        "output" => match ins.get("in") {
+            Some(t) => (**t).clone(),
+            None => Tex::solid(s, s, output_default(n.strs.get("usage").map(String::as_str).unwrap_or("basecolor"))),
+        },
+        "dot" => tex("in")?.clone(),
         "white_noise" => Tex::gray_fn(s, s, |u, v| noise::rnd((u * s as f32) as i32, (v * s as f32) as i32, seed)),
-        "gaussian_noise" => Tex::gray_fn(s, s, |u, v| {
-            let (x, y) = ((u * s as f32) as i32, (v * s as f32) as i32);
-            let sum: f32 = (0..4).map(|i| noise::rnd(x, y, seed.wrapping_add(i * 17))).sum();
-            ((sum / 4.0 - 0.5) * 3.46 + 0.5).clamp(0.0, 1.0)
-        }),
+        "gaussian_noise" => {
+            let k = f("scale", 1.0).round().max(1.0) as i32;
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = ((u * s as f32) as i32 / k, (v * s as f32) as i32 / k);
+                let sum: f32 = (0..4).map(|i| noise::rnd(x, y, seed.wrapping_add(i * 17))).sum();
+                ((sum / 4.0 - 0.5) * 3.46 + 0.5).clamp(0.0, 1.0)
+            }))
+        }
         "perlin" => {
             let (px, py) = (per("scale_x", f("scale", 4.0)), per("scale_y", f("scale", 4.0)));
-            Tex::gray_fn(s, s, move |u, v| noise::perlin(u, v, px, py, seed))
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                noise::perlin(a, b, px, py, seed)
+            }))
         }
-        "fbm" => {
-            let (px, py) = (per("scale_x", f("scale", 4.0)), per("scale_y", f("scale", 4.0)));
-            let (oct, gain, mode) = (f("octaves", 5.0).max(1.0) as u32, f("gain", 0.5), f("mode", 0.0).max(0.0) as u32);
-            Tex::gray_fn(s, s, move |u, v| noise::fbm(u, v, px, py, oct, gain, seed, mode))
+        "fbm" | "clouds" => {
+            let cl = n.kind == "clouds";
+            let (px, py) = (per("scale_x", f("scale", if cl { 3.0 } else { 4.0 })), per("scale_y", f("scale", if cl { 3.0 } else { 4.0 })));
+            let (oct, gain, mode) = (f("octaves", if cl { 6.0 } else { 5.0 }).max(1.0) as u32, f("gain", if cl { 0.6 } else { 0.5 }), f("mode", 0.0).max(0.0) as u32);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                noise::fbm(a, b, px, py, oct, gain, seed, mode)
+            }))
+        }
+        "bnw_spots" => {
+            let (var, p) = (f("variant", 0.0) as u32, per("scale", 8.0));
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                let vr = noise::voronoi_ext(a, b, p, p, seed, 1.0);
+                let rad = match var {
+                    0 => 0.18 + 0.5 * vr.id1 * vr.id1,
+                    1 => 0.3 + 0.55 * vr.id1,
+                    _ => 0.08 + 0.3 * vr.id1,
+                };
+                let grain = if var >= 2 { (noise::fbm(u, v, p * 4, p * 4, 3, 0.5, seed.wrapping_add(5), 0) - 0.5) * 0.25 } else { 0.0 };
+                1.0 - smooth(rad * 0.8, rad, vr.f1 + grain)
+            }))
+        }
+        "crystal" => {
+            let (var, p) = (f("variant", 0.0) as u32, per("scale", 6.0));
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                let vr = noise::voronoi_ext(a, b, p, p, seed, 1.0);
+                let l = (vr.dx * vr.dx + vr.dy * vr.dy).sqrt().max(1e-4);
+                let facet = if var == 0 { 1.0 - vr.f1 } else { 0.5 + 0.5 * ((vr.dx / l) * 0.6 + (vr.dy / l) * 0.8) };
+                let edge = smooth(0.0, 0.08, vr.f2 - vr.f1).max(0.2);
+                (vr.id1 * 0.55 + facet * 0.45) * edge
+            }))
+        }
+        "directional_noise" => {
+            let (sc, st, ang) = (f("scale", 6.0), f("stretch", 8.0).max(1.0), f("angle", 0.0));
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
+                let (x, y) = ((u - 0.5) * ca + (v - 0.5) * sa, -(u - 0.5) * sa + (v - 0.5) * ca);
+                let (fx, fy) = (sc / st, sc);
+                let n1 = noise::perlin(x * fx / 4096.0, y * fy / 4096.0, 4096, 4096, seed);
+                let n2 = noise::perlin(x * fx * 2.0 / 4096.0, y * fy * 2.0 / 4096.0, 4096, 4096, seed.wrapping_add(7));
+                (n1 * 0.65 + n2 * 0.35).clamp(0.0, 1.0)
+            }))
+        }
+        "grunge" => {
+            let var = f("variant", 0.0) as u32;
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                match var {
+                    0 => {
+                        let n = noise::fbm(a, b, 8, 8, 6, 0.55, seed, 0) * 0.55 + noise::fbm(a, b, 40, 40, 3, 0.5, seed.wrapping_add(1), 0) * 0.45;
+                        ((n - 0.35) * 2.2).clamp(0.0, 1.0)
+                    }
+                    1 => {
+                        let line = noise::perlin(a * 3.0 % 1.0, b, 3, 90, seed);
+                        let m = noise::fbm(a, b, 5, 5, 4, 0.5, seed.wrapping_add(3), 0);
+                        smooth(0.6, 0.7, line) * smooth(0.45, 0.6, m)
+                    }
+                    2 => {
+                        let vr = noise::voronoi_ext(a, b, 22, 22, seed, 1.0);
+                        let m = noise::fbm(a, b, 6, 6, 4, 0.5, seed.wrapping_add(4), 0);
+                        (1.0 - smooth(0.12, 0.2 + vr.id1 * 0.3, vr.f1)) * smooth(0.35, 0.6, m)
+                    }
+                    _ => {
+                        let n = noise::fbm(a, b, 3, 3, 5, 0.6, seed, 2);
+                        smooth(0.2, 0.8, n)
+                    }
+                }
+            }))
+        }
+        "plasma" => {
+            let sc = f("scale", 3.0).round().max(1.0);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (a, b) = warp(u, v);
+                let t = std::f32::consts::TAU;
+                let p = (t * (sc * a + 0.35 * (t * (sc + 1.0) * b).sin())).sin() + (t * (sc * b + 0.35 * (t * (sc + 2.0) * a).sin())).sin() + (t * ((sc + 1.0) * (a + b))).sin();
+                (0.5 + p / 6.0).clamp(0.0, 1.0)
+            }))
+        }
+        "stripes" => {
+            let (cnt, ang, soft, wd) = (f("count", 8.0).round().max(1.0), f("angle", 0.0), f("softness", 0.1).max(1e-3), f("width", 0.5));
+            Tex::gray_fn(s, s, move |u, v| {
+                let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
+                let t = ((u * ca + v * sa) * cnt).rem_euclid(1.0);
+                smooth(0.0, soft, t) * (1.0 - smooth(wd, wd + soft, t))
+            })
+        }
+        "weave" => {
+            let (cnt, wd) = (f("count", 6.0).round().max(1.0), f("width", 0.8).clamp(0.1, 1.0));
+            Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (u * cnt, v * cnt);
+                let (i, j) = (x.floor() as i32, y.floor() as i32);
+                let (fx, fy) = (x - i as f32, y - j as f32);
+                let hv = (1.0 - ((2.0 * fx - 1.0).abs() / wd).clamp(0.0, 1.0)).sqrt();
+                let hh = (1.0 - ((2.0 * fy - 1.0).abs() / wd).clamp(0.0, 1.0)).sqrt();
+                if (i + j) & 1 == 0 { hv.max(0.5 * hh) } else { hh.max(0.5 * hv) }
+            })
+        }
+        "shape" => {
+            let (k, sx, sy, rot, px, py, til, so) = (f("shape", 1.0) as u32, f("size_x", 0.6), f("size_y", 0.6), f("rotation", 0.0), f("pos_x", 0.0), f("pos_y", 0.0), f("tiling", 1.0), f("softness", 0.02));
+            Tex::gray_fn(s, s, move |u, v| ops::shape_value(k, u, v, px, py, sx, sy, rot, til, so))
+        }
+        "star" => {
+            let (pts, inner, size, so, rot) = (f("points", 5.0).round().max(3.0), f("inner", 0.45), f("size", 0.4), f("softness", 0.01).max(1e-4), f("rotation", 0.0));
+            Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (u - 0.5, v - 0.5);
+                let a = y.atan2(x) - rot * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
+                let seg = std::f32::consts::TAU / pts;
+                let t = a.rem_euclid(seg) / seg;
+                let edge = size * inner + (size - size * inner) * (1.0 - (2.0 * t - 1.0).abs());
+                1.0 - smooth(-so, 0.0, (x * x + y * y).sqrt() - edge)
+            })
+        }
+        "gradient_axial" => {
+            let (sa, ca) = (f("angle", 0.0) * std::f32::consts::TAU).sin_cos();
+            Tex::gray_fn(s, s, move |u, v| 1.0 - (2.0 * ((u - 0.5) * ca + (v - 0.5) * sa + 0.5) - 1.0).abs())
+        }
+        "gradient_circular" => {
+            let off = f("offset", 0.0);
+            Tex::gray_fn(s, s, move |u, v| ((v - 0.5).atan2(u - 0.5) / std::f32::consts::TAU + 0.5 + off).rem_euclid(1.0))
         }
         "voronoi" => {
             let (p, j, mode) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
@@ -862,7 +1189,27 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (r, c, m, b, o, lv) = (f("rows", 8.0), f("cols", 4.0), f("mortar", 0.03), f("bevel", 0.05), f("offset", 0.5), f("lum_var", 0.3));
             Tex::gray_fn(s, s, move |u, v| ops::bricks(u, v, r, c, m, b, o, lv, seed))
         }
-        "tile_sampler" => ops::tile_sampler(
+        "tile_sampler" | "tile_generator" => {
+            let gen = n.kind == "tile_generator";
+            let p = ops::TileP {
+                nx: f("x_amount", if gen { 6.0 } else { 8.0 }),
+                ny: f("y_amount", if gen { 6.0 } else { 8.0 }),
+                size: f("size", if gen { 0.92 } else { 0.8 }),
+                size_rand: f("size_random", 0.0),
+                rot: f("rotation", 0.0),
+                rot_rand: f("rotation_random", 0.0),
+                pos_rand: f("position_random", 0.0),
+                color: f("color", 1.0),
+                color_rand: f("color_random", 0.0),
+                offset: f("offset", 0.5),
+                seed,
+                thresh: f("mask_threshold", 0.5),
+                default_disc: !gen,
+                brick: gen,
+            };
+            ops::tile_grid(s, s, ins.get("pattern").map(|p| p.as_ref()), ins.get("mask").map(|m| m.as_ref()), &p)
+        }
+        "splatter" => ops::splatter(
             s,
             s,
             ins.get("pattern").map(|p| p.as_ref()),
@@ -873,6 +1220,90 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             f("lum_var", 0.0),
             seed,
         ),
+        "splatter_circular" => ops::splatter_circular(s, s, ins.get("pattern").map(|p| p.as_ref()), f("number", 12.0).max(1.0) as u32, f("radius", 0.3), f("size", 0.1), f("size_random", 0.0), f("rotation", 0.0), f("rotation_random", 0.0), f("position_random", 0.0), seed),
+        "switch" => {
+            let order = ["a", "b", "c", "d"];
+            let idx = f("index", 0.0).max(0.0) as usize;
+            match ins.get(order[idx.min(3)]) {
+                Some(t) => (**t).clone(),
+                None => order.iter().find_map(|k| ins.get(*k)).map(|t| (**t).clone()).unwrap_or_else(|| Tex::solid(s, s, [0.0, 0.0, 0.0, 1.0])),
+            }
+        }
+        "flood_fill" => ops::flood_fill(tex("in")?, f("threshold", 0.05)),
+        "flood_fill_random" => ops::flood_fill_random(tex("in")?, seed, f("min", 0.0), f("max", 1.0)),
+        "flood_fill_color" => ops::flood_fill_color(tex("in")?, seed),
+        "flood_fill_gradient" => ops::flood_fill_gradient(tex("in")?, f("angle", 0.0), f("variation", 0.0), seed),
+        "vector_warp" => ops::vector_warp(tex("in")?, tex("vector")?, f("intensity", 0.05)),
+        "slope_blur" => ops::slope_blur(tex("in")?, tex("slope")?, f("samples", 16.0) as u32, f("intensity", 0.1), f("mode", 0.0) as u32),
+        "blur_hq" => {
+            let q = f("quality", 1.0).round().clamp(1.0, 4.0) as u32;
+            let mut t = tex("in")?.clone();
+            let sigma = f("intensity", 6.0) * rs / (q as f32).sqrt();
+            for _ in 0..q {
+                t = ops::blur(&t, sigma);
+            }
+            t
+        }
+        "histogram_range" => {
+            let (pos, range, con2, inv2) = (f("position", 0.5), f("range", 0.2).max(1e-4), f("contrast", 0.5), f("invert", 0.0) > 0.5);
+            let soft = (1.0 - con2.clamp(0.0, 1.0)) * range * 0.5 + 1e-4;
+            let (lo, hi) = (pos - range * 0.5, pos + range * 0.5);
+            tex("in")?.map(move |p| {
+                let l = lum(p);
+                let g = smooth(lo - soft, lo + soft, l) * (1.0 - smooth(hi - soft, hi + soft, l));
+                let g = if inv2 { 1.0 - g } else { g };
+                [g, g, g, 1.0]
+            })
+        }
+        "bevel" => {
+            let b = ops::bevel(tex("in")?, f("distance", 0.05) * s as f32, f("smoothing", 0.5), f("threshold", 0.5));
+            if f("use_as_normal", 0.0) > 0.5 {
+                ops::normal_from_height(&b, f("normal_intensity", 4.0), false)
+            } else {
+                b
+            }
+        }
+        "distance" => ops::distance(tex("in")?, f("distance", 0.1) * s as f32, f("threshold", 0.5), f("mode", 0.0) as u32),
+        "color_match" => ops::color_match(tex("in")?, tex("reference")?, f("strength", 1.0)),
+        "curvature_smooth" => ops::curvature_from_normal(tex("in")?, f("smoothing", 2.0) * rs, f("intensity", 6.0)),
+        "height_blend" => {
+            let (h, m) = ops::height_blend(tex("bg")?, tex("fg")?, ins.get("mask").map(|x| x.as_ref()), f("opacity", 1.0), f("contrast", 0.5));
+            if f("output", 0.0) > 0.5 { m } else { h }
+        }
+        "make_it_tile_photo" => ops::make_tile_photo(tex("in")?, f("width", 0.6)),
+        "make_it_tile_patch" => ops::make_tile_patch(tex("in")?, f("patches", 6.0), f("softness", 0.5), seed),
+        "clamp" => {
+            let (lo, hi) = (f("low", 0.0), f("high", 1.0));
+            tex("in")?.map(move |p| [p[0].clamp(lo.min(hi), hi.max(lo)), p[1].clamp(lo.min(hi), hi.max(lo)), p[2].clamp(lo.min(hi), hi.max(lo)), p[3]])
+        }
+        "highpass" => ops::highpass(tex("in")?, f("radius", 6.0) * rs),
+        "swirl" => ops::swirl(tex("in")?, f("amount", 0.3), f("radius", 0.5)),
+        "edge_wear" | "dirt" | "dust" => {
+            let base = tex("in")?;
+            let amount = f("amount", 0.5).clamp(0.0, 1.0);
+            let soft = 0.25 / f("contrast", 1.0).max(0.1);
+            let thr = 0.5 + (1.0 - amount) * 0.35;
+            let mut m = match n.kind.as_str() {
+                "edge_wear" => {
+                    let c = ops::curvature(base, f("width", 2.0) * rs, 6.0);
+                    ops::threshold(&c, thr, soft)
+                }
+                "dirt" => {
+                    let inv = ops::invert(&ops::to_gray(base));
+                    ops::threshold(&inv, 1.0 - amount * 0.6, soft)
+                }
+                _ => ops::threshold(&ops::channel(base, 1), 0.95 - amount * 0.45, soft),
+            };
+            if let Some(nz) = ins.get("noise") {
+                for (i, p) in m.px.iter_mut().enumerate() {
+                    let k = lum(nz.px[i]);
+                    p[0] *= k;
+                    p[1] *= k;
+                    p[2] *= k;
+                }
+            }
+            m
+        }
         "pixel_processor" => {
             let parse = |k: &str| -> Result<Option<expr::Ex>, Error> {
                 match n.strs.get(k) {
@@ -923,14 +1354,26 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             };
             png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?
         }
-        "blur" => ops::blur(tex("in")?, f("radius", 4.0)),
+        "blur" => ops::blur(tex("in")?, f("radius", 4.0) * rs),
         "directional_blur" => ops::directional_blur(tex("in")?, f("angle", 0.0), f("length", 0.05)),
-        "sharpen" => ops::sharpen(tex("in")?, f("radius", 2.0), f("amount", 1.0)),
-        "levels" => ops::levels(tex("in")?, f("low", 0.0), f("high", 1.0), f("gamma", 1.0), f("out_low", 0.0), f("out_high", 1.0)),
+        "sharpen" => ops::sharpen(tex("in")?, f("radius", 2.0) * rs, f("amount", 1.0)),
+        "levels" => {
+            let t = tex("in")?;
+            let (mut lo, mut hi) = (f("low", 0.0), f("high", 1.0));
+            if f("auto", 0.0) > 0.5 {
+                let (mn, mx) = t.px.iter().fold((1.0f32, 0.0f32), |a, p| (a.0.min(lum(*p)), a.1.max(lum(*p))));
+                lo = mn;
+                hi = mx.max(mn + 1e-4);
+            }
+            ops::levels(t, lo, hi, f("gamma", 1.0), f("out_low", 0.0), f("out_high", 1.0))
+        }
         "adjust" => ops::adjust(tex("in")?, f("brightness", 0.0), f("contrast", 1.0)),
         "invert" => ops::invert(tex("in")?),
         "threshold" => ops::threshold(tex("in")?, f("threshold", 0.5), f("softness", 0.0)),
-        "histogram_scan" => ops::histogram_scan(tex("in")?, f("position", 0.5), f("width", 0.2)),
+        "histogram_scan" => {
+            let t = ops::histogram_scan(tex("in")?, f("position", 0.5), (1.0 - f("contrast", 0.5).clamp(0.0, 1.0)).max(1e-4));
+            if f("invert", 0.0) > 0.5 { ops::invert(&t) } else { t }
+        }
         "quantize" => ops::quantize(tex("in")?, f("steps", 4.0)),
         "to_gray" => ops::to_gray(tex("in")?),
         "channel" => ops::channel(tex("in")?, f("ch", 0.0).max(0.0) as usize),
@@ -948,7 +1391,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "colorize" => {
             let mut stops = Vec::new();
-            for i in 0..8 {
+            for i in 0..16 {
                 if let Some(p) = n.nums.get(&format!("p{i}")) {
                     let g = |c: &str| n.nums.get(&format!("{c}{i}")).copied().unwrap_or(0.0);
                     stops.push((*p, [g("r"), g("g"), g("b")]));
@@ -957,18 +1400,18 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             if stops.is_empty() {
                 return Err(Error::BadParam(id, "colorize needs at least one stop (p0 r0 g0 b0)".into()));
             }
-            ops::colorize(tex("in")?, &stops)
+            ops::colorize(tex("in")?, &stops, f("interp", 0.0) as u32)
         }
         "hsl" => ops::hsl_adjust(tex("in")?, f("hue", 0.0), f("sat", 1.0), f("val", 1.0)),
-        "transform" => ops::transform(tex("in")?, f("offset_x", 0.0), f("offset_y", 0.0), f("scale_x", 1.0), f("scale_y", 1.0), f("rotation", 0.0)),
+        "transform" => ops::transform(tex("in")?, f("offset_x", 0.0), f("offset_y", 0.0), f("scale_x", 1.0), f("scale_y", 1.0), f("rotation", 0.0), f("tiling", 0.0) < 0.5),
         "mirror" => ops::mirror(tex("in")?, f("axis", 0.0) as u32),
         "warp" => ops::warp(tex("in")?, tex("warp")?, f("intensity", 0.05)),
         "directional_warp" => ops::directional_warp(tex("in")?, tex("warp")?, f("angle", 0.0), f("intensity", 0.1)),
         "blend" => ops::blend(tex("fg")?, tex("bg")?, ins.get("mask").map(|m| m.as_ref()), f("mode", 0.0).max(0.0) as u32, f("opacity", 1.0)),
         "normal" => ops::normal_from_height(tex("in")?, f("strength", 2.0), f("directx", 0.0) > 0.5),
         "normal_blend" => ops::normal_blend(tex("a")?, tex("b")?),
-        "ao" => ops::ambient_occlusion(tex("in")?, f("radius", 6.0), f("intensity", 2.0)),
-        "curvature" => ops::curvature(tex("in")?, f("radius", 3.0), f("intensity", 4.0)),
+        "ao" => ops::ambient_occlusion(tex("in")?, f("radius", 6.0) * rs, f("intensity", 2.0)),
+        "curvature" => ops::curvature(tex("in")?, f("radius", 3.0) * rs, f("intensity", 4.0)),
         "edge_detect" => ops::edge_detect(tex("in")?, f("intensity", 2.0)),
         "emboss" => ops::emboss(tex("in")?, f("angle", 0.125), f("intensity", 4.0)),
         other => return Err(Error::UnknownNode(id, other.to_string())),

@@ -1,10 +1,10 @@
-# MatForge
+# MaterialCraft
 
 Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
 
 ## Build & run
-    cargo run --release --features gui --bin matforge-gui     # visual editor
-    cargo run --release -- render examples/brick.mfg out --size 1024 --render3d   # CLI
+    cargo run --release --features gui --bin materialcraft-gui     # visual editor
+    cargo run --release -- render examples/brick.mcg out --size 1024 --render3d   # CLI
 
 Requires a current stable Rust toolchain (https://rustup.rs). On Windows the MSVC build tools are needed.
 The core library has zero dependencies; the editor uses egui/eframe + rfd (native file dialogs).
@@ -18,11 +18,20 @@ Ctrl+C/X/V/D · rubber-band & Shift/Ctrl multi-select · C = comment frame · do
 F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
 
 ## CLI
-    matforge render <graph.mfg|.mfa> <outdir> [--sizes 512,1024] [--depth 16] [--param "Label=0.5"] [--variations 8] [--render3d]
-    matforge publish <graph.mfg> <out.mfa>      # embeds bitmaps, flattens editor data
-    matforge bake <low.obj> <high.obj> <outdir> [--size 1024]
-    matforge nodes | check | params | testmesh | example
+    materialcraft render <graph.mcg|.mca> <outdir> [--sizes 512,1024] [--depth 16] [--param "Label=0.5"] [--variations 8] [--render3d]
+    materialcraft publish <graph.mcg> <out.mca>      # embeds bitmaps, flattens editor data
+    materialcraft bake <low.obj> <high.obj> <outdir> [--size 1024]
+    materialcraft nodes | check | params | testmesh | example
 
 ## Not implemented (honest list)
 FX-Maps, splines/paths, function graphs, SVG/font/AxF import, OCIO/ACE colour management, scripting API,
-JPEG/TIFF export, displacement/path-traced 3D rendering, custom mesh import in the 3D viewer, binary .sbs/.sbsar compatibility.
+JPEG/TIFF export, displacement/path-traced 3D rendering, custom mesh import in the 3D viewer, third-party file-format compatibility.
+
+
+## Nodes (86)
+Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
+BnW spots, crystal, directional noise, grunge, plasma, voronoi, stripes, weave, bricks, checker, gradients, star, SDF shapes.
+Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /
+slope warps, blur and blur HQ, levels, histogram scan / range, bevel, distance, gradient map, uniform color, HSL, color match,
+make-it-tile photo / patch and more. Material: normal, ambient occlusion, curvature (smooth), height blend, edge wear, dirt, dust.
+Graph items: output (drives the 3D view), input color / grayscale (subgraphs), subgraph instances, bitmap, comment, frame, dot.

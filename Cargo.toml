@@ -1,8 +1,8 @@
 [package]
-name = "matforge"
+name = "materialcraft"
 version = "0.1.0"
 edition = "2021"
-description = "Procedural, node-based material authoring engine (Substance Designer-style) in pure Rust"
+description = "Procedural, node-based material authoring engine in pure Rust"
 license = "MIT"
 
 [features]
@@ -15,11 +15,11 @@ eframe = { version = "0.29", optional = true, default-features = false, features
 rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "async-std"] }
 
 [[bin]]
-name = "matforge"
+name = "materialcraft"
 path = "src/main.rs"
 
 [[bin]]
-name = "matforge-gui"
+name = "materialcraft-gui"
 path = "src/gui.rs"
 required-features = ["gui"]
 

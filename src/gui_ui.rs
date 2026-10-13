@@ -7,16 +7,7 @@ struct NodeSnap {
     ins: Vec<(String, u32)>,
     pos: [f32; 2],
     graph_name: Option<String>,
-}
-
-struct PRow {
-    key: String,
-    label: String,
-    def: f32,
-    lo: f32,
-    hi: f32,
-    int: bool,
-    exposable: bool,
+    dot: bool,
 }
 
 impl App {
@@ -159,11 +150,12 @@ impl App {
                 ins: n.ins.iter().map(|(k, v)| (k.clone(), *v)).collect(),
                 pos: n.pos,
                 graph_name: n.strs.get("graph").cloned(),
+                dot: n.kind == "dot",
             })
             .collect();
-        let posmap: HashMap<u32, [f32; 2]> = snaps.iter().map(|s| (s.id, s.pos)).collect();
-        let out_port = move |p: [f32; 2]| ts(p) + vec2(CARD * z, (BAR + CARD * 0.5) * z);
-        let in_port = move |p: [f32; 2], i: usize, n: usize| ts(p) + vec2(0.0, (BAR + CARD * (i as f32 + 1.0) / (n as f32 + 1.0)) * z);
+        let posmap: HashMap<u32, ([f32; 2], bool)> = snaps.iter().map(|s| (s.id, (s.pos, s.dot))).collect();
+        let out_port = move |p: [f32; 2], dot: bool| if dot { ts(p) + vec2(24.0 * z, 12.0 * z) } else { ts(p) + vec2(CARD * z, (BAR + CARD * 0.5) * z) };
+        let in_port = move |p: [f32; 2], i: usize, n: usize, dot: bool| if dot { ts(p) + vec2(0.0, 12.0 * z) } else { ts(p) + vec2(0.0, (BAR + CARD * (i as f32 + 1.0) / (n as f32 + 1.0)) * z) };
         let link = |painter: &egui::Painter, a: Pos2, b: Pos2, col: Color32, w: f32| {
             let dx = ((b.x - a.x).abs() * 0.5).max(40.0 * z);
             painter.add(CubicBezierShape::from_points_stroke([a, a + vec2(dx, 0.0), b - vec2(dx, 0.0), b], false, Color32::TRANSPARENT, Stroke::new(w * z.max(0.7), col)));
@@ -175,7 +167,7 @@ impl App {
             for (slot, src) in &s.ins {
                 if let (Some(i), Some(sp)) = (s.slots.iter().position(|x| x.0 == slot), posmap.get(src)) {
                     let hot = self.sel.contains(&s.id) || self.sel.contains(src);
-                    link(&painter, out_port(*sp), in_port(s.pos, i, n), if hot { Color32::from_rgb(255, 170, 60) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
+                    link(&painter, out_port(sp.0, sp.1), in_port(s.pos, i, n, s.dot), if hot { Color32::from_rgb(255, 170, 60) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
                 }
             }
         }
@@ -187,19 +179,28 @@ impl App {
 
         for s in &snaps {
             let id = s.id;
-            let card = Rect::from_min_size(ts(s.pos), vec2(CARD, CARD_H) * z);
+            let card = Rect::from_min_size(ts(s.pos), if s.dot { vec2(24.0, 24.0) } else { vec2(CARD, CARD_H) } * z);
             cards.push(card);
             let selected = self.sel.contains(&id);
             let err = self.node_err.get(&id).cloned();
+            if s.dot {
+                let sel_col = if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_gray(150) };
+                painter.circle(card.center(), 9.0 * z, Color32::from_rgb(38, 38, 38), Stroke::new(if selected { 2.4 } else { 1.3 }, sel_col));
+                painter.circle_filled(card.center(), 3.2 * z, Color32::from_gray(200));
+            } else {
             painter.rect_filled(card.translate(vec2(2.0, 3.0) * z), Rounding::same(3.0 * z), Color32::from_black_alpha(70));
             painter.rect_filled(card, Rounding::same(3.0 * z), Color32::from_rgb(32, 32, 32));
             let bar = Rect::from_min_size(card.min, vec2(card.width(), BAR * z));
             painter.rect_filled(bar, Rounding { nw: 3.0 * z, ne: 3.0 * z, sw: 0.0, se: 0.0 }, kind_color(&s.kind));
+            let node_ref = self.g.nodes.get(&id);
+            let usage = node_ref.and_then(|n| n.strs.get("usage").cloned()).unwrap_or_else(|| "basecolor".into());
+            let ident = node_ref.and_then(|n| n.strs.get("identifier").cloned()).filter(|x| !x.is_empty()).unwrap_or_else(|| usage.clone());
             let label = match (&s.graph_name, s.kind.as_str()) {
                 (Some(g), "subgraph") => g.clone(),
-                _ => s.kind.replace('_', " "),
+                (_, "output") => usage_label(&usage),
+                _ => label(&s.kind),
             };
-            let fs = if label.len() > 15 { 9.0 } else { 10.5 };
+            let fs = if label.len() > 16 { 8.0 } else if label.len() > 12 { 9.0 } else { 10.5 };
             painter.text(bar.center(), Align2::CENTER_CENTER, label, FontId::proportional(fs * z), Color32::WHITE);
             let th = Rect::from_min_size(card.min + vec2(3.0, BAR + 3.0) * z, vec2(CARD - 6.0, CARD - 6.0) * z);
             match self.thumbs.get(&id) {
@@ -219,12 +220,21 @@ impl App {
                 painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(1.5, Color32::from_rgb(150, 150, 150)));
             }
 
-            let outs: Vec<&str> = self.g.outputs.iter().filter(|(_, o)| *o == id).map(|(n, _)| n.as_str()).collect();
-            if !outs.is_empty() {
-                let txt = outs.join(", ");
-                let r = painter.text(card.left_bottom() + vec2(2.0, 3.0) * z, Align2::LEFT_TOP, &txt, FontId::proportional(10.0 * z), Color32::BLACK);
-                painter.rect_filled(r.expand(2.0 * z), Rounding::same(2.0 * z), Color32::from_rgb(240, 170, 50));
-                painter.text(r.left_top(), Align2::LEFT_TOP, &txt, FontId::proportional(10.0 * z), Color32::BLACK);
+            if s.kind == "output" {
+                let bc = card.left_top() + vec2(3.0, -1.0) * z;
+                painter.circle(bc, 10.5 * z, Color32::from_rgb(30, 30, 30), Stroke::new(1.5, Color32::from_gray(205)));
+                painter.circle_stroke(bc, 5.6 * z, Stroke::new(1.3, Color32::from_gray(235)));
+                let mut pts = Vec::new();
+                for k in 0..=24 {
+                    let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                    pts.push(bc + vec2(a.cos() * 5.6, a.sin() * 2.2) * z);
+                }
+                painter.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_gray(200))));
+                painter.circle_filled(bc + vec2(-1.8, -1.8) * z, 1.4 * z, Color32::WHITE);
+                painter.text(card.left_top() + vec2(16.0, -4.0) * z, Align2::LEFT_BOTTOM, format!("({ident})"), FontId::proportional(9.0 * z), Color32::from_gray(150));
+                let bits = if self.g.meta.get("output_format").map(|f| f == "16").unwrap_or(false) { 16 } else { 8 };
+                painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{0}x{0} - C{1}", self.g.size, bits), FontId::proportional(10.5 * z), Color32::from_gray(185));
+            }
             }
 
             // interaction: card
@@ -306,10 +316,10 @@ impl App {
                     acts.push(Act::Subgraph);
                     ui.close_menu();
                 }
-                ui.menu_button("Set as output", |ui| {
+                ui.menu_button("Add output node", |ui| {
                     for name in &out_names {
-                        if ui.button(*name).clicked() {
-                            acts.push(Act::SetOutput(name.to_string(), id));
+                        if ui.button(usage_label(name)).clicked() {
+                            acts.push(Act::NewOutput(name.to_string(), id));
                             ui.close_menu();
                         }
                     }
@@ -317,17 +327,19 @@ impl App {
             });
 
             // ports
-            let op = out_port(s.pos);
-            painter.circle(op, 4.8 * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0, Color32::BLACK));
-            let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id)), Sense::drag());
-            if pr.drag_started() {
-                self.connecting = Some(id);
+            if s.kind != "output" {
+                let op = out_port(s.pos, s.dot);
+                painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0, Color32::BLACK));
+                let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id)), Sense::drag());
+                if pr.drag_started() {
+                    self.connecting = Some(id);
+                }
             }
             let n = s.slots.len();
             for (i, (slot, required)) in s.slots.iter().enumerate() {
-                let ip = in_port(s.pos, i, n);
+                let ip = in_port(s.pos, i, n, s.dot);
                 ports.push((id, *slot, ip));
-                painter.circle(ip, 4.5 * z, if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2, Color32::from_rgb(190, 190, 190)));
+                painter.circle(ip, 4.5 * z, if s.kind == "output" { Color32::from_rgb(240, 170, 50) } else if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2, Color32::from_rgb(190, 190, 190)));
                 let ir = ui.interact(Rect::from_center_size(ip, Vec2::splat(14.0 * z)), Id::new(("in", id, i)), Sense::drag());
                 if ir.drag_started() {
                     let had = self.g.nodes.get(&id).and_then(|nd| nd.ins.get(*slot).copied());
@@ -349,7 +361,7 @@ impl App {
         // connection drag
         if let Some(src) = self.connecting {
             if let (Some(pt), Some(sp)) = (pointer, posmap.get(&src)) {
-                link(&painter, out_port(*sp), pt, Color32::from_rgb(255, 190, 70), 2.0);
+                link(&painter, out_port(sp.0, sp.1), pt, Color32::from_rgb(255, 190, 70), 2.0);
             }
             if released {
                 if let Some(pt) = pointer {
@@ -424,230 +436,6 @@ impl App {
     }
 
     // ------------------------------------------------------------ inspector
-    fn param_rows(&self, id: u32) -> Vec<PRow> {
-        let Some(n) = self.g.nodes.get(&id) else { return vec![] };
-        let mut rows = Vec::new();
-        if n.kind == "subgraph" {
-            if let Some(sub) = n.strs.get("graph").and_then(|g| self.g.subgraphs.get(g)) {
-                for (nid, inner) in &sub.nodes {
-                    for (name, def, lo, hi) in params(&inner.kind) {
-                        rows.push(PRow {
-                            key: format!("{nid}.{name}"),
-                            label: format!("#{nid} {} . {name}", inner.kind.replace('_', " ")),
-                            def: inner.nums.get(*name).copied().unwrap_or(*def),
-                            lo: *lo,
-                            hi: *hi,
-                            int: is_int(&inner.kind, name),
-                            exposable: false,
-                        });
-                    }
-                }
-            }
-        } else {
-            for (name, def, lo, hi) in params(&n.kind) {
-                rows.push(PRow { key: name.to_string(), label: name.to_string(), def: *def, lo: *lo, hi: *hi, int: is_int(&n.kind, name), exposable: true });
-            }
-        }
-        rows
-    }
-
-    fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.spacing_mut().slider_width = 130.0;
-        if let Some(ci) = self.sel_comment.filter(|c| *c < self.g.comments.len()) {
-            ui.heading("Comment frame");
-            let mut c = self.g.comments[ci].clone();
-            let mut changed = ui.text_edit_singleline(&mut c.text).changed();
-            ui.horizontal(|ui| {
-                for (i, col) in COMMENT_COLORS.iter().enumerate() {
-                    let (r, resp) = ui.allocate_exact_size(vec2(22.0, 18.0), Sense::click());
-                    ui.painter().rect_filled(r, Rounding::same(3.0), Color32::from_rgb(col[0], col[1], col[2]));
-                    if c.color as usize == i {
-                        ui.painter().rect_stroke(r, Rounding::same(3.0), Stroke::new(2.0, Color32::WHITE));
-                    }
-                    if resp.clicked() {
-                        c.color = i as u8;
-                        changed = true;
-                    }
-                }
-            });
-            if changed {
-                if !self.edit_open {
-                    self.snap();
-                    self.edit_open = true;
-                }
-                self.g.comments[ci] = c;
-            }
-            if ui.button("Delete frame").clicked() {
-                self.acts.push(Act::Delete);
-            }
-            ui.separator();
-        }
-
-        if let Some(id) = self.active.filter(|a| self.sel.contains(a) && self.g.nodes.contains_key(a)) {
-            let node = self.g.nodes[&id].clone();
-            let kind = node.kind.clone();
-            ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(6.0, 18.0), Sense::hover());
-                ui.painter().rect_filled(r, 1.0, kind_color(&kind));
-                ui.heading(format!("{}  #{id}", kind.replace('_', " ")));
-            });
-            if let Some(sp) = spec(&kind) {
-                ui.small(sp.doc);
-            }
-            if let Some(e) = self.node_err.get(&id) {
-                ui.colored_label(Color32::from_rgb(255, 120, 110), e);
-            }
-            ui.add_space(4.0);
-            let rows = self.param_rows(id);
-            let mut edits: Vec<(String, f32)> = Vec::new();
-            let mut expose_toggle: Option<(String, f32, f32)> = None;
-            for r in &rows {
-                let mut v = node.nums.get(&r.key).copied().unwrap_or(r.def);
-                let exposed = self.g.exposed.iter().any(|e| e.node == id && e.param == r.key);
-                ui.horizontal(|ui| {
-                    let mut sl = egui::Slider::new(&mut v, r.lo..=r.hi).text(&r.label);
-                    if r.int {
-                        sl = sl.step_by(1.0).fixed_decimals(0);
-                    }
-                    if ui.add(sl).changed() {
-                        edits.push((r.key.clone(), v));
-                    }
-                    if r.exposable && ui.selectable_label(exposed, "P").on_hover_text("Publish this parameter (exposed in .mfa packages)").clicked() {
-                        expose_toggle = Some((r.key.clone(), r.lo, r.hi));
-                    }
-                });
-            }
-            let mut str_edits: Vec<(String, Option<String>)> = Vec::new();
-            match kind.as_str() {
-                "pixel_processor" => {
-                    ui.small("vars: u v x y w h r g b l   funcs: sin cos abs sqrt min max pow floor fract clamp mix step smoothstep noise rand tex atan2 exp log");
-                    for key in ["expr", "expr_g", "expr_b", "expr_a"] {
-                        let mut s = node.strs.get(key).cloned().unwrap_or_default();
-                        if ui.add(egui::TextEdit::singleline(&mut s).hint_text(key).desired_width(f32::INFINITY)).changed() {
-                            str_edits.push((key.to_string(), if s.trim().is_empty() { None } else { Some(s.replace('"', "")) }));
-                        }
-                    }
-                }
-                "bitmap" => {
-                    let file = node.strs.get("file").cloned().unwrap_or_default();
-                    ui.label(if file.is_empty() { "(no file)".to_string() } else { file.clone() });
-                    if ui.button("Browse PNG...").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).pick_file() {
-                            str_edits.push(("file".into(), Some(p.to_string_lossy().to_string())));
-                        }
-                    }
-                }
-                "subgraph" => {
-                    if let Some(g) = node.strs.get("graph") {
-                        ui.label(format!("Instance of '{g}'"));
-                        if ui.button("Open subgraph").clicked() {
-                            self.acts.push(Act::EnterSub(g.clone()));
-                        }
-                        if rows.is_empty() {
-                            ui.small("This subgraph has no adjustable parameters.");
-                        }
-                    }
-                }
-                _ => {}
-            }
-            if !edits.is_empty() || !str_edits.is_empty() {
-                if !self.edit_open {
-                    self.snap();
-                    self.edit_open = true;
-                }
-                if let Some(n) = self.g.nodes.get_mut(&id) {
-                    for (k, v) in edits {
-                        n.nums.insert(k, v);
-                    }
-                    for (k, v) in str_edits {
-                        match v {
-                            Some(s) => {
-                                n.strs.insert(k, s);
-                            }
-                            None => {
-                                n.strs.remove(&k);
-                            }
-                        }
-                    }
-                }
-                self.dirty = true;
-            }
-            if let Some((key, lo, hi)) = expose_toggle {
-                self.snap();
-                if let Some(p) = self.g.exposed.iter().position(|e| e.node == id && e.param == key) {
-                    self.g.exposed.remove(p);
-                } else {
-                    let label = format!("{} {} {}", kind.replace('_', " "), id, key);
-                    self.g.exposed.push(Exposed { label, node: id, param: key, min: lo, max: hi });
-                }
-            }
-            ui.separator();
-        }
-        if self.sel.is_empty() && self.sel_comment.is_none() {
-            self.graph_props(ui);
-        }
-        if !self.sel.is_empty() || self.sel_comment.is_some() {
-            return;
-        }
-
-        egui::CollapsingHeader::new("Outputs").default_open(true).show(ui, |ui| {
-            let mut remove = None;
-            for (i, (name, id)) in self.g.outputs.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{name}  <-  #{id}"));
-                    if ui.small_button("x").clicked() {
-                        remove = Some(i);
-                    }
-                });
-            }
-            if let Some(i) = remove {
-                self.snap();
-                self.g.outputs.remove(i);
-                self.dirty = true;
-            }
-            if let Some(id) = self.active {
-                ui.small("Assign the active node to:");
-                let names: Vec<&str> = if self.parents.is_empty() { OUTPUT_NAMES.to_vec() } else { vec!["out"] };
-                ui.horizontal_wrapped(|ui| {
-                    for name in names {
-                        if ui.small_button(name).clicked() {
-                            self.acts.push(Act::SetOutput(name.to_string(), id));
-                        }
-                    }
-                });
-            }
-        });
-        egui::CollapsingHeader::new("Published parameters").default_open(false).show(ui, |ui| {
-            if self.g.exposed.is_empty() {
-                ui.small("Click 'P' next to a parameter to publish it. Published parameters can be set when rendering a .mfa package.");
-            }
-            let mut remove = None;
-            let mut changed = false;
-            let mut list = self.g.exposed.clone();
-            for (i, e) in list.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    changed |= ui.add(egui::TextEdit::singleline(&mut e.label).desired_width(110.0)).changed();
-                    ui.label(format!("#{}.{}", e.node, e.param));
-                    changed |= ui.add(egui::DragValue::new(&mut e.min).speed(0.01)).changed();
-                    changed |= ui.add(egui::DragValue::new(&mut e.max).speed(0.01)).changed();
-                    if ui.small_button("x").clicked() {
-                        remove = Some(i);
-                    }
-                });
-            }
-            if changed || remove.is_some() {
-                if !self.edit_open {
-                    self.snap();
-                    self.edit_open = true;
-                }
-                if let Some(i) = remove {
-                    list.remove(i);
-                }
-                self.g.exposed = list;
-            }
-        });
-    }
-
     // ------------------------------------------------------------ actions
     fn do_act(&mut self, a: Act) {
         match a {
@@ -707,18 +495,14 @@ impl App {
                     self.spawn(&e, w, None);
                 }
             }
-            Act::SetOutput(name, id) => {
-                self.snap();
-                self.g.outputs.retain(|(n, _)| *n != name);
-                self.g.outputs.push((name, id));
-                self.dirty = true;
-            }
+            Act::NewOutput(usage, from) => self.new_output(&usage, from),
         }
     }
 
     fn search_ui(&mut self, ctx: &egui::Context) {
         let Some(mut st) = self.search.take() else { return };
         let q = st.text.to_lowercase();
+        let rank = |c: &str| ["Utility", "Generators", "Filters", "Material", "SDF", "Subgraphs"].iter().position(|x| *x == c).unwrap_or(9);
         let mut list: Vec<(u8, Entry)> = self
             .entries()
             .into_iter()
@@ -738,23 +522,39 @@ impl App {
                 Some((s, e))
             })
             .collect();
-        list.sort_by(|a, b| (a.0, a.1.cat, &a.1.label).cmp(&(b.0, b.1.cat, &b.1.label)));
-        list.truncate(14);
-        let (down, up, enter, esc) = ctx.input_mut(|i| {
-            (i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::NONE, Key::Escape))
+        list.sort_by(|a, b| (a.0, rank(a.1.cat), &a.1.label).cmp(&(b.0, rank(b.1.cat), &b.1.label)));
+        let (down, up, enter, esc, pgdn, pgup) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(Modifiers::NONE, Key::Enter),
+                i.consume_key(Modifiers::NONE, Key::Escape),
+                i.consume_key(Modifiers::NONE, Key::PageDown),
+                i.consume_key(Modifiers::NONE, Key::PageUp),
+            )
         });
+        let moved = down || up || pgdn || pgup;
         if down {
             st.idx += 1;
+        }
+        if pgdn {
+            st.idx += 10;
         }
         if up {
             st.idx = st.idx.saturating_sub(1);
         }
+        if pgup {
+            st.idx = st.idx.saturating_sub(10);
+        }
         st.idx = st.idx.min(list.len().saturating_sub(1));
         let mut chosen: Option<Entry> = None;
         let mut close = esc;
-        let area = egui::Area::new(Id::new("node_search")).order(egui::Order::Foreground).fixed_pos(st.screen).show(ctx, |ui| {
+        let screen = ctx.screen_rect();
+        let pos = pos2(st.screen.x.min(screen.right() - 330.0).max(4.0), st.screen.y.min(screen.bottom() - 420.0).max(4.0));
+        let max_h = (screen.bottom() - pos.y - 120.0).clamp(160.0, 520.0);
+        let area = egui::Area::new(Id::new("node_search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_width(280.0);
+                ui.set_width(310.0);
                 let r = ui.add(egui::TextEdit::singleline(&mut st.text).hint_text("Search nodes - Enter to add").desired_width(f32::INFINITY));
                 r.request_focus();
                 if r.changed() {
@@ -764,15 +564,35 @@ impl App {
                 if list.is_empty() {
                     ui.small("no matching nodes");
                 }
-                for (i, (_, e)) in list.iter().enumerate() {
-                    let resp = ui.selectable_label(i == st.idx, format!("{}    ({})", e.label, e.cat));
-                    if resp.clicked() {
-                        chosen = Some(e.clone());
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, (_, e)) in list.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                        if i == st.idx {
+                            ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(60, 92, 150));
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(58, 58, 58));
+                        }
+                        let ir = Rect::from_min_size(rect.min + vec2(3.0, 3.0), vec2(16.0, 16.0));
+                        ui.painter().rect_filled(ir, 3.0, kind_color(&e.kind));
+                        draw_icon(ui.painter(), ir.center(), entry_icon(&e.kind), Color32::WHITE.gamma_multiply(0.9));
+                        ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, &e.label, FontId::proportional(12.5), Color32::from_gray(230));
+                        ui.painter().text(rect.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, e.cat, FontId::proportional(10.0), Color32::from_gray(130));
+                        if resp.clicked() {
+                            chosen = Some(e.clone());
+                        }
+                        if i == st.idx && moved {
+                            resp.scroll_to_me(None);
+                        }
                     }
-                    if i == st.idx {
+                });
+                ui.separator();
+                match list.get(st.idx) {
+                    Some((_, e)) => {
                         ui.small(&e.doc);
                     }
+                    None => {}
                 }
+                ui.small(format!("{} nodes  -  scroll or use arrow keys", list.len()));
             });
         });
         if enter && chosen.is_none() {
@@ -850,7 +670,7 @@ impl App {
                     ui.label(self.bake.out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".into()));
                 });
                 if ui.button("Use demo sphere meshes").clicked() {
-                    let d = std::env::temp_dir().join("matforge_demo");
+                    let d = std::env::temp_dir().join("materialcraft_demo");
                     let _ = std::fs::create_dir_all(&d);
                     let (lo, hi) = (d.join("low.obj"), d.join("high.obj"));
                     if std::fs::write(&lo, bake::uv_sphere_obj(24, 16, 1.0, 0.0)).is_ok() && std::fs::write(&hi, bake::uv_sphere_obj(160, 100, 1.0, 0.04)).is_ok() {

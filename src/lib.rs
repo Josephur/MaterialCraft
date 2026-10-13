@@ -1,4 +1,4 @@
-//! MatForge: procedural node-based material authoring in pure Rust.
+//! MaterialCraft: procedural node-based material authoring in pure Rust.
 //! The core library has no external dependencies; it builds on Windows, Linux and macOS.
 pub mod bake;
 pub mod expr;

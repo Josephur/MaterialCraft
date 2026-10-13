@@ -1,5 +1,5 @@
-use matforge::graph::{Error, Graph, EXAMPLE};
-use matforge::{expr, noise, png};
+use materialcraft::graph::{Error, Graph, EXAMPLE};
+use materialcraft::{expr, noise, png};
 
 #[test]
 fn example_graph_renders() {
@@ -62,8 +62,8 @@ fn pixel_processor_and_save_roundtrip() {
     assert_eq!(g.evaluate(None).unwrap()["a"].px, g2.evaluate(None).unwrap()["a"].px);
 }
 
-use matforge::bake;
-use matforge::graph::Graph as G2;
+use materialcraft::bake;
+use materialcraft::graph::Graph as G2;
 use std::collections::BTreeSet;
 
 #[test]
@@ -146,8 +146,8 @@ fn baker_produces_maps() {
 
 #[test]
 fn renderer_draws_shapes() {
-    use matforge::render3d::{render, Maps, View};
-    use matforge::tex::Tex;
+    use materialcraft::render3d::{render, Maps, View};
+    use materialcraft::tex::Tex;
     let (b, n, r, m, a) = (Tex::solid(8, 8, [0.8, 0.2, 0.2, 1.0]), Tex::solid(8, 8, [0.5, 0.5, 1.0, 1.0]), Tex::solid(8, 8, [0.4; 4]), Tex::solid(8, 8, [0.0, 0.0, 0.0, 1.0]), Tex::solid(8, 8, [1.0; 4]));
     let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None };
     for shape in 0..3 {
@@ -163,4 +163,61 @@ fn bad_inputs_are_errors_not_panics() {
     assert!(png::decode(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]).is_err());
     assert!(G2::parse("subgraph a\nnode 1 color\n").is_err());
     assert!(G2::parse("node 1 subgraph graph=\"missing\"\noutput a 1\n").is_err());
+}
+
+#[test]
+fn every_node_type_evaluates() {
+    use materialcraft::graph::{demo_graph_for, SPECS};
+    let mut count = 0;
+    for sp in SPECS {
+        if let Some(text) = demo_graph_for(sp.kind) {
+            let g = G2::parse(&text).unwrap_or_else(|e| panic!("{}: parse: {e}", sp.kind));
+            let out = g.evaluate(Some(32)).unwrap_or_else(|e| panic!("{}: eval: {e}", sp.kind));
+            let t = &out["o"];
+            assert!(t.px.iter().all(|p| p.iter().all(|c| c.is_finite())), "{} produced NaN", sp.kind);
+            count += 1;
+        }
+    }
+    assert!(count > 60, "only {count} nodes tested");
+}
+
+#[test]
+fn output_nodes_defaults_and_migration() {
+    let g = G2::parse("size 16\nnode 1 output usage=normal\nnode 2 output usage=basecolor identifier=Albedo\n").unwrap();
+    let out = g.evaluate(None).unwrap();
+    assert!((out["normal"].px[0][2] - 1.0).abs() < 1e-4);
+    assert!(out.contains_key("Albedo"));
+    let mut legacy = G2::parse(EXAMPLE).unwrap();
+    let before = legacy.evaluate(Some(32)).unwrap();
+    legacy.migrate_outputs();
+    assert!(legacy.outputs.is_empty());
+    let after = legacy.evaluate(Some(32)).unwrap();
+    assert_eq!(before["basecolor"].px, after["basecolor"].px);
+}
+
+#[test]
+fn flood_fill_and_distance_work() {
+    let t = "size 64\nnode 1 voronoi scale=4 mode=2 seed=1\nnode 2 threshold in=@1 threshold=0.2\nnode 3 flood_fill in=@2\nnode 4 flood_fill_random in=@3 seed=2\nnode 5 distance in=@2 distance=0.1\nnode 6 bevel in=@2 distance=0.05\nnode 7 make_it_tile_photo in=@1\noutput a 4\noutput b 5\noutput c 6\noutput d 7\n";
+    let out = G2::parse(t).unwrap().evaluate(None).unwrap();
+    let vals: std::collections::BTreeSet<u32> = out["a"].px.iter().map(|p| (p[0] * 255.0) as u32).collect();
+    assert!(vals.len() >= 4, "regions should get different grays, got {}", vals.len());
+    assert!(out["b"].px.iter().any(|p| p[0] > 0.9));
+    assert!(out["c"].px.iter().any(|p| p[0] > 0.9));
+    // photo-tile result must be seamless: the wrap seam should look like any other pixel step
+    let d = &out["d"];
+    let (mut seam, mut inner) = (0.0, 0.0);
+    for y in 0..64 {
+        seam += (d.px[y * 64][0] - d.px[y * 64 + 63][0]).abs();
+        for x in 8..55 {
+            inner += (d.px[y * 64 + x][0] - d.px[y * 64 + x + 1][0]).abs() / 47.0;
+        }
+    }
+    assert!(seam <= inner * 1.6 + 0.5, "seam {seam} vs typical {inner}");
+}
+
+#[test]
+fn color_node_gray_mode() {
+    let g = G2::parse("size 8\nnode 1 color r=1 g=0 b=0 gray=1 v=0.25\noutput a 1\n").unwrap();
+    let p = g.evaluate(None).unwrap()["a"].px[0];
+    assert!((p[0] - 0.25).abs() < 1e-5 && (p[1] - 0.25).abs() < 1e-5);
 }
