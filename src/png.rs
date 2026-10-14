@@ -284,7 +284,7 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-/// Decode a non-interlaced 8/16-bit PNG (gray, gray+alpha, RGB, RGBA, 8-bit palette).
+/// Decode a PNG: gray, gray+alpha, RGB, RGBA and palette images (1-16 bit, tRNS palette alpha, Adam7 interlacing).
 pub fn decode(b: &[u8]) -> Result<Tex, String> {
     if b.len() < 8 || &b[..8] != b"\x89PNG\r\n\x1a\n" {
         return Err("not a PNG file".into());
@@ -292,6 +292,7 @@ pub fn decode(b: &[u8]) -> Result<Tex, String> {
     let mut pos = 8;
     let (mut w, mut h, mut depth, mut ctype, mut inter) = (0usize, 0usize, 0u8, 0u8, 0u8);
     let mut plte: Vec<u8> = Vec::new();
+    let mut trns: Vec<u8> = Vec::new();
     let mut idat: Vec<u8> = Vec::new();
     while pos + 8 <= b.len() {
         let len = u32::from_be_bytes([b[pos], b[pos + 1], b[pos + 2], b[pos + 3]]) as usize;
@@ -310,6 +311,7 @@ pub fn decode(b: &[u8]) -> Result<Tex, String> {
                 inter = data[12];
             }
             b"PLTE" => plte = data.to_vec(),
+            b"tRNS" => trns = data.to_vec(),
             b"IDAT" => idat.extend_from_slice(data),
             b"IEND" => break,
             _ => {}
@@ -319,81 +321,89 @@ pub fn decode(b: &[u8]) -> Result<Tex, String> {
     if w == 0 || h == 0 || w > 16384 || h > 16384 {
         return Err("bad image size".into());
     }
-    if inter != 0 {
-        return Err("interlaced PNG is not supported".into());
-    }
-    if depth != 8 && depth != 16 {
-        return Err(format!("{depth}-bit PNG is not supported (use 8 or 16)"));
-    }
-    if ctype == 3 && depth != 8 {
-        return Err("only 8-bit palette PNGs are supported".into());
-    }
-    let ch = match ctype {
-        0 => 1,
-        2 => 3,
-        3 => 1,
-        4 => 2,
-        6 => 4,
-        _ => return Err("unknown PNG colour type".into()),
+    let ch = match (ctype, depth) {
+        (0, 1 | 2 | 4 | 8 | 16) => 1,
+        (2, 8 | 16) => 3,
+        (3, 1 | 2 | 4 | 8) => 1,
+        (4, 8 | 16) => 2,
+        (6, 8 | 16) => 4,
+        _ => return Err(format!("unsupported PNG format (colour type {ctype}, {depth}-bit)")),
     };
-    let bpp = ch * depth as usize / 8;
-    let stride = w * bpp;
     if idat.len() < 6 {
         return Err("missing image data".into());
     }
     let raw = inflate(&idat[2..])?;
-    if raw.len() < h * (stride + 1) {
-        return Err("image data too short".into());
-    }
-    let mut img = vec![0u8; h * stride];
-    for y in 0..h {
-        let f = raw[y * (stride + 1)];
-        let src = &raw[y * (stride + 1) + 1..(y + 1) * (stride + 1)];
-        for i in 0..stride {
-            let a = if i >= bpp { img[y * stride + i - bpp] } else { 0 };
-            let up = if y > 0 { img[(y - 1) * stride + i] } else { 0 };
-            let c = if y > 0 && i >= bpp { img[(y - 1) * stride + i - bpp] } else { 0 };
-            let x = src[i];
-            img[y * stride + i] = match f {
-                0 => x,
-                1 => x.wrapping_add(a),
-                2 => x.wrapping_add(up),
-                3 => x.wrapping_add(((a as u16 + up as u16) / 2) as u8),
-                4 => x.wrapping_add(paeth(a, up, c)),
-                _ => return Err("bad PNG filter".into()),
-            };
-        }
-    }
-    let rd = |y: usize, x: usize, c: usize| -> f32 {
-        if depth == 16 {
-            let o = y * stride + (x * ch + c) * 2;
-            u16::from_be_bytes([img[o], img[o + 1]]) as f32 / 65535.0
-        } else {
-            img[y * stride + x * ch + c] as f32 / 255.0
-        }
+    let bits_pp = ch * depth as usize;
+    let bpp = ((bits_pp + 7) / 8).max(1);
+    let maxv = ((1u32 << depth) - 1) as f32;
+    let passes: Vec<(usize, usize, usize, usize)> = if inter == 0 {
+        vec![(0, 0, 1, 1)]
+    } else {
+        vec![(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)]
     };
-    let mut px = Vec::with_capacity(w * h);
-    for y in 0..h {
-        for x in 0..w {
-            px.push(match ctype {
-                0 => {
-                    let g = rd(y, x, 0);
-                    [g, g, g, 1.0]
-                }
-                4 => {
-                    let g = rd(y, x, 0);
-                    [g, g, g, rd(y, x, 1)]
-                }
-                2 => [rd(y, x, 0), rd(y, x, 1), rd(y, x, 2), 1.0],
-                6 => [rd(y, x, 0), rd(y, x, 1), rd(y, x, 2), rd(y, x, 3)],
-                _ => {
-                    let i = img[y * stride + x] as usize * 3;
-                    if i + 2 >= plte.len() {
-                        return Err("palette index out of range".into());
+    let mut px = vec![[0.0f32; 4]; w * h];
+    let mut off = 0usize;
+    for (x0, y0, dx, dy) in passes {
+        if x0 >= w || y0 >= h {
+            continue;
+        }
+        let pw = (w - x0 + dx - 1) / dx;
+        let ph = (h - y0 + dy - 1) / dy;
+        let stride = (pw * bits_pp + 7) / 8;
+        let need = ph * (stride + 1);
+        if raw.len() < off + need {
+            return Err("image data too short".into());
+        }
+        let mut img = vec![0u8; ph * stride];
+        for y in 0..ph {
+            let f = raw[off + y * (stride + 1)];
+            let src = &raw[off + y * (stride + 1) + 1..off + (y + 1) * (stride + 1)];
+            for i in 0..stride {
+                let a = if i >= bpp { img[y * stride + i - bpp] } else { 0 };
+                let up = if y > 0 { img[(y - 1) * stride + i] } else { 0 };
+                let c = if y > 0 && i >= bpp { img[(y - 1) * stride + i - bpp] } else { 0 };
+                let x = src[i];
+                img[y * stride + i] = match f {
+                    0 => x,
+                    1 => x.wrapping_add(a),
+                    2 => x.wrapping_add(up),
+                    3 => x.wrapping_add(((a as u16 + up as u16) / 2) as u8),
+                    4 => x.wrapping_add(paeth(a, up, c)),
+                    _ => return Err("bad PNG filter".into()),
+                };
+            }
+        }
+        off += need;
+        for py in 0..ph {
+            let row = &img[py * stride..(py + 1) * stride];
+            let sample = |idx: usize| -> u32 {
+                match depth {
+                    16 => u16::from_be_bytes([row[idx * 2], row[idx * 2 + 1]]) as u32,
+                    8 => row[idx] as u32,
+                    d => {
+                        let bit = idx * d as usize;
+                        let shift = 8 - d as usize - (bit % 8);
+                        ((row[bit / 8] >> shift) & ((1u8 << d) - 1)) as u32
                     }
-                    [plte[i] as f32 / 255.0, plte[i + 1] as f32 / 255.0, plte[i + 2] as f32 / 255.0, 1.0]
                 }
-            });
+            };
+            for pxi in 0..pw {
+                let v = |k: usize| sample(pxi * ch + k) as f32 / maxv;
+                let p = match ctype {
+                    0 => [v(0), v(0), v(0), 1.0],
+                    4 => [v(0), v(0), v(0), v(1)],
+                    2 => [v(0), v(1), v(2), 1.0],
+                    6 => [v(0), v(1), v(2), v(3)],
+                    _ => {
+                        let i = sample(pxi) as usize;
+                        if i * 3 + 2 >= plte.len() {
+                            return Err("palette index out of range".into());
+                        }
+                        [plte[i * 3] as f32 / 255.0, plte[i * 3 + 1] as f32 / 255.0, plte[i * 3 + 2] as f32 / 255.0, trns.get(i).map(|a| *a as f32 / 255.0).unwrap_or(1.0)]
+                    }
+                };
+                px[(y0 + py * dy) * w + x0 + pxi * dx] = p;
+            }
         }
     }
     Ok(Tex { w, h, px })

@@ -1,5 +1,6 @@
 use materialcraft::bake::{self, BakeSettings};
 use materialcraft::graph::{Graph, EXAMPLE, SPECS};
+use materialcraft::export::{self, Format};
 use materialcraft::render3d::{self, Maps, View};
 use materialcraft::{ops, png, tex::Tex};
 use std::collections::BTreeMap;
@@ -11,7 +12,7 @@ const HELP: &str = "materialcraft - procedural material authoring (pure Rust)
 
 USAGE:
   materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16]
-                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]
+                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff] [--quality 1-100] [--only basecolor,normal]
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
@@ -112,6 +113,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let mut g = load(gp)?;
             let (mut sizes, mut depth, mut preview, mut r3d, mut variations) = (vec![g.size], 8u8, false, false, 1u32);
             let mut params: BTreeMap<String, f32> = BTreeMap::new();
+            let (mut fmt, mut quality, mut only): (Format, u8, Option<Vec<String>>) = (Format::Png, 92, None);
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
@@ -142,6 +144,18 @@ fn run(args: &[String]) -> Result<(), String> {
                         i += 1;
                         variations = args.get(i).and_then(|s| s.parse().ok()).filter(|n| (1..=1000).contains(n)).ok_or("--variations needs 1..1000")?;
                     }
+                    "--format" => {
+                        i += 1;
+                        fmt = Format::parse(args.get(i).ok_or("--format needs png, jpg or tiff")?).ok_or("--format must be png, jpg or tiff")?;
+                    }
+                    "--quality" => {
+                        i += 1;
+                        quality = args.get(i).and_then(|s| s.parse().ok()).filter(|q| (1..=100).contains(q)).ok_or("--quality needs 1..100")?;
+                    }
+                    "--only" => {
+                        i += 1;
+                        only = Some(args.get(i).ok_or("--only needs a comma-separated list")?.split(',').map(|s| s.trim().to_string()).collect());
+                    }
                     "--preview" => preview = true,
                     "--render3d" => r3d = true,
                     o => return Err(format!("unknown option '{o}'")),
@@ -164,8 +178,11 @@ fn run(args: &[String]) -> Result<(), String> {
                     }
                     fs::create_dir_all(&d).map_err(|e| e.to_string())?;
                     for (name, t) in &out {
-                        let p = d.join(format!("{name}.png"));
-                        write_png(&p, t, depth)?;
+                        if only.as_ref().map(|o| !o.contains(name)).unwrap_or(false) {
+                            continue;
+                        }
+                        let p = d.join(format!("{name}.{}", fmt.ext()));
+                        fs::write(&p, export::encode(fmt, t, if fmt == Format::Jpeg { 8 } else { depth }, quality)).map_err(|e| format!("{}: {e}", p.display()))?;
                         println!("wrote {}", p.display());
                     }
                     let flat = Tex::solid(s, s, [0.5, 0.5, 1.0, 1.0]);
@@ -185,7 +202,7 @@ fn run(args: &[String]) -> Result<(), String> {
                         println!("wrote {}", d.join("preview.png").display());
                     }
                     if r3d {
-                        let maps = Maps { base: b, normal: n, rough: r, metal: m, ao: a, emissive: out.get("emissive") };
+                        let maps = Maps { base: b, normal: n, rough: r, metal: m, ao: a, emissive: out.get("emissive"), height: out.get("height") };
                         for (i, name) in ["sphere", "cube", "plane"].iter().enumerate() {
                             let v = View { shape: i as u32, ..View::default() };
                             let img = render3d::render(&maps, &v, 512, 512);

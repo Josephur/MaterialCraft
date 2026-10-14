@@ -149,7 +149,7 @@ fn renderer_draws_shapes() {
     use materialcraft::render3d::{render, Maps, View};
     use materialcraft::tex::Tex;
     let (b, n, r, m, a) = (Tex::solid(8, 8, [0.8, 0.2, 0.2, 1.0]), Tex::solid(8, 8, [0.5, 0.5, 1.0, 1.0]), Tex::solid(8, 8, [0.4; 4]), Tex::solid(8, 8, [0.0, 0.0, 0.0, 1.0]), Tex::solid(8, 8, [1.0; 4]));
-    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None };
+    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: None };
     for shape in 0..3 {
         let img = render(&maps, &View { shape, ..View::default() }, 64, 64);
         let c = img.px[32 * 64 + 32];
@@ -220,4 +220,53 @@ fn color_node_gray_mode() {
     let g = G2::parse("size 8\nnode 1 color r=1 g=0 b=0 gray=1 v=0.25\noutput a 1\n").unwrap();
     let p = g.evaluate(None).unwrap()["a"].px[0];
     assert!((p[0] - 0.25).abs() < 1e-5 && (p[1] - 0.25).abs() < 1e-5);
+}
+
+#[test]
+fn jpeg_and_tiff_are_well_formed() {
+    use materialcraft::{export, jpeg};
+    assert!(jpeg::tables_complete(), "standard Huffman tables must cover every symbol");
+    let mut px = Vec::new();
+    for y in 0..37 {
+        for x in 0..53 {
+            px.push([x as f32 / 52.0, y as f32 / 36.0, 0.5, 1.0]);
+        }
+    }
+    let t = materialcraft::tex::Tex { w: 53, h: 37, px };
+    let j = export::encode(export::Format::Jpeg, &t, 8, 90);
+    assert_eq!(&j[..2], &[0xff, 0xd8]);
+    assert_eq!(&j[j.len() - 2..], &[0xff, 0xd9]);
+    for depth in [8u8, 16] {
+        let tf = export::encode(export::Format::Tiff, &t, depth, 90);
+        assert_eq!(&tf[..4], &[b'I', b'I', 42, 0]);
+    }
+}
+
+#[test]
+fn png_decoder_handles_palette_alpha_and_low_bit_depth() {
+    // hand-built 2x2 4-bit palette PNG with tRNS, stored (uncompressed) deflate
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[0, 0, 0, 0]); // CRC is not checked by the decoder
+    }
+    let mut p = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&2u32.to_be_bytes());
+    ihdr.extend_from_slice(&2u32.to_be_bytes());
+    ihdr.extend_from_slice(&[4, 3, 0, 0, 0]);
+    chunk(&mut p, b"IHDR", &ihdr);
+    chunk(&mut p, b"PLTE", &[255, 0, 0, 0, 255, 0]);
+    chunk(&mut p, b"tRNS", &[255, 128]);
+    let rows = [0u8, 0x01, 0u8, 0x10]; // filter 0 + two pixels per row (indices 0,1 / 1,0)
+    let mut z = vec![0x78, 0x01, 1, rows.len() as u8, 0, !(rows.len() as u8), 0xff];
+    z.extend_from_slice(&rows);
+    z.extend_from_slice(&[0, 0, 0, 0]);
+    chunk(&mut p, b"IDAT", &z);
+    chunk(&mut p, b"IEND", &[]);
+    let t = png::decode(&p).unwrap();
+    assert_eq!((t.w, t.h), (2, 2));
+    assert!(t.px[0][0] > 0.99 && t.px[0][3] > 0.99); // index 0: opaque red
+    assert!(t.px[1][1] > 0.99 && (t.px[1][3] - 128.0 / 255.0).abs() < 0.01); // index 1: half-transparent green
 }

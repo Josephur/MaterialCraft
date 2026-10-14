@@ -7,10 +7,15 @@ use materialcraft::bake::{self, BakeSettings};
 use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
 use materialcraft::render3d::{self, Maps, View};
 use materialcraft::tex::Tex;
+use materialcraft::export::{self, Format};
 use materialcraft::{ops, png};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+
+mod logo_data {
+    include!(concat!(env!("OUT_DIR"), "/logo.rs"));
+}
 
 // ---------------------------------------------------------------- layout constants
 const CARD: f32 = 92.0;
@@ -65,6 +70,7 @@ struct SearchState {
     text: String,
     idx: usize,
     link_from: Option<u32>,
+    link_to: Option<(u32, String)>,
     fresh: bool,
 }
 
@@ -111,6 +117,9 @@ struct ExportUi {
     prefix: String,
     sizes: [bool; 5],
     depth16: bool,
+    fmt: Format,
+    quality: u8,
+    skip: BTreeSet<String>,
 }
 
 struct BakeUi {
@@ -185,11 +194,18 @@ struct App {
     w_left: f32,
     w_props: f32,
     h_views: f32,
+    view_split: f32,
+    connecting_in: Option<(u32, String)>,
+    copy_out: Option<String>,
+    logo: Option<egui::TextureHandle>,
+    logo_note: String,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> App {
         apply_theme(&cc.egui_ctx);
+        let (logo_tex, logo_note) = logo().clone();
+        let logo_handle = cc.egui_ctx.load_texture("logo", qimg(&logo_tex), egui::TextureOptions::LINEAR);
         let mut g = Graph::default();
         g.meta.insert("identifier".into(), "Graph".into());
         let active: Option<u32> = None;
@@ -232,7 +248,7 @@ impl App {
             job: None,
             lib_search: String::new(),
             text_focus: false,
-            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false], depth16: false },
+            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false], depth16: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
@@ -258,6 +274,11 @@ impl App {
             w_left: 380.0,
             w_props: 330.0,
             h_views: 330.0,
+            view_split: 0.5,
+            connecting_in: None,
+            copy_out: None,
+            logo: Some(logo_handle),
+            logo_note,
             g,
         }
     }
@@ -374,10 +395,16 @@ impl App {
         pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5)
     }
 
-    fn spawn(&mut self, e: &Entry, world: Pos2, link_from: Option<u32>) {
+    fn spawn(&mut self, e: &Entry, world: Pos2, link_from: Option<u32>) -> Option<u32> {
         match e.kind.as_str() {
-            "comment" => return self.add_comment_at(Some(world)),
-            "frame" => return self.add_comment_at(None),
+            "comment" => {
+                self.add_comment_at(Some(world));
+                return None;
+            }
+            "frame" => {
+                self.add_comment_at(None);
+                return None;
+            }
             _ => {}
         }
         let id = self.add_node_at(&e.kind, e.sub.as_deref(), world);
@@ -400,6 +427,7 @@ impl App {
                 }
             }
         }
+        Some(id)
     }
 
     fn new_output(&mut self, usage: &str, from: u32) {
@@ -441,9 +469,18 @@ impl App {
 
     fn copy(&mut self) {
         self.clip = self.sel.iter().filter_map(|i| self.g.nodes.get(i).map(|n| (*i, n.clone()))).collect();
-        if !self.clip.is_empty() {
-            self.status(format!("Copied {} node(s)", self.clip.len()), true);
+        if self.clip.is_empty() {
+            return;
         }
+        let ids: BTreeSet<u32> = self.clip.iter().map(|(i, _)| *i).collect();
+        let mut tmp = Graph::default();
+        for (id, n) in &self.clip {
+            let mut nn = n.clone();
+            nn.ins.retain(|_, s| ids.contains(s));
+            tmp.nodes.insert(*id, nn);
+        }
+        self.copy_out = Some(format!("MaterialCraft nodes\n{}", tmp.to_text()));
+        self.status(format!("Copied {} node(s)", self.clip.len()), true);
     }
 
     fn paste(&mut self, at: Option<Pos2>) {
@@ -676,7 +713,12 @@ impl App {
         if sizes.is_empty() {
             return self.status("Select at least one resolution.", false);
         }
-        let depth = if self.export.depth16 { 16 } else { 8 };
+        let idents: Vec<String> = self.g.output_nodes().into_iter().map(|(_, i, _)| i).collect();
+        if idents.iter().all(|i| self.export.skip.contains(i)) {
+            return self.status("Select at least one output to export.", false);
+        }
+        let fmt = self.export.fmt;
+        let depth = if fmt != Format::Jpeg && (self.export.depth16 || self.g.meta.get("output_format").map(|f| f == "16" && false).unwrap_or(false)) { 16 } else { 8 };
         let mut count = 0;
         for &s in &sizes {
             match self.g.evaluate(Some(s)) {
@@ -686,8 +728,11 @@ impl App {
                         return self.status(format!("Export failed: {e}"), false);
                     }
                     for (name, t) in &out {
-                        let p = d.join(format!("{}{}.png", self.export.prefix, name));
-                        if let Err(e) = std::fs::write(&p, png::encode(t.w, t.h, &t.px, depth)) {
+                        if self.export.skip.contains(name) {
+                            continue;
+                        }
+                        let p = d.join(format!("{}{}.{}", self.export.prefix, name, fmt.ext()));
+                        if let Err(e) = std::fs::write(&p, export::encode(fmt, t, depth, self.export.quality)) {
                             return self.status(format!("Export failed: {e}"), false);
                         }
                         count += 1;
@@ -696,7 +741,7 @@ impl App {
                 Err(e) => return self.status(format!("Export blocked: {e}"), false),
             }
         }
-        self.status(format!("Exported {count} texture(s) to {}", dir.display()), true);
+        self.status(format!("Exported {count} {} file(s) to {}", fmt.name(), dir.display()), true);
     }
 
     fn start_bake(&mut self) {
@@ -807,6 +852,7 @@ impl App {
             metal: self.maps.get("metallic").unwrap_or(&zero),
             ao: self.maps.get("ambient_occlusion").unwrap_or(&one),
             emissive: self.maps.get("emissive"),
+            height: self.maps.get("height"),
         };
         let img = render3d::render(&m, &self.view3d, self.r3d_size, self.r3d_size);
         self.tex3d = Some(ctx.load_texture("view3d", qimg(&img), egui::TextureOptions::LINEAR));

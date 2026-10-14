@@ -472,12 +472,11 @@ impl App {
         egui::TopBottomPanel::top("home_top").exact_height(58.0).frame(egui::Frame::none().fill(Color32::from_rgb(45, 45, 45))).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(22.0);
-                let (r, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
-                let c = r.center();
-                let hex: Vec<Pos2> = (0..6).map(|k| { let a = k as f32 / 6.0 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2; c + vec2(a.cos(), a.sin()) * 14.0 }).collect();
-                ui.painter().add(egui::Shape::convex_polygon(hex, Color32::from_rgb(214, 88, 64), Stroke::new(1.6, Color32::from_rgb(250, 196, 120))));
-                let arc: Vec<Pos2> = (0..=18).map(|k| { let a = (45.0 + k as f32 / 18.0 * 270.0).to_radians(); c + vec2(a.cos(), a.sin()) * 6.2 }).collect();
-                ui.painter().add(egui::Shape::line(arc, Stroke::new(2.4, Color32::WHITE)));
+                if let Some(t) = &self.logo {
+                    let sz = t.size_vec2();
+                    let hgt = 38.0;
+                    ui.add(egui::Image::new((t.id(), vec2(hgt * sz.x / sz.y.max(1.0), hgt))));
+                }
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("MaterialCraft").size(15.0).color(Color32::from_gray(210)));
             });
@@ -973,6 +972,7 @@ impl App {
 
     // ------------------------------------------------------------ 2D view
     fn view2d_panel(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
         let title = match self.active.and_then(|a| self.g.nodes.get(&a).map(|n| (a, n.kind.replace('_', " ")))) {
             Some((id, k)) => format!("{k} #{id} - 2D VIEW"),
             None => "2D VIEW".into(),
@@ -1043,6 +1043,7 @@ impl App {
 
     // ------------------------------------------------------------ 3D view
     fn view3d_panel(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
         let shape = ["Sphere", "Cube", "Plane"][self.view3d.shape.min(2) as usize];
         if panel_header(ui, &format!("{shape} - CPU - 3D VIEW"), true) {
             self.show[2] = false;
@@ -1061,10 +1062,14 @@ impl App {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.tiling, 0.25..=16.0).text("UV tiling").logarithmic(true)).changed();
             });
             ui.menu_button("Materials", |ui| {
-                ui.label("Maps used by the viewer:");
-                if self.maps.is_empty() {
-                    ui.small("(assign outputs in the graph)");
+                if self.maps.contains_key("height") {
+                    ch |= ui.add(egui::Slider::new(&mut self.view3d.height_scale, 0.0..=0.3).text("Height depth")).changed();
+                    ch |= ui.add(egui::Slider::new(&mut self.view3d.bump, 0.0..=12.0).text("Bump strength")).changed();
+                } else {
+                    ui.colored_label(Color32::from_rgb(255, 170, 120), "No Height output - add an Output node with usage Height.");
                 }
+                ui.separator();
+                ui.small("Maps used by the viewer:");
                 for k in self.maps.keys() {
                     ui.label(format!("  {k}"));
                 }
@@ -1077,14 +1082,15 @@ impl App {
             ui.menu_button("Camera", |ui| {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.dist, 1.6..=9.0).text("Distance")).changed();
                 if ui.button("Reset camera").clicked() {
-                    let (s, t, e) = (self.view3d.shape, self.view3d.tiling, self.view3d.exposure);
-                    self.view3d = View { shape: s, tiling: t, exposure: e, ..View::default() };
+                    let old = self.view3d.clone();
+                    self.view3d = View { shape: old.shape, tiling: old.tiling, exposure: old.exposure, ambient: old.ambient, height_scale: old.height_scale, bump: old.bump, ..View::default() };
                     ch = true;
                     ui.close_menu();
                 }
             });
             ui.menu_button("Environment", |ui| {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.exposure, 0.1..=4.0).text("Exposure")).changed();
+                ch |= ui.add(egui::Slider::new(&mut self.view3d.ambient, 0.0..=3.0).text("Ambient light")).changed();
             });
             ui.menu_button("Display", |ui| {
                 ui.label("Tone mapping: filmic (Reinhard)");
@@ -1112,7 +1118,14 @@ impl App {
         let img_rect = Rect::from_center_size(rect.center(), vec2(side, side));
         if resp.dragged() {
             let d = resp.drag_delta();
-            if ui.input(|i| i.modifiers.shift) {
+            let (alt, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
+            if alt || resp.dragged_by(egui::PointerButton::Middle) {
+                let k = 0.004 * self.view3d.dist / 3.4;
+                self.view3d.pan_x -= d.x * k;
+                self.view3d.pan_y += d.y * k;
+                self.view3d.pan_x = self.view3d.pan_x.clamp(-3.0, 3.0);
+                self.view3d.pan_y = self.view3d.pan_y.clamp(-3.0, 3.0);
+            } else if shift {
                 self.view3d.light_yaw -= d.x * 0.01;
                 self.view3d.light_pitch = (self.view3d.light_pitch + d.y * 0.01).clamp(-1.4, 1.4);
             } else {
@@ -1131,7 +1144,7 @@ impl App {
         if let Some(t) = &self.tex3d {
             ui.painter().image(t.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
-        ui.painter().text(rect.left_bottom() + vec2(6.0, -5.0), Align2::LEFT_BOTTOM, "drag: orbit   shift+drag: light   wheel: zoom", FontId::proportional(10.0), Color32::from_gray(110));
+        ui.painter().text(rect.left_bottom() + vec2(6.0, -5.0), Align2::LEFT_BOTTOM, "drag: orbit   Alt+drag / middle: move   Shift+drag: light   wheel: zoom", FontId::proportional(10.0), Color32::from_gray(110));
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.small("sRGB (default)");
@@ -1327,6 +1340,8 @@ impl App {
                         self.show_about = true;
                         ui.close_menu();
                     }
+                    ui.separator();
+                    ui.small(self.logo_note.as_str());
                 });
             });
         });
@@ -1361,7 +1376,7 @@ impl App {
             });
         });
 
-        let (mut d_props, mut d_left, mut d_views) = (0.0f32, 0.0f32, 0.0f32);
+        let (mut d_props, mut d_left, mut d_views, mut d_split) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         if self.show[4] {
             egui::SidePanel::right("props").resizable(false).exact_width(self.w_props).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
                 let prect = ui.max_rect();
@@ -1414,16 +1429,32 @@ impl App {
             egui::TopBottomPanel::bottom("views").resizable(false).exact_height(self.h_views).frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
                 let vrect = ui.max_rect();
                 let both = self.show[2] && self.show[3];
-                ui.columns(if both { 2 } else { 1 }, |cols| {
-                    let mut i = 0;
-                    if self.show[2] {
-                        self.view3d_panel(&mut cols[i]);
-                        i += 1;
-                    }
-                    if self.show[3] {
-                        self.view2d_panel(&mut cols[i]);
-                    }
-                });
+                let (total, hh) = (ui.available_width(), ui.available_height());
+                if both {
+                    let w1 = (total * self.view_split).clamp(180.0, (total - 180.0).max(180.0));
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(vec2(w1 - 3.0, hh), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.set_min_size(vec2(w1 - 3.0, hh));
+                            self.view3d_panel(ui);
+                        });
+                        let (hr, hresp) = ui.allocate_exact_size(vec2(6.0, hh), Sense::drag());
+                        ui.painter().rect_filled(hr, 0.0, Color32::from_rgb(24, 24, 24));
+                        if hresp.hovered() || hresp.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            ui.painter().rect_filled(hr, 0.0, Color32::from_rgba_unmultiplied(235, 130, 20, 120));
+                        }
+                        d_split = hresp.drag_delta().x / total.max(1.0);
+                        ui.allocate_ui_with_layout(vec2((total - w1 - 3.0).max(60.0), hh), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.set_min_size(vec2((total - w1 - 3.0).max(60.0), hh));
+                            self.view2d_panel(ui);
+                        });
+                    });
+                } else if self.show[2] {
+                    self.view3d_panel(ui);
+                } else if self.show[3] {
+                    self.view2d_panel(ui);
+                }
                 d_views = size_handle(ui, "h_views", vrect, 2);
             });
         }
@@ -1434,6 +1465,7 @@ impl App {
             self.w_props = (self.w_props + d_props).clamp(240.0, (sw * 0.45).max(260.0));
             self.w_left = (self.w_left + d_left).clamp(240.0, (sw * 0.5).max(260.0));
             self.h_views = (self.h_views + d_views).clamp(140.0, (sh * 0.7).max(160.0));
+            self.view_split = (self.view_split + d_split).clamp(0.2, 0.8);
         }
         egui::CentralPanel::default().frame(egui::Frame::none().fill(panel_fill)).show(ctx, |ui| {
             panel_header(ui, &format!("{} - GRAPH", self.gname()), false);
@@ -1596,7 +1628,8 @@ impl eframe::App for App {
                 let undo = i.consume_key(Modifiers::COMMAND, Key::Z);
                 let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(Modifiers::COMMAND, Key::C);
                 let cut = i.events.iter().any(|e| matches!(e, egui::Event::Cut)) || i.consume_key(Modifiers::COMMAND, Key::X);
-                let paste = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))) || i.consume_key(Modifiers::COMMAND, Key::V);
+                let paste = i.consume_key(Modifiers::COMMAND, Key::V);
+                let pasted: Option<String> = i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None });
                 let dup = i.consume_key(Modifiers::COMMAND, Key::D);
                 let all = i.consume_key(Modifiers::COMMAND, Key::A);
                 let save = i.consume_key(Modifiers::COMMAND, Key::S);
@@ -1605,9 +1638,17 @@ impl eframe::App for App {
                 let del = i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace);
                 let frame = i.consume_key(Modifiers::NONE, Key::F);
                 let com = i.consume_key(Modifiers::NONE, Key::C);
-                (redo, undo, copy, cut, paste, dup, all, save, open, del, frame, com, newg)
+                (redo, undo, copy, cut, paste, dup, all, save, open, del, frame, com, newg, pasted)
             });
             let w = pointer.map(|p| self.screen_to_world(p));
+            if let Some(text) = &k.13 {
+                if let Some(body) = text.strip_prefix("MaterialCraft nodes\n") {
+                    if let Ok(g) = Graph::parse_unchecked(body) {
+                        self.clip = g.nodes.into_iter().collect();
+                        self.acts.push(Act::Paste(w));
+                    }
+                }
+            }
             for (on, a) in [
                 (k.0, Act::Redo),
                 (k.1, Act::Undo),
@@ -1631,6 +1672,9 @@ impl eframe::App for App {
 
         self.editor_ui(ctx);
         self.new_dialog(ctx);
+        if let Some(t) = self.copy_out.take() {
+            ctx.copy_text(t);
+        }
 
         let todo = std::mem::take(&mut self.acts);
         for a in todo {
@@ -1647,9 +1691,113 @@ impl eframe::App for App {
     }
 }
 
+static LOGO: std::sync::OnceLock<(Tex, String)> = std::sync::OnceLock::new();
+
+fn logo() -> &'static (Tex, String) {
+    LOGO.get_or_init(load_logo)
+}
+
+/// Embedded logo, else assets/MaterialCraftLogo.png next to the exe / working dir, else a built-in purple squid.
+fn load_logo() -> (Tex, String) {
+    let mut bytes: Option<(Vec<u8>, String)> = logo_data::LOGO_PNG.map(|b| (b.to_vec(), "embedded".to_string()));
+    if bytes.is_none() {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(d) = exe.parent() {
+                dirs.push(d.join("assets"));
+                dirs.push(d.to_path_buf());
+            }
+        }
+        if let Ok(c) = std::env::current_dir() {
+            dirs.push(c.join("assets"));
+            dirs.push(c);
+        }
+        'outer: for d in dirs {
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().to_lowercase();
+                    if n.starts_with("materialcraftlogo") && n.ends_with(".png") {
+                        if let Ok(b) = std::fs::read(e.path()) {
+                            bytes = Some((b, e.path().display().to_string()));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match bytes {
+        Some((b, src)) => match png::decode(&b) {
+            Ok(t) => (t, format!("Logo loaded from {src}")),
+            Err(e) => (fallback_logo(128), format!("Logo file found but could not be read ({e}); using the built-in logo")),
+        },
+        None => (fallback_logo(128), "No MaterialCraftLogo.png found; using the built-in logo".into()),
+    }
+}
+
+/// Built-in purple squid logo (used when no logo file is present).
+fn fallback_logo(n: usize) -> Tex {
+    let ell = |x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32| ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) <= 1.0;
+    Tex::from_fn(n, n, |x, y| {
+        // rounded square background
+        let (qx, qy) = ((x - 0.5).abs() - 0.5 + 0.2, (y - 0.5).abs() - 0.5 + 0.2);
+        let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - 0.2;
+        if d > 0.0 {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        let t = 0.5 + 0.5 * (y - 0.5);
+        let mut c = [0.32 - 0.1 * t, 0.15 - 0.05 * t, 0.62 - 0.12 * t, 1.0];
+        let lilac = [0.92, 0.88, 1.0, 1.0];
+        let fin = [0.78, 0.7, 0.96, 1.0];
+        if ell(x, y, 0.37, 0.24, 0.07, 0.05) || ell(x, y, 0.63, 0.24, 0.07, 0.05) {
+            c = fin;
+        }
+        let tri = y > 0.12 && y < 0.5 && (x - 0.5).abs() < (y - 0.12) * 0.42;
+        if ell(x, y, 0.5, 0.4, 0.16, 0.24) || tri || ell(x, y, 0.5, 0.58, 0.16, 0.09) {
+            c = lilac;
+        }
+        for i in 0..5 {
+            let x0 = 0.36 + 0.07 * i as f32;
+            let wx = x0 + 0.012 * (y * 38.0 + i as f32).sin();
+            if y > 0.62 && y < 0.84 && (x - wx).abs() < 0.017 || ell(x, y, wx, 0.84, 0.021, 0.021) {
+                c = lilac;
+            }
+        }
+        for ex in [0.435, 0.565] {
+            if ell(x, y, ex, 0.55, 0.036, 0.036) {
+                c = [0.18, 0.08, 0.36, 1.0];
+            }
+            if ell(x, y, ex - 0.01, 0.54, 0.011, 0.011) {
+                c = [1.0, 1.0, 1.0, 1.0];
+            }
+        }
+        c
+    })
+}
+
+fn window_icon() -> egui::IconData {
+    let n = 128usize;
+    let (t, _) = logo();
+    let scale = (n as f32 / t.w as f32).min(n as f32 / t.h as f32);
+    let (sw, sh) = (t.w as f32 * scale, t.h as f32 * scale);
+    let mut rgba = Vec::with_capacity(n * n * 4);
+    for y in 0..n {
+        for x in 0..n {
+            let (px, py) = (x as f32 + 0.5 - (n as f32 - sw) * 0.5, y as f32 + 0.5 - (n as f32 - sh) * 0.5);
+            if px < 0.0 || py < 0.0 || px >= sw || py >= sh {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+            } else {
+                let p = t.sample(px / sw, py / sh);
+                rgba.extend_from_slice(&[(p[0].clamp(0.0, 1.0) * 255.0) as u8, (p[1].clamp(0.0, 1.0) * 255.0) as u8, (p[2].clamp(0.0, 1.0) * 255.0) as u8, (p[3].clamp(0.0, 1.0) * 255.0) as u8]);
+            }
+        }
+    }
+    egui::IconData { rgba, width: n as u32, height: n as u32 }
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MaterialCraft"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MaterialCraft").with_icon(window_icon()),
         ..Default::default()
     };
     eframe::run_native("MaterialCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))

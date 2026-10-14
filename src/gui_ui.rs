@@ -18,7 +18,14 @@ impl App {
 
     fn open_search(&mut self, screen: Pos2, link_from: Option<u32>) {
         let w = self.screen_to_world(screen);
-        self.search = Some(SearchState { screen, world: pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5), text: String::new(), idx: 0, link_from, fresh: true });
+        self.search = Some(SearchState { screen, world: pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5), text: String::new(), idx: 0, link_from, link_to: None, fresh: true });
+    }
+
+    fn open_search_to(&mut self, screen: Pos2, dst: u32, slot: String) {
+        self.open_search(screen, None);
+        if let Some(st) = self.search.as_mut() {
+            st.link_to = Some((dst, slot));
+        }
     }
 
     // ------------------------------------------------------------ graph canvas
@@ -48,10 +55,10 @@ impl App {
             }
         }
         let pan_mode = mods.alt || ui.input(|i| i.key_down(Key::Space));
-        if resp.dragged_by(PointerButton::Middle) || (resp.dragged_by(PointerButton::Primary) && pan_mode && self.connecting.is_none()) {
+        if resp.dragged_by(PointerButton::Middle) || (resp.dragged_by(PointerButton::Primary) && pan_mode && (self.connecting.is_none() && self.connecting_in.is_none())) {
             self.pan += resp.drag_delta();
         }
-        if resp.drag_started_by(PointerButton::Primary) && !pan_mode && self.connecting.is_none() {
+        if resp.drag_started_by(PointerButton::Primary) && !pan_mode && (self.connecting.is_none() && self.connecting_in.is_none()) {
             self.rubber = pointer;
             if !mods.shift {
                 self.sel.clear();
@@ -175,6 +182,7 @@ impl App {
         let in_sub = !self.parents.is_empty();
         let out_names: Vec<&'static str> = if in_sub { vec!["out"] } else { OUTPUT_NAMES.to_vec() };
         let mut ports: Vec<(u32, &'static str, Pos2)> = Vec::new();
+        let mut out_ports: Vec<(u32, Pos2)> = Vec::new();
         let mut cards: Vec<Rect> = Vec::new();
 
         for s in &snaps {
@@ -253,7 +261,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            if nr.dragged() && self.connecting.is_none() {
+            if nr.dragged() && (self.connecting.is_none() && self.connecting_in.is_none()) {
                 let d = nr.drag_delta() / z;
                 for sid in self.sel.clone() {
                     if let Some(n) = self.g.nodes.get_mut(&sid) {
@@ -329,6 +337,7 @@ impl App {
             // ports
             if s.kind != "output" {
                 let op = out_port(s.pos, s.dot);
+                out_ports.push((id, op));
                 painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0, Color32::BLACK));
                 let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id)), Sense::drag());
                 if pr.drag_started() {
@@ -350,6 +359,8 @@ impl App {
                         }
                         self.connecting = Some(old);
                         self.dirty = true;
+                    } else {
+                        self.connecting_in = Some((id, slot.to_string()));
                     }
                 }
                 if ir.hovered() {
@@ -374,6 +385,26 @@ impl App {
                     }
                 }
                 self.connecting = None;
+            }
+        }
+
+        // reverse connection: dragged out of an input port towards an output port
+        if let Some((dst, slot)) = self.connecting_in.clone() {
+            let target = ports.iter().find(|(i, s, _)| *i == dst && *s == slot.as_str()).map(|p| p.2);
+            if let (Some(pt), Some(ip)) = (pointer, target) {
+                link(&painter, pt, ip, Color32::from_rgb(255, 190, 70), 2.0);
+            }
+            if released {
+                if let Some(pt) = pointer {
+                    let near = out_ports.iter().filter(|(_, p)| (*p - pt).length() < 14.0 * z).min_by(|a, b| (a.1 - pt).length().partial_cmp(&(b.1 - pt).length()).unwrap_or(std::cmp::Ordering::Equal));
+                    if let Some((src, _)) = near {
+                        let src = *src;
+                        self.try_connect(src, dst, &slot);
+                    } else if rect.contains(pt) && !cards.iter().any(|c| c.contains(pt)) {
+                        self.open_search_to(pt, dst, slot.clone());
+                    }
+                }
+                self.connecting_in = None;
             }
         }
 
@@ -607,7 +638,12 @@ impl App {
         st.fresh = false;
         if let Some(e) = chosen {
             let (w, l) = (st.world, st.link_from);
-            self.spawn(&e, w, l);
+            let new_id = self.spawn(&e, w, l);
+            if let (Some(id), Some((dst, slot))) = (new_id, st.link_to.clone()) {
+                if e.kind != "output" {
+                    self.try_connect(id, dst, &slot);
+                }
+            }
             close = true;
         }
         if !close {
@@ -618,6 +654,10 @@ impl App {
     fn windows(&mut self, ctx: &egui::Context) {
         if self.export.open {
             let mut open = true;
+            let outputs: Vec<(String, String)> = {
+                let root = self.parents.first().map(|p| &p.0).unwrap_or(&self.g);
+                root.output_nodes().into_iter().map(|(u, i, _)| (usage_label(&u), i)).collect()
+            };
             egui::Window::new("Export textures").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Choose folder...").clicked() {
@@ -631,14 +671,56 @@ impl App {
                     ui.label("File prefix");
                     ui.text_edit_singleline(&mut self.export.prefix);
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Format");
+                    egui::ComboBox::from_id_salt("exp_fmt").selected_text(self.export.fmt.name()).show_ui(ui, |ui| {
+                        for f in [Format::Png, Format::Jpeg, Format::Tiff] {
+                            ui.selectable_value(&mut self.export.fmt, f, f.name());
+                        }
+                    });
+                    if self.export.fmt == Format::Jpeg {
+                        ui.add(egui::Slider::new(&mut self.export.quality, 1..=100).text("quality"));
+                    } else {
+                        ui.checkbox(&mut self.export.depth16, "16-bit");
+                    }
+                });
                 ui.label("Resolutions (one sub-folder each when several are selected):");
                 ui.horizontal(|ui| {
                     for (i, s) in [256, 512, 1024, 2048, 4096].iter().enumerate() {
                         ui.checkbox(&mut self.export.sizes[i], s.to_string());
                     }
                 });
-                ui.checkbox(&mut self.export.depth16, "16-bit PNG");
-                ui.small(format!("Outputs: {}", self.g.outputs.iter().map(|o| o.0.as_str()).collect::<Vec<_>>().join(", ")));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.strong("Outputs to export");
+                    if ui.small_button("All").clicked() {
+                        self.export.skip.clear();
+                    }
+                    if ui.small_button("None").clicked() {
+                        self.export.skip = outputs.iter().map(|o| o.1.clone()).collect();
+                    }
+                });
+                if outputs.is_empty() {
+                    ui.colored_label(Color32::from_rgb(255, 150, 120), "This graph has no Output nodes yet.");
+                }
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    for (usage, ident) in &outputs {
+                        let mut on = !self.export.skip.contains(ident);
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut on, ident.as_str()).changed() {
+                                if on {
+                                    self.export.skip.remove(ident);
+                                } else {
+                                    self.export.skip.insert(ident.clone());
+                                }
+                            }
+                            if usage != ident {
+                                ui.small(format!("({usage})"));
+                            }
+                        });
+                    }
+                });
+                ui.add_space(4.0);
                 if ui.button("Export").clicked() {
                     self.run_export();
                 }
