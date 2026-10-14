@@ -1,5 +1,9 @@
 # MaterialCraft
 
+<img width="1495" height="949" alt="image" src="https://github.com/user-attachments/assets/dc27324c-f63c-4569-beb7-be4766bd839c" />
+
+<img width="2556" height="1388" alt="image" src="https://github.com/user-attachments/assets/75dba5c4-50ac-4f79-8395-8d3c20697d63" />
+
 Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
 
 ## Build & run
