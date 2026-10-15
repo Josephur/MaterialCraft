@@ -1,3 +1,7 @@
+
+# Donate For Claude Max Subscription to support development (all funds go to claude max subscription)
+https://www.paypal.com/donate/?hosted_button_id=DYD94FKUZ9H7G
+
 # MaterialCraft
 
 <img width="1495" height="949" alt="image" src="https://github.com/user-attachments/assets/dc27324c-f63c-4569-beb7-be4766bd839c" />
