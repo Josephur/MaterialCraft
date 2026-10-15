@@ -1028,3 +1028,39 @@ pub fn make_tile_patch(t: &Tex, patches: f32, softness: f32, seed: u32) -> Tex {
         o
     })
 }
+
+/// Seamless stripe direction. A stripe pattern `frac(a*u + b*v)` repeats exactly across the unit tile
+/// only when (a, b) are integers, so an arbitrary angle cannot be exact. This returns the integer wave
+/// vector whose direction is closest to `angle_turns` while keeping the stripe count within about
+/// -40%/+60% of `count` (angle error is weighted most; count error is penalised softly).
+pub fn tileable_wave(count: f32, angle_turns: f32) -> (i32, i32) {
+    let c = (count as f64).clamp(1.0, 8192.0);
+    let th = (angle_turns as f64) * std::f64::consts::TAU;
+    let (st, ct) = th.sin_cos();
+    let (lo, hi) = ((c * 0.6).max(1.0), (c * 1.6).max(1.5));
+    let horizontal = ct.abs() >= st.abs();
+    let prim = if horizontal { ct.abs() } else { st.abs() };
+    let m = (hi * prim).ceil() as i64 + 2;
+    let mut best = (f64::MAX, (c.round() as i32).max(1), 0i32);
+    for p in -m..=m {
+        let sec = if horizontal { p as f64 * st / ct } else { p as f64 * ct / st };
+        let base = sec.floor() as i64;
+        for s in (base - 1)..=(base + 2) {
+            let (a, b) = if horizontal { (p, s) } else { (s, p) };
+            if a == 0 && b == 0 {
+                continue;
+            }
+            let len = ((a * a + b * b) as f64).sqrt();
+            if len < lo || len > hi {
+                continue;
+            }
+            let d = (b as f64).atan2(a as f64) - th;
+            let dth = d.sin().atan2(d.cos()).abs();
+            let score = dth + 0.5 * (len / c).ln().abs();
+            if score < best.0 {
+                best = (score, a as i32, b as i32);
+            }
+        }
+    }
+    (best.1, best.2)
+}

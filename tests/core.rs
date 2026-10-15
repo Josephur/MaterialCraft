@@ -270,3 +270,143 @@ fn png_decoder_handles_palette_alpha_and_low_bit_depth() {
     assert!(t.px[0][0] > 0.99 && t.px[0][3] > 0.99); // index 0: opaque red
     assert!(t.px[1][1] > 0.99 && (t.px[1][3] - 128.0 / 255.0).abs() < 0.01); // index 1: half-transparent green
 }
+
+// ---------------------------------------------------------------- seamless angles + 3D mesh / displacement
+/// mean |difference| across the wrap seam divided by the mean |difference| of ordinary neighbouring pixels
+fn seam_ratio(t: &materialcraft::tex::Tex) -> f32 {
+    let w = t.w;
+    let (mut seam, mut inner) = (0.0f32, 0.0f32);
+    for y in 0..t.h {
+        seam += (t.px[y * w][0] - t.px[y * w + w - 1][0]).abs();
+        for x in 0..w - 1 {
+            inner += (t.px[y * w + x][0] - t.px[y * w + x + 1][0]).abs();
+        }
+    }
+    for x in 0..w {
+        seam += (t.px[x][0] - t.px[(t.h - 1) * w + x][0]).abs();
+        for y in 0..t.h - 1 {
+            inner += (t.px[y * w + x][0] - t.px[(y + 1) * w + x][0]).abs();
+        }
+    }
+    (seam / (2 * w) as f32) / (inner / (2 * w * (w - 1)) as f32)
+}
+
+#[test]
+fn stripes_tile_at_arbitrary_angles() {
+    for (count, ang) in [(8.0, 0.0), (8.0, 0.137), (5.0, 0.21), (12.0, 0.3333), (3.0, 0.77), (20.0, 0.05), (8.0, 0.9)] {
+        let g = G2::parse(&format!("size 256\nnode 1 stripes count={count} angle={ang} softness=0.2\noutput a 1\n")).unwrap();
+        let r = seam_ratio(&g.evaluate(None).unwrap()["a"]);
+        assert!(r < 1.6, "stripes count {count} angle {ang}: seam/inner = {r}");
+        // the snapped direction must stay close to what was asked for
+        let (a, b) = materialcraft::ops::tileable_wave(count, ang);
+        let want = ang as f64 * std::f64::consts::TAU;
+        let d = ((b as f64).atan2(a as f64) - want).sin().atan2(((b as f64).atan2(a as f64) - want).cos()).abs();
+        let len = ((a * a + b * b) as f64).sqrt();
+        assert!(d < 0.35 && len > count as f64 * 0.55 && len < count as f64 * 1.65, "snap ({a},{b}) too far for count {count} angle {ang}");
+    }
+    // already-tileable settings are unchanged
+    assert_eq!(materialcraft::ops::tileable_wave(8.0, 0.0), (8, 0));
+    assert_eq!(materialcraft::ops::tileable_wave(6.0, 0.25).0, 0);
+}
+
+#[test]
+fn stripes_exact_mode_keeps_requested_angle() {
+    let g = G2::parse("size 64\nnode 1 stripes count=8 angle=0.137 tile=0\noutput a 1\n").unwrap();
+    assert!(g.evaluate(None).is_ok());
+}
+
+#[test]
+fn directional_noise_tiles_at_arbitrary_angles() {
+    for ang in [0.0, 0.05, 0.137, 0.3333, 0.62, 0.9] {
+        for stretch in [1.0, 8.0, 24.0] {
+            let g = G2::parse(&format!("size 128\nnode 1 directional_noise scale=6 stretch={stretch} angle={ang} seed=4\noutput a 1\n")).unwrap();
+            let t = &g.evaluate(None).unwrap()["a"];
+            assert!(t.px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])));
+            let n = t.px.len() as f32;
+            let m = t.px.iter().map(|p| p[0]).sum::<f32>() / n;
+            let sd = (t.px.iter().map(|p| (p[0] - m).powi(2)).sum::<f32>() / n).sqrt();
+            assert!(sd > 0.07 && sd < 0.3, "angle {ang} stretch {stretch}: sd {sd}");
+            // axis-aligned streaks vary along one axis only, so the ratio is a single-row sample there; skip it
+            if (ang * 4.0f32).fract().abs() > 0.02 {
+                let r = seam_ratio(t);
+                assert!(r < 1.5, "directional noise angle {ang} stretch {stretch}: seam/inner = {r}");
+            }
+        }
+    }
+}
+
+#[test]
+fn gradient_grid_matches_perlin() {
+    let gg = noise::GradGrid::new(5, 7, 3);
+    for i in 0..50 {
+        let (u, v) = (i as f32 * 0.0731 - 0.4, i as f32 * 0.0419 + 0.1);
+        assert!((gg.sample(u, v) - noise::perlin(u, v, 5, 7, 3)).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn meshes_are_outward_closed_and_finite() {
+    use materialcraft::render3d::build_mesh;
+    use materialcraft::tex::Tex;
+    let hm = Tex::gray_fn(64, 64, |u, v| ((u * 9.0).sin() * (v * 7.0).cos()) * 0.5 + 0.5);
+    for shape in 0..3 {
+        for h in [None, Some(&hm)] {
+            let m = build_mesh(shape, 24, 1.0, h, 0.1, 0.0);
+            assert!(m.pos.iter().chain(&m.nrm).chain(&m.tan).all(|p| p.iter().all(|c| c.is_finite())));
+            assert!(m.tris.iter().all(|t| t.iter().all(|&i| (i as usize) < m.pos.len())));
+            if h.is_none() {
+                // flat/undisplaced: the winding must agree with the analytic normal for every triangle
+                for t in &m.tris {
+                    let (a, b, c) = (m.pos[t[0] as usize], m.pos[t[1] as usize], m.pos[t[2] as usize]);
+                    let f = materialcraft::v3::cross(materialcraft::v3::sub(b, a), materialcraft::v3::sub(c, a));
+                    let (n0, n1, n2) = (m.nrm[t[0] as usize], m.nrm[t[1] as usize], m.nrm[t[2] as usize]);
+                    let n = [n0[0] + n1[0] + n2[0], n0[1] + n1[1] + n2[1], n0[2] + n1[2] + n2[2]];
+                    // pole triangles are degenerate (zero area), so allow float noise
+                    assert!(materialcraft::v3::dot(f, n) >= -1e-6, "shape {shape} has an inward-wound triangle");
+                }
+            }
+        }
+    }
+    // outward displacement: a white height map pushes every plane vertex towards +z (the surface normal)
+    let white = Tex::solid(4, 4, [1.0; 4]);
+    let p = build_mesh(2, 16, 1.0, Some(&white), 0.2, 0.0);
+    assert!(p.pos.iter().all(|v| (v[2] - 0.2).abs() < 1e-5), "relief must rise out of the surface");
+    // centred level: mid grey stays put
+    let grey = Tex::solid(4, 4, [0.5; 4]);
+    let p = build_mesh(2, 16, 1.0, Some(&grey), 0.2, 0.5);
+    assert!(p.pos.iter().all(|v| v[2].abs() < 1e-5));
+    // sphere seam and poles must stay welded after displacement
+    let s = build_mesh(0, 24, 1.0, Some(&hm), 0.15, 0.0);
+    let stride = 24 * 2 + 1;
+    for j in 0..=24usize {
+        let (a, b) = (s.pos[j * stride], s.pos[j * stride + 48]);
+        assert!(materialcraft::v3::len(materialcraft::v3::sub(a, b)) < 1e-4, "sphere seam opened at row {j}");
+    }
+    let top = s.pos[0];
+    assert!(s.pos[..stride].iter().all(|v| materialcraft::v3::len(materialcraft::v3::sub(*v, top)) < 1e-4), "north pole tore");
+}
+
+#[test]
+fn displacement_renders_every_shape_and_camera_without_panics() {
+    use materialcraft::render3d::{render, Maps, View, RELIEF_BUMP, RELIEF_DISPLACE, RELIEF_NONE, RELIEF_PARALLAX};
+    use materialcraft::tex::Tex;
+    let hm = Tex::gray_fn(32, 32, |u, v| (u * 6.0).sin() * 0.5 + 0.5 + v * 0.0);
+    let (b, n, r, m, a) = (Tex::solid(4, 4, [0.8, 0.2, 0.2, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.4; 4]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
+    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: Some(&hm) };
+    for shape in 0..3 {
+        for relief in [RELIEF_NONE, RELIEF_BUMP, RELIEF_PARALLAX, RELIEF_DISPLACE] {
+            // close cameras make triangles cross the near plane; behind/side views exercise back faces
+            for (yaw, pitch, dist) in [(0.5, 0.3, 3.4), (3.4, -0.4, 1.6), (1.2, 1.2, 1.6), (-2.0, 0.0, 9.0)] {
+                let v = View { shape, relief, yaw, pitch, dist, tess: 32, wireframe: true, height_scale: 0.3, ..View::default() };
+                let img = render(&maps, &v, 48, 40);
+                assert_eq!((img.w, img.h), (48, 40));
+                assert!(img.px.iter().all(|p| p.iter().all(|c| c.is_finite() && *c >= 0.0 && *c <= 1.0001)));
+            }
+        }
+    }
+    // the plane must be solid: its centre pixel is not background
+    let v = View { shape: 2, yaw: 0.0, pitch: 0.0, dist: 3.0, tess: 32, ..View::default() };
+    let img = render(&maps, &v, 64, 64);
+    let c = img.px[32 * 64 + 32];
+    assert!(c[0] > c[2], "plane centre should be reddish, got {c:?}");
+}

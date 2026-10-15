@@ -1,5 +1,6 @@
-//! Software PBR renderer for the 3D viewer (sphere, cube, plane). GGX specular, hemisphere
-//! environment lighting, tangent-space normal mapping, height-map parallax relief and bump.
+//! Software PBR renderer for the 3D viewer. Every shape (sphere, cube, plane) is a real tessellated triangle mesh that is
+//! rasterised with a depth buffer, so height maps can displace actual geometry (true displacement), not just fake it.
+//! GGX specular, hemisphere environment lighting, tangent-space normal mapping, bump, outward parallax relief, wireframe.
 use crate::tex::{lum, Tex};
 use crate::v3::*;
 use std::f32::consts::{PI, TAU};
@@ -14,6 +15,12 @@ pub struct Maps<'a> {
     pub height: Option<&'a Tex>,
 }
 
+/// How the height map is shown.
+pub const RELIEF_NONE: u32 = 0; // normal map only
+pub const RELIEF_BUMP: u32 = 1; // normals derived from the height map
+pub const RELIEF_PARALLAX: u32 = 2; // per-pixel relief that rises OUT of the surface
+pub const RELIEF_DISPLACE: u32 = 3; // real geometry displacement along the surface normal
+
 #[derive(Clone, Debug)]
 pub struct View {
     pub yaw: f32,
@@ -26,30 +33,393 @@ pub struct View {
     pub light_intensity: f32,
     pub exposure: f32,
     pub ambient: f32,
-    pub shape: u32, // 0 sphere, 1 cube, 2 plane
+    pub shape: u32, // 0 sphere, 1 cube, 2 plane (all tessellated meshes)
     pub tiling: f32,
-    /// Depth of the height map in object units (parallax relief). 0 = off.
+    /// One of the RELIEF_* modes.
+    pub relief: u32,
+    /// Height amount in object units: displacement distance or parallax depth. 0 = off.
     pub height_scale: f32,
-    /// Strength of normals derived from the height map. 0 = off.
+    /// Strength of normals derived from the height map (RELIEF_BUMP). 0 = off.
     pub bump: f32,
+    /// Height value that sits ON the original surface. 0 = everything rises outward, 0.5 = centred relief.
+    pub height_level: f32,
+    /// Strength of the graph's normal map (0..1).
+    pub normal_amt: f32,
+    /// Mesh resolution: grid segments along one side of the plane (sphere uses 2x1, cube faces 5/8).
+    pub tess: u32,
+    pub wireframe: bool,
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { yaw: 0.5, pitch: 0.3, dist: 3.4, pan_x: 0.0, pan_y: 0.0, light_yaw: 0.9, light_pitch: 0.7, light_intensity: 3.0, exposure: 1.0, ambient: 1.0, shape: 0, tiling: 1.0, height_scale: 0.08, bump: 1.0 }
+        View {
+            yaw: 0.5,
+            pitch: 0.3,
+            dist: 3.4,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            light_yaw: 0.9,
+            light_pitch: 0.7,
+            light_intensity: 3.0,
+            exposure: 1.0,
+            ambient: 1.0,
+            shape: 0,
+            tiling: 1.0,
+            relief: RELIEF_DISPLACE,
+            height_scale: 0.08,
+            bump: 1.0,
+            height_level: 0.0,
+            normal_amt: 1.0,
+            tess: 256,
+            wireframe: false,
+        }
     }
 }
 
-#[allow(dead_code)]
+// ------------------------------------------------------------------------------------------------ mesh
+pub struct Mesh {
+    pub pos: Vec<V>,
+    pub nrm: Vec<V>,
+    pub tan: Vec<V>,
+    pub uv: Vec<[f32; 2]>,
+    /// object-space length of one uv unit along u and v (used by bump and parallax)
+    pub su: Vec<f32>,
+    pub sv: Vec<f32>,
+    pub tris: Vec<[u32; 3]>,
+}
+
+struct Raw {
+    pos: Vec<V>,
+    nrm: Vec<V>,
+    tan: Vec<V>,
+    uv: Vec<[f32; 2]>,
+    su: Vec<f32>,
+    sv: Vec<f32>,
+    tris: Vec<[u32; 3]>,
+    /// vertices with equal weld ids sit at the same place (seams, poles) and must displace and shade identically
+    weld: Vec<u32>,
+    /// 0..1 displacement fade (cube edges stay closed)
+    fade: Vec<f32>,
+}
+
+impl Raw {
+    fn new() -> Raw {
+        Raw { pos: vec![], nrm: vec![], tan: vec![], uv: vec![], su: vec![], sv: vec![], tris: vec![], weld: vec![], fade: vec![] }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, p: V, n: V, t: V, uv: [f32; 2], su: f32, sv: f32, weld: u32, fade: f32) {
+        self.pos.push(p);
+        self.nrm.push(n);
+        self.tan.push(t);
+        self.uv.push(uv);
+        self.su.push(su);
+        self.sv.push(sv);
+        self.weld.push(weld);
+        self.fade.push(fade);
+    }
+    /// Triangulate a (nu+1) x (nv+1) vertex grid starting at vertex `first`. Winding is outward for all shapes.
+    fn grid_tris(&mut self, first: u32, nu: u32, nv: u32) {
+        let stride = nu + 1;
+        for j in 0..nv {
+            for i in 0..nu {
+                let a = first + j * stride + i;
+                let (b, c, d) = (a + stride, a + 1, a + stride + 1);
+                self.tris.push([a, b, c]);
+                self.tris.push([c, b, d]);
+            }
+        }
+    }
+}
+
+const PLANE_HALF: f32 = 1.3;
+const CUBE_HALF: f32 = 0.8;
+
+fn smoothstep01(x: f32) -> f32 {
+    let t = x.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn raw_plane(n: u32, tiling: f32) -> Raw {
+    let mut r = Raw::new();
+    let size = PLANE_HALF * 2.0;
+    for j in 0..=n {
+        for i in 0..=n {
+            let (u0, v0) = (i as f32 / n as f32, j as f32 / n as f32);
+            let p = [(u0 - 0.5) * size, (0.5 - v0) * size, 0.0];
+            r.push(p, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [u0 * tiling, v0 * tiling], size / tiling, size / tiling, r.pos.len() as u32, 1.0);
+        }
+    }
+    r.grid_tris(0, n, n);
+    r
+}
+
+fn raw_sphere(n: u32, tiling: f32) -> Raw {
+    let (nu, nv) = (n * 2, n);
+    let mut r = Raw::new();
+    for j in 0..=nv {
+        let theta = j as f32 / nv as f32 * PI;
+        let (st, ct) = theta.sin_cos();
+        for i in 0..=nu {
+            let lon = i as f32 / nu as f32 * TAU - PI;
+            let (sl, cl) = lon.sin_cos();
+            let p = [st * sl, ct, st * cl];
+            // seam column (i == nu) welds to column 0; both poles collapse to one id per pole
+            let weld = if j == 0 {
+                0
+            } else if j == nv {
+                1
+            } else {
+                2 + j * nu + (i % nu)
+            };
+            let sin_t = st.max(0.05);
+            r.push(p, p, [cl, 0.0, -sl], [(i as f32 / nu as f32) * tiling * 2.0, theta / PI * tiling], TAU * sin_t / (tiling * 2.0), PI / tiling, weld, 1.0);
+        }
+    }
+    r.grid_tris(0, nu, nv);
+    r
+}
+
+fn raw_cube(n: u32, tiling: f32) -> Raw {
+    let mut r = Raw::new();
+    let h = CUBE_HALF;
+    // (normal, tangent, bitangent) per face; tangent x bitangent = normal
+    let faces: [(V, V, V); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    for (nrm, tg, bt) in faces {
+        let first = r.pos.len() as u32;
+        for j in 0..=n {
+            for i in 0..=n {
+                let (u0, v0) = (i as f32 / n as f32, j as f32 / n as f32);
+                let p = add(add(mul(nrm, h), mul(tg, (u0 - 0.5) * 2.0 * h)), mul(bt, (0.5 - v0) * 2.0 * h));
+                let edge = u0.min(1.0 - u0).min(v0).min(1.0 - v0);
+                r.push(p, nrm, tg, [u0 * tiling, v0 * tiling], 2.0 * h / tiling, 2.0 * h / tiling, r.pos.len() as u32, smoothstep01(edge / 0.02));
+            }
+        }
+        r.grid_tris(first, n, n);
+    }
+    r
+}
+
+/// Build the shape mesh, displacing it along the surface normal when a height map is given.
+pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amount: f32, level: f32) -> Mesh {
+    let n = tess.clamp(8, 768);
+    let tiling = tiling.max(0.1);
+    let r = match shape {
+        0 => raw_sphere(n, tiling),
+        1 => raw_cube((n * 5 / 8).max(8), tiling),
+        _ => raw_plane(n, tiling),
+    };
+    let nv = r.pos.len();
+    let displace = amount.abs() > 1e-6 && height.is_some();
+    let mut pos = r.pos.clone();
+    let mut nrm = r.nrm.clone();
+    if let (true, Some(hm)) = (displace, height) {
+        // one height per weld group so seams and poles stay closed
+        let groups = r.weld.iter().copied().max().unwrap_or(0) as usize + 1;
+        let mut sum = vec![0.0f32; groups];
+        let mut cnt = vec![0u32; groups];
+        let hv: Vec<f32> = (0..nv).map(|i| lum(hm.sample(r.uv[i][0], r.uv[i][1]))).collect();
+        for i in 0..nv {
+            sum[r.weld[i] as usize] += hv[i];
+            cnt[r.weld[i] as usize] += 1;
+        }
+        for i in 0..nv {
+            let hh = sum[r.weld[i] as usize] / cnt[r.weld[i] as usize].max(1) as f32;
+            pos[i] = add(r.pos[i], mul(r.nrm[i], (hh - level) * amount * r.fade[i]));
+        }
+        // smooth normals of the displaced surface (area weighted, accumulated per weld group)
+        let mut acc = vec![[0.0f32; 3]; groups];
+        for t in &r.tris {
+            let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+            let fnrm = cross(sub(b, a), sub(c, a));
+            for k in 0..3 {
+                let g = r.weld[t[k] as usize] as usize;
+                acc[g] = add(acc[g], fnrm);
+            }
+        }
+        for i in 0..nv {
+            let a = acc[r.weld[i] as usize];
+            nrm[i] = if dot(a, a) > 1e-20 { norm(a) } else { r.nrm[i] };
+        }
+    }
+    // re-orthogonalise the analytic tangents against the (possibly displaced) normals
+    let mut tan = r.tan.clone();
+    for i in 0..nv {
+        let t = sub(r.tan[i], mul(nrm[i], dot(r.tan[i], nrm[i])));
+        tan[i] = if dot(t, t) > 1e-12 { norm(t) } else { r.tan[i] };
+    }
+    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, tris: r.tris }
+}
+
+// ------------------------------------------------------------------------------------------------ rasteriser
+#[derive(Clone, Copy)]
+struct Frag {
+    z: f32,
+    tri: u32,
+    b1: f32,
+    b2: f32,
+}
+const NO_TRI: u32 = u32::MAX;
+const NEAR: f32 = 0.05;
+
+struct Cam {
+    eye: V,
+    fwd: V,
+    right: V,
+    up: V,
+    tf: f32,
+    aspect: f32,
+    w: usize,
+    h: usize,
+}
+
+impl Cam {
+    fn view(&self, p: V) -> V {
+        let d = sub(p, self.eye);
+        [dot(d, self.right), dot(d, self.up), dot(d, self.fwd)]
+    }
+    /// view-space point with z > 0 -> (screen x, screen y, 1/z)
+    fn project(&self, v: V) -> [f32; 3] {
+        let iz = 1.0 / v[2];
+        [(v[0] * iz / (self.aspect * self.tf) * 0.5 + 0.5) * self.w as f32, (0.5 - v[1] * iz / self.tf * 0.5) * self.h as f32, iz]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Pv {
+    s: [f32; 3],
+    a: [f32; 3], // barycentric weights of the ORIGINAL triangle at this (possibly clipped) vertex
+}
+
+fn raster(band: &mut [Frag], y_start: usize, w: usize, tri: u32, v: [Pv; 3]) {
+    let rows = band.len() / w;
+    let y_end = y_start + rows;
+    let (x0, x1, x2) = (v[0].s[0], v[1].s[0], v[2].s[0]);
+    let (y0, y1, y2) = (v[0].s[1], v[1].s[1], v[2].s[1]);
+    if !(x0.is_finite() && x1.is_finite() && x2.is_finite() && y0.is_finite() && y1.is_finite() && y2.is_finite()) {
+        return;
+    }
+    let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if area.abs() < 1e-9 {
+        return;
+    }
+    let (minx, maxx) = (x0.min(x1).min(x2), x0.max(x1).max(x2));
+    let (miny, maxy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+    if maxx < 0.0 || minx > w as f32 || maxy < y_start as f32 || miny > y_end as f32 {
+        return;
+    }
+    let xa = (minx.max(0.0).floor() as usize).min(w - 1);
+    let xb = (maxx.min(w as f32 - 1.0).ceil().max(0.0) as usize).min(w - 1);
+    let ya = (miny.max(y_start as f32).floor() as usize).max(y_start);
+    let yb = (maxy.min(y_end as f32 - 1.0).ceil().max(0.0) as usize).min(y_end - 1);
+    let inv = 1.0 / area;
+    let (iz0, iz1, iz2) = (v[0].s[2], v[1].s[2], v[2].s[2]);
+    for y in ya..=yb {
+        let py = y as f32 + 0.5;
+        for x in xa..=xb {
+            let px = x as f32 + 0.5;
+            let l0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) * inv;
+            let l1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) * inv;
+            let l2 = 1.0 - l0 - l1;
+            if l0 < -1e-5 || l1 < -1e-5 || l2 < -1e-5 {
+                continue;
+            }
+            let (k0, k1, k2) = (l0 * iz0, l1 * iz1, l2 * iz2);
+            let iz = k0 + k1 + k2;
+            if iz <= 0.0 {
+                continue;
+            }
+            let z = 1.0 / iz;
+            let f = &mut band[(y - y_start) * w + x];
+            if z < f.z {
+                let s = 1.0 / iz;
+                let b1 = (k0 * v[0].a[1] + k1 * v[1].a[1] + k2 * v[2].a[1]) * s;
+                let b2 = (k0 * v[0].a[2] + k1 * v[1].a[2] + k2 * v[2].a[2]) * s;
+                *f = Frag { z, tri, b1, b2 };
+            }
+        }
+    }
+}
+
+/// Clip a triangle that crosses the near plane and rasterise the (1 or 2) resulting triangles.
+fn raster_clipped(band: &mut [Frag], y_start: usize, w: usize, cam: &Cam, tri: u32, vv: [V; 3]) {
+    let attrs = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let mut poly: Vec<(V, [f32; 3])> = Vec::with_capacity(4);
+    for k in 0..3 {
+        let (a, b) = ((vv[k], attrs[k]), (vv[(k + 1) % 3], attrs[(k + 1) % 3]));
+        let (ina, inb) = (a.0[2] >= NEAR, b.0[2] >= NEAR);
+        if ina {
+            poly.push(a);
+        }
+        if ina != inb {
+            let t = (NEAR - a.0[2]) / (b.0[2] - a.0[2]);
+            let p = [a.0[0] + (b.0[0] - a.0[0]) * t, a.0[1] + (b.0[1] - a.0[1]) * t, NEAR];
+            let at = [a.1[0] + (b.1[0] - a.1[0]) * t, a.1[1] + (b.1[1] - a.1[1]) * t, a.1[2] + (b.1[2] - a.1[2]) * t];
+            poly.push((p, at));
+        }
+    }
+    if poly.len() < 3 {
+        return;
+    }
+    let pv: Vec<Pv> = poly.iter().map(|(p, a)| Pv { s: cam.project(*p), a: *a }).collect();
+    for k in 1..pv.len() - 1 {
+        raster(band, y_start, w, tri, [pv[0], pv[k], pv[k + 1]]);
+    }
+}
+
+fn rasterize(mesh: &Mesh, cam: &Cam) -> Vec<Frag> {
+    let (w, h) = (cam.w, cam.h);
+    let none = Frag { z: f32::INFINITY, tri: NO_TRI, b1: 0.0, b2: 0.0 };
+    let mut frags = vec![none; w * h];
+    let view: Vec<V> = mesh.pos.iter().map(|p| cam.view(*p)).collect();
+    let proj: Vec<[f32; 3]> = view.iter().map(|v| if v[2] >= NEAR { cam.project(*v) } else { [0.0, 0.0, 0.0] }).collect();
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let rows_per = (h + threads - 1) / threads;
+    let (view, proj) = (&view, &proj);
+    std::thread::scope(|s| {
+        for (ci, band) in frags.chunks_mut(rows_per * w).enumerate() {
+            s.spawn(move || {
+                let y_start = ci * rows_per;
+                let y_end = y_start + band.len() / w;
+                for (ti, t) in mesh.tris.iter().enumerate() {
+                    let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
+                    if view[i0][2] >= NEAR && view[i1][2] >= NEAR && view[i2][2] >= NEAR {
+                        let (p0, p1, p2) = (proj[i0], proj[i1], proj[i2]);
+                        if p0[1].max(p1[1]).max(p2[1]) < y_start as f32 || p0[1].min(p1[1]).min(p2[1]) > y_end as f32 {
+                            continue;
+                        }
+                        raster(
+                            band,
+                            y_start,
+                            w,
+                            ti as u32,
+                            [Pv { s: p0, a: [1.0, 0.0, 0.0] }, Pv { s: p1, a: [0.0, 1.0, 0.0] }, Pv { s: p2, a: [0.0, 0.0, 1.0] }],
+                        );
+                    } else if view[i0][2] >= NEAR || view[i1][2] >= NEAR || view[i2][2] >= NEAR {
+                        raster_clipped(band, y_start, w, cam, ti as u32, [view[i0], view[i1], view[i2]]);
+                    }
+                }
+            });
+        }
+    });
+    frags
+}
+
+// ------------------------------------------------------------------------------------------------ shading
 struct Surf {
-    p: V,
     n: V,
     t: V,
     b: V,
     uv: [f32; 2],
-    /// object-space length of one uv unit along u and v (for parallax)
     su: f32,
     sv: f32,
+    back: bool,
 }
 
 fn env(d: V) -> V {
@@ -60,112 +430,52 @@ fn env(d: V) -> V {
     [base[0].max(0.0), base[1].max(0.0), base[2].max(0.0)]
 }
 
-fn hit_scene(shape: u32, eye: V, dir: V, tiling: f32) -> Option<(f32, Surf)> {
-    match shape {
-        0 => {
-            let b = dot(eye, dir);
-            let c = dot(eye, eye) - 1.0;
-            let disc = b * b - c;
-            if disc < 0.0 {
-                return None;
-            }
-            let t = -b - disc.sqrt();
-            if t < 0.0 {
-                return None;
-            }
-            let p = add(eye, mul(dir, t));
-            let lon = p[0].atan2(p[2]);
-            let tg = [lon.cos(), 0.0, -lon.sin()];
-            let uv = [(lon / TAU + 0.5) * tiling * 2.0, (p[1].clamp(-1.0, 1.0).acos() / PI) * tiling];
-            let sin_t = (1.0 - p[1] * p[1]).max(0.0).sqrt().max(0.05);
-            Some((t, Surf { p, n: p, t: tg, b: cross(p, tg), uv, su: TAU * sin_t / (tiling * 2.0), sv: PI / tiling }))
-        }
-        1 => {
-            let h = 0.8;
-            let (mut t0, mut t1) = (f32::MIN, f32::MAX);
-            let mut axis = 0;
-            for k in 0..3 {
-                let inv = 1.0 / if dir[k].abs() < 1e-9 { 1e-9 } else { dir[k] };
-                let (a, b) = ((-h - eye[k]) * inv, (h - eye[k]) * inv);
-                let (lo, hi) = (a.min(b), a.max(b));
-                if lo > t0 {
-                    t0 = lo;
-                    axis = k;
-                }
-                t1 = t1.min(hi);
-            }
-            if t0 > t1 || t1 < 0.0 || t0 < 0.0 {
-                return None;
-            }
-            let p = add(eye, mul(dir, t0));
-            let sgn = if dir[axis] > 0.0 { -1.0 } else { 1.0 };
-            let mut n = [0.0; 3];
-            n[axis] = sgn;
-            let (tg, bt) = match (axis, sgn > 0.0) {
-                (0, true) => ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
-                (0, false) => ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
-                (1, true) => ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
-                (1, false) => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-                (_, true) => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-                (_, false) => ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-            };
-            let uv = [(dot(p, tg) / (2.0 * h) + 0.5) * tiling, (0.5 - dot(p, bt) / (2.0 * h)) * tiling];
-            Some((t0, Surf { p, n, t: tg, b: bt, uv, su: 2.0 * h / tiling, sv: 2.0 * h / tiling }))
-        }
-        _ => {
-            if dir[2].abs() < 1e-9 {
-                return None;
-            }
-            let t = -eye[2] / dir[2];
-            if t < 0.0 {
-                return None;
-            }
-            let p = add(eye, mul(dir, t));
-            if p[0].abs() > 1.3 || p[1].abs() > 1.3 {
-                return None;
-            }
-            let n = if eye[2] > 0.0 { [0.0, 0.0, 1.0] } else { [0.0, 0.0, -1.0] };
-            let tg = if eye[2] > 0.0 { [1.0, 0.0, 0.0] } else { [-1.0, 0.0, 0.0] };
-            let uv = [(p[0] / 2.6 + 0.5) * tiling, (0.5 - p[1] / 2.6) * tiling];
-            Some((t, Surf { p, n, t: tg, b: [0.0, 1.0, 0.0], uv, su: 2.6 / tiling, sv: 2.6 / tiling }))
-        }
-    }
-}
-
 fn lin(c: f32) -> f32 {
     c.max(0.0).powf(2.2)
 }
 
-/// Relief mapping: march the view ray through the height field. Returns (uv, depth fraction 0..1).
-fn parallax(hm: &Tex, s: &Surf, vt: V, depth: f32) -> ([f32; 2], f32) {
+/// Outward relief mapping. The height field is a slab of thickness `depth` that sits on the surface: height `level`
+/// is flush with the polygon, brighter pixels rise out of it. The view ray enters the slab at its top and is marched
+/// down until it meets the height field. Returns (uv, fraction 0..1 of how deep below the top the hit is).
+fn parallax(hm: &Tex, s: &Surf, vt: V, depth: f32, level: f32) -> ([f32; 2], f32) {
     let vz = vt[2].max(0.2);
     let du = -vt[0] / vz / s.su;
     let dv = vt[1] / vz / s.sv; // uv v runs opposite to the bitangent
-    let at = |d: f32| -> f32 {
-        let (u, v) = (s.uv[0] + du * d, s.uv[1] + dv * d);
-        (1.0 - lum(hm.sample(u, v))) * depth - d
+    let top = (1.0 - level.clamp(0.0, 1.0)) * depth; // distance (along the ray) from slab top to the polygon plane
+    let at = |d: f32| -> (f32, [f32; 2]) {
+        let uv = [s.uv[0] + du * (d - top), s.uv[1] + dv * (d - top)];
+        ((1.0 - lum(hm.sample(uv[0], uv[1]))) * depth - d, uv)
     };
-    let steps = 40;
-    let mut prev_d = 0.0;
-    let mut prev_f = at(0.0);
+    let steps = 48;
+    let (mut prev_d, (mut prev_f, _)) = (0.0f32, at(0.0));
     if prev_f <= 0.0 {
-        return (s.uv, 0.0);
+        return (at(0.0).1, 0.0);
     }
     for i in 1..=steps {
         let d = depth * i as f32 / steps as f32;
-        let f = at(d);
+        let (f, _) = at(d);
         if f <= 0.0 {
-            let t = prev_f / (prev_f - f).max(1e-6);
-            let dh = prev_d + (d - prev_d) * t;
-            return ([s.uv[0] + du * dh, s.uv[1] + dv * dh], dh / depth);
+            let (mut lo, mut hi) = (prev_d, d);
+            for _ in 0..5 {
+                let mid = 0.5 * (lo + hi);
+                if at(mid).0 > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let dh = 0.5 * (lo + hi);
+            return (at(dh).1, (dh / depth).clamp(0.0, 1.0));
         }
         prev_d = d;
         prev_f = f;
     }
-    ([s.uv[0] + du * depth, s.uv[1] + dv * depth], 1.0)
+    let _ = prev_f;
+    (at(depth).1, 1.0)
 }
 
 pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
+    let (w, h) = (w.max(1), h.max(1));
     let (sy, cy) = v.yaw.sin_cos();
     let (sp, cp) = v.pitch.sin_cos();
     let eye0 = [v.dist * sy * cp, v.dist * sp, v.dist * cy * cp];
@@ -175,25 +485,51 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
     let eye = add(eye0, add(mul(right, v.pan_x), mul(up, v.pan_y)));
     let tf = (20.0f32).to_radians().tan();
     let aspect = w as f32 / h as f32;
+    let cam = Cam { eye, fwd, right, up, tf, aspect, w, h };
     let (lsy, lcy) = v.light_yaw.sin_cos();
     let (lsp, lcp) = v.light_pitch.sin_cos();
     let ldir = norm([lsy * lcp, lsp, lcy * lcp]);
     let fill = norm([-ldir[0] * 0.7, -0.45, -ldir[2] * 0.5]);
+
+    let tiling = v.tiling.max(0.1);
+    let displace = v.relief == RELIEF_DISPLACE && v.height_scale > 0.0 && m.height.is_some();
+    let mesh = build_mesh(v.shape, v.tess, tiling, m.height, if displace { v.height_scale } else { 0.0 }, v.height_level);
+    let frags = rasterize(&mesh, &cam);
+    let wire_on = v.wireframe;
+
     Tex::from_fn(w, h, |px, py| {
         let x = (px * 2.0 - 1.0) * aspect * tf;
         let y = (1.0 - py * 2.0) * tf;
         let dir = norm(add(add(fwd, mul(right, x)), mul(up, y)));
-        let hit = hit_scene(v.shape, eye, dir, v.tiling.max(0.1));
-        let Some((_, s)) = hit else {
+        let (ix, iy) = (((px * w as f32) as usize).min(w - 1), ((py * h as f32) as usize).min(h - 1));
+        let fr = frags[iy * w + ix];
+        if fr.tri == NO_TRI {
             let g = 0.12 + 0.08 * (1.0 - py);
             return [g, g, g * 1.05, 1.0];
-        };
+        }
+        let tri = mesh.tris[fr.tri as usize];
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        let (b1, b2) = (fr.b1, fr.b2);
+        let b0 = 1.0 - b1 - b2;
+        let mix3 = |a: V, b: V, c: V| add(add(mul(a, b0), mul(b, b1)), mul(c, b2));
+        let n = norm(mix3(mesh.nrm[i0], mesh.nrm[i1], mesh.nrm[i2]));
+        let t0 = mix3(mesh.tan[i0], mesh.tan[i1], mesh.tan[i2]);
+        let t = norm(sub(t0, mul(n, dot(t0, n))));
+        let bt = cross(n, t);
+        let uv = [b0 * mesh.uv[i0][0] + b1 * mesh.uv[i1][0] + b2 * mesh.uv[i2][0], b0 * mesh.uv[i0][1] + b1 * mesh.uv[i1][1] + b2 * mesh.uv[i2][1]];
+        let su = (b0 * mesh.su[i0] + b1 * mesh.su[i1] + b2 * mesh.su[i2]).max(1e-4);
+        let sv = (b0 * mesh.sv[i0] + b1 * mesh.sv[i1] + b2 * mesh.sv[i2]).max(1e-4);
         let vv = norm(mul(dir, -1.0));
+        // triangle winding is outward, so the true face normal tells us whether we look at the back of the surface
+        let (pa, pb, pc) = (mesh.pos[i0], mesh.pos[i1], mesh.pos[i2]);
+        let back = dot(cross(sub(pb, pa), sub(pc, pa)), vv) < 0.0;
+        let s = Surf { n, t, b: bt, uv, su, sv, back };
+
         let mut uv = s.uv;
         let mut cavity = 1.0;
-        if let (Some(hm), true) = (m.height, v.height_scale > 0.0) {
-            let vt = [dot(vv, s.t), dot(vv, s.b), dot(vv, s.n)];
-            let (nuv, d) = parallax(hm, &s, vt, v.height_scale);
+        if let (Some(hm), true, true) = (m.height, v.relief == RELIEF_PARALLAX, v.height_scale > 0.0) {
+            let vt = [dot(vv, s.t), dot(vv, s.b), dot(vv, s.n) * if s.back { -1.0 } else { 1.0 }];
+            let (nuv, d) = parallax(hm, &s, vt, v.height_scale, v.height_level);
             uv = nuv;
             cavity = 1.0 - 0.45 * d;
         }
@@ -203,8 +539,9 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
         let metal = lum(m.metal.sample(uv[0], uv[1])).clamp(0.0, 1.0);
         let ao = lum(m.ao.sample(uv[0], uv[1])).clamp(0.0, 1.0) * cavity;
         let nm = m.normal.sample(uv[0], uv[1]);
-        let mut tn = [nm[0] * 2.0 - 1.0, nm[1] * 2.0 - 1.0, (nm[2] * 2.0 - 1.0).max(0.05)];
-        if let (Some(hm), true) = (m.height, v.bump > 0.0) {
+        let amt = v.normal_amt.clamp(0.0, 1.0);
+        let mut tn = [(nm[0] * 2.0 - 1.0) * amt, (nm[1] * 2.0 - 1.0) * amt, (nm[2] * 2.0 - 1.0).max(0.05)];
+        if let (Some(hm), true) = (m.height, v.relief == RELIEF_BUMP && v.bump > 0.0) {
             let e = 1.0 / hm.w.max(1) as f32;
             let hs = |du: f32, dv: f32| lum(hm.sample(uv[0] + du, uv[1] + dv));
             let (dhu, dhv) = ((hs(e, 0.0) - hs(-e, 0.0)) / (2.0 * e), (hs(0.0, e) - hs(0.0, -e)) / (2.0 * e));
@@ -213,7 +550,10 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
             tn[1] += k * dhv / s.sv;
         }
         let tn = norm(tn);
-        let n = norm(add(add(mul(s.t, tn[0]), mul(s.b, tn[1])), mul(s.n, tn[2])));
+        let mut n = norm(add(add(mul(s.t, tn[0]), mul(s.b, tn[1])), mul(s.n, tn[2])));
+        if s.back {
+            n = mul(n, -1.0);
+        }
         let ndv = dot(n, vv).max(1e-3);
         let f0 = [0.04 * (1.0 - metal) + albedo[0] * metal, 0.04 * (1.0 - metal) + albedo[1] * metal, 0.04 * (1.0 - metal) + albedo[2] * metal];
         let a = rough * rough;
@@ -222,19 +562,19 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
         let d = a * a / (PI * (ndh * ndh * (a * a - 1.0) + 1.0).powi(2)).max(1e-6);
         let k = (rough + 1.0).powi(2) / 8.0;
         let g = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
-        let fr = (1.0 - vdh).powi(5);
+        let fr_ = (1.0 - vdh).powi(5);
         let refl = norm(sub(mul(n, 2.0 * dot(n, vv)), vv));
         let envr = env(refl);
         let envd = env(n);
         let ndl2 = dot(n, fill).max(0.0);
         let mut out = [0.0; 3];
         for c in 0..3 {
-            let f = f0[c] + (1.0 - f0[c]) * fr;
+            let f = f0[c] + (1.0 - f0[c]) * fr_;
             let spec = d * g * f / (4.0 * ndl.max(1e-3) * ndv) * ndl;
             let diff = albedo[c] * (1.0 - metal) * (1.0 - f) / PI * ndl * v.light_intensity * 3.0;
             let diff_fill = albedo[c] * (1.0 - metal) / PI * ndl2 * v.light_intensity * 0.9;
             let amb_d = albedo[c] * (1.0 - metal) * envd[c] * v.ambient;
-            let rf = f0[c] + (1.0 - f0[c]) * fr * (1.0 - rough);
+            let rf = f0[c] + (1.0 - f0[c]) * fr_ * (1.0 - rough);
             let amb_s = envr[c] * rf * (1.0 - rough * 0.65) * v.ambient;
             out[c] = (diff + diff_fill + spec * v.light_intensity * 3.0 + (amb_d + amb_s) * ao) * v.exposure;
         }
@@ -245,6 +585,45 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
             }
         }
         let tm = |c: f32| (c / (1.0 + c)).max(0.0).powf(1.0 / 2.2) * 1.15;
-        [tm(out[0]).min(1.0), tm(out[1]).min(1.0), tm(out[2]).min(1.0), 1.0]
+        let mut col = [tm(out[0]).min(1.0), tm(out[1]).min(1.0), tm(out[2]).min(1.0)];
+        if wire_on {
+            let cov = wire_coverage(&frags, w, h, ix, iy, fr);
+            if cov > 0.0 {
+                let line = [1.0, 0.62, 0.12];
+                for c in 0..3 {
+                    col[c] = col[c] * (1.0 - 0.85 * cov) + line[c] * 0.85 * cov;
+                }
+            }
+        }
+        [col[0], col[1], col[2], 1.0]
     })
+}
+
+/// Anti-aliased triangle-edge coverage for the wireframe overlay (0..1), from the screen-space gradient of the
+/// barycentric coordinates measured against a neighbouring pixel of the same triangle.
+fn wire_coverage(frags: &[Frag], w: usize, h: usize, x: usize, y: usize, f: Frag) -> f32 {
+    let b = [1.0 - f.b1 - f.b2, f.b1, f.b2];
+    let nb = |dx: i64, dy: i64| -> Option<[f32; 3]> {
+        let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+        if nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 {
+            return None;
+        }
+        let g = frags[ny as usize * w + nx as usize];
+        if g.tri == f.tri {
+            Some([1.0 - g.b1 - g.b2, g.b1, g.b2])
+        } else {
+            None
+        }
+    };
+    let gx = nb(1, 0).map(|o| (0..3).map(|i| (o[i] - b[i]).abs()).collect::<Vec<_>>()).or_else(|| nb(-1, 0).map(|o| (0..3).map(|i| (o[i] - b[i]).abs()).collect::<Vec<_>>()));
+    let gy = nb(0, 1).map(|o| (0..3).map(|i| (o[i] - b[i]).abs()).collect::<Vec<_>>()).or_else(|| nb(0, -1).map(|o| (0..3).map(|i| (o[i] - b[i]).abs()).collect::<Vec<_>>()));
+    let (Some(gx), Some(gy)) = (gx, gy) else { return 0.0 };
+    let mut dmin = f32::MAX;
+    for i in 0..3 {
+        let g = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
+        if g > 1e-9 {
+            dmin = dmin.min(b[i].max(0.0) / g);
+        }
+    }
+    1.0 - smoothstep01((dmin - 0.4) / 0.9)
 }

@@ -82,10 +82,10 @@ pub const SPECS: &[Spec] = &[
     s!("clouds", [], [], "soft cloud noise: scale disorder seed contrast invert"),
     s!("bnw_spots", [], [], "black and white spots: scale disorder seed contrast invert variant"),
     s!("crystal", [], [], "faceted crystal cells: scale disorder seed contrast invert variant"),
-    s!("directional_noise", [], [], "stretched noise: scale stretch angle seed (tiles at 0/90 degrees)"),
+    s!("directional_noise", [], [], "streak noise, seamless at any angle: scale stretch angle seed"),
     s!("grunge", [], [], "grunge masks: concrete, scratches, spots, smudges"),
     s!("plasma", [], [], "smooth plasma waves"),
-    s!("stripes", [], [], "stripes: count angle softness width"),
+    s!("stripes", [], [], "stripes: count angle softness width tile(1 = snap to seamless angle, 0 = exact)"),
     s!("weave", [], [], "woven threads: count width"),
     s!("star", [], [], "star shape: points inner size softness rotation"),
     s!("gradient_axial", [], [], "symmetric gradient: angle"),
@@ -1057,14 +1057,32 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }))
         }
         "directional_noise" => {
+            // Streaks = tileable Perlin noise averaged along the streak direction. Every sample is taken from a
+            // periodic function at wrapped coordinates, so the result tiles seamlessly at ANY angle.
             let (sc, st, ang) = (f("scale", 6.0), f("stretch", 8.0).max(1.0), f("angle", 0.0));
+            let p1 = sc.round().clamp(1.0, 256.0) as i32;
+            let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
+            // a streak never needs to be longer than one tile (longer would wrap and average the noise away)
+            let len1 = (st / p1 as f32).min(1.0);
+            let k = ((st * 5.0).ceil() as usize).clamp(8, 160) | 1;
+            let taps: Vec<(f32, f32)> = (0..k)
+                .map(|i| {
+                    let t = ((i as f32 + 0.5) / k as f32) * 2.0 - 1.0;
+                    (t, 1.0 - t.abs())
+                })
+                .collect();
+            let wsum: f32 = taps.iter().map(|t| t.1).sum();
+            let gain = 1.6 * st.min(p1 as f32).powf(0.55); // restores the contrast lost by averaging (calibrated)
+            let (g1, g2) = (noise::GradGrid::new(p1, p1, seed), noise::GradGrid::new(p1 * 2, p1 * 2, seed.wrapping_add(7)));
             fin(Tex::gray_fn(s, s, move |u, v| {
-                let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
-                let (x, y) = ((u - 0.5) * ca + (v - 0.5) * sa, -(u - 0.5) * sa + (v - 0.5) * ca);
-                let (fx, fy) = (sc / st, sc);
-                let n1 = noise::perlin(x * fx / 4096.0, y * fy / 4096.0, 4096, 4096, seed);
-                let n2 = noise::perlin(x * fx * 2.0 / 4096.0, y * fy * 2.0 / 4096.0, 4096, 4096, seed.wrapping_add(7));
-                (n1 * 0.65 + n2 * 0.35).clamp(0.0, 1.0)
+                let (mut a1, mut a2) = (0.0f32, 0.0f32);
+                for &(t, w) in &taps {
+                    let (o1, o2) = (t * len1 * 0.5, t * len1 * 0.25);
+                    a1 += w * g1.sample(u + o1 * ca, v + o1 * sa);
+                    a2 += w * g2.sample(u + o2 * ca, v + o2 * sa);
+                }
+                let m = (a1 * 0.65 + a2 * 0.35) / wsum;
+                (0.5 + (m - 0.5) * gain).clamp(0.0, 1.0)
             }))
         }
         "grunge" => {
@@ -1103,10 +1121,18 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }))
         }
         "stripes" => {
-            let (cnt, ang, soft, wd) = (f("count", 8.0).round().max(1.0), f("angle", 0.0), f("softness", 0.1).max(1e-3), f("width", 0.5));
-            Tex::gray_fn(s, s, move |u, v| {
+            let (cnt, ang, soft, wd) = (f("count", 8.0).max(1.0), f("angle", 0.0), f("softness", 0.1).max(1e-3), f("width", 0.5));
+            // tile=1 (default): snap to the nearest seamlessly tileable direction (integer wave vector).
+            // tile=0: exact angle and count, but the pattern only tiles when count*cos/sin are whole numbers.
+            let (a, b) = if f("tile", 1.0) > 0.5 {
+                let (a, b) = ops::tileable_wave(cnt, ang);
+                (a as f32, b as f32)
+            } else {
                 let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
-                let t = ((u * ca + v * sa) * cnt).rem_euclid(1.0);
+                (cnt.round() * ca, cnt.round() * sa)
+            };
+            Tex::gray_fn(s, s, move |u, v| {
+                let t = (u * a + v * b).rem_euclid(1.0);
                 smooth(0.0, soft, t) * (1.0 - smooth(wd, wd + soft, t))
             })
         }

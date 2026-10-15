@@ -154,3 +154,47 @@ pub fn voronoi_ext(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> 
     r.f2 = (r.f2 * k).clamp(0.0, 1.0);
     r
 }
+
+/// Precomputed gradient lattice for fast, repeated tileable Perlin lookups (no hashing or trig per sample).
+/// `sample` returns exactly the same values as `perlin(u, v, px, py, seed)`.
+pub struct GradGrid {
+    px: i32,
+    py: i32,
+    g: Vec<[f32; 2]>,
+}
+
+impl GradGrid {
+    pub fn new(px: i32, py: i32, seed: u32) -> GradGrid {
+        let px = px.clamp(1, 4096);
+        let py = py.clamp(1, 4096);
+        let mut g = Vec::with_capacity((px as usize) * (py as usize));
+        for y in 0..py {
+            for x in 0..px {
+                let a = rnd(x, y, seed) * TAU;
+                g.push([a.cos(), a.sin()]);
+            }
+        }
+        GradGrid { px, py, g }
+    }
+
+    /// Periodic in u and v with period 1, for any (also negative or > 1) coordinates.
+    pub fn sample(&self, u: f32, v: f32) -> f32 {
+        let x = u * self.px as f32;
+        let y = v * self.py as f32;
+        let (fxl, fyl) = (x.floor(), y.floor());
+        let (ix, iy) = (fxl as i64, fyl as i64);
+        let (fx, fy) = (x - fxl, y - fyl);
+        let (px, py) = (self.px as i64, self.py as i64);
+        let g = |cx: i64, cy: i64, dx: f32, dy: f32| {
+            let c = self.g[(cy.rem_euclid(py) * px + cx.rem_euclid(px)) as usize];
+            c[0] * dx + c[1] * dy
+        };
+        let n00 = g(ix, iy, fx, fy);
+        let n10 = g(ix + 1, iy, fx - 1.0, fy);
+        let n01 = g(ix, iy + 1, fx, fy - 1.0);
+        let n11 = g(ix + 1, iy + 1, fx - 1.0, fy - 1.0);
+        let (sx, sy) = (fade(fx), fade(fy));
+        let n = lerp(lerp(n00, n10, sx), lerp(n01, n11, sx), sy);
+        (n * std::f32::consts::FRAC_1_SQRT_2 + 0.5).clamp(0.0, 1.0)
+    }
+}

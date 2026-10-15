@@ -85,7 +85,7 @@ fn pdefs(kind: &str) -> Vec<PD> {
             pf("lum_var", "Brick variation", 0.3, 0.0, 1.0),
             p_seed(),
         ],
-        "stripes" => vec![pi("count", "Count", 8, 1, 64), pf("angle", "Angle", 0.0, 0.0, 1.0), pf("softness", "Edge softness", 0.1, 0.001, 0.5), pf("width", "Stripe width", 0.5, 0.0, 1.0)],
+        "stripes" => vec![pi("count", "Count", 8, 1, 64), pf("angle", "Angle", 0.0, 0.0, 1.0), pf("softness", "Edge softness", 0.1, 0.001, 0.5), pf("width", "Stripe width", 0.5, 0.0, 1.0), pe("tile", "Angle mode", 1, &["Exact angle (may not tile)", "Seamless (snap to tileable angle)"])],
         "weave" => vec![pi("count", "Count", 6, 1, 32), pf("width", "Thread width", 0.8, 0.1, 1.0)],
         "tile_sampler" => vec![
             pi("x_amount", "X amount", 8, 1, 64),

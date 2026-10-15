@@ -1060,14 +1060,39 @@ impl App {
                 }
                 ui.separator();
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.tiling, 0.25..=16.0).text("UV tiling").logarithmic(true)).changed();
+                ui.separator();
+                ui.label("Mesh resolution (triangles per side)");
+                for t in [64u32, 128, 256, 384, 512] {
+                    if ui.selectable_label(self.view3d.tess == t, format!("{t} x {t}")).clicked() {
+                        self.view3d.tess = t;
+                        ch = true;
+                    }
+                }
+                ch |= ui.checkbox(&mut self.view3d.wireframe, "Show wireframe").changed();
             });
             ui.menu_button("Materials", |ui| {
                 if self.maps.contains_key("height") {
-                    ch |= ui.add(egui::Slider::new(&mut self.view3d.height_scale, 0.0..=0.3).text("Height depth")).changed();
-                    ch |= ui.add(egui::Slider::new(&mut self.view3d.bump, 0.0..=12.0).text("Bump strength")).changed();
+                    ui.label("Height display");
+                    for (i, n) in ["Normal map only", "Bump", "Parallax (outward)", "Displacement (real geometry)"].iter().enumerate() {
+                        if ui.selectable_label(self.view3d.relief == i as u32, *n).clicked() {
+                            self.view3d.relief = i as u32;
+                            ch = true;
+                        }
+                    }
+                    ui.separator();
+                    if self.view3d.relief >= 2 {
+                        ch |= ui.add(egui::Slider::new(&mut self.view3d.height_scale, 0.0..=0.5).text("Height scale")).changed();
+                    }
+                    if self.view3d.relief == 1 {
+                        ch |= ui.add(egui::Slider::new(&mut self.view3d.bump, 0.0..=12.0).text("Bump strength")).changed();
+                    }
+                    if self.view3d.relief >= 2 {
+                        ch |= ui.add(egui::Slider::new(&mut self.view3d.height_level, 0.0..=1.0).text("Neutral level (0 = all outward)")).changed();
+                    }
                 } else {
                     ui.colored_label(Color32::from_rgb(255, 170, 120), "No Height output - add an Output node with usage Height.");
                 }
+                ch |= ui.add(egui::Slider::new(&mut self.view3d.normal_amt, 0.0..=1.0).text("Normal map strength")).changed();
                 ui.separator();
                 ui.small("Maps used by the viewer:");
                 for k in self.maps.keys() {
@@ -1082,8 +1107,14 @@ impl App {
             ui.menu_button("Camera", |ui| {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.dist, 1.6..=9.0).text("Distance")).changed();
                 if ui.button("Reset camera").clicked() {
-                    let old = self.view3d.clone();
-                    self.view3d = View { shape: old.shape, tiling: old.tiling, exposure: old.exposure, ambient: old.ambient, height_scale: old.height_scale, bump: old.bump, ..View::default() };
+                    let d = View::default();
+                    self.view3d.yaw = d.yaw;
+                    self.view3d.pitch = d.pitch;
+                    self.view3d.dist = d.dist;
+                    self.view3d.pan_x = d.pan_x;
+                    self.view3d.pan_y = d.pan_y;
+                    self.view3d.light_yaw = d.light_yaw;
+                    self.view3d.light_pitch = d.light_pitch;
                     ch = true;
                     ui.close_menu();
                 }
@@ -1148,6 +1179,18 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.small("sRGB (default)");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                let before = self.view3d.shape;
+                egui::ComboBox::from_id_salt("shape3d").width(90.0).selected_text(shape).show_ui(ui, |ui| {
+                    for (i, n) in ["Sphere", "Cube", "Plane"].iter().enumerate() {
+                        ui.selectable_value(&mut self.view3d.shape, i as u32, *n);
+                    }
+                });
+                if before != self.view3d.shape {
+                    self.dirty3d = true;
+                }
+            });
         });
     }
 
