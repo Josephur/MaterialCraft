@@ -1,6 +1,6 @@
 
-# Donate For Claude Max Subscription to support development (all funds go to claude max subscription)
-https://www.paypal.com/donate/?hosted_button_id=DYD94FKUZ9H7G
+### Donate For Claude Max Subscription to support development (all funds go to claude max subscription)
+Donate Here: [Donation Button](https://www.paypal.com/donate/?hosted_button_id=DYD94FKUZ9H7G).
 
 # MaterialCraft
 
