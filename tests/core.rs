@@ -659,3 +659,34 @@ fn batch1_nodes_behave() {
         assert!(o["a"].px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])), "blend mode {m}");
     }
 }
+
+#[test]
+fn batch1b_nodes_behave() {
+    let run = |body: &str| Graph::parse(&format!("size 64\n{body}")).unwrap().evaluate(None).unwrap();
+    // normal combine with a flat detail map returns the base normal
+    let o = run("node 1 fbm scale=3 seed=2\nnode 2 normal in=@1 strength=2\nnode 3 color r=0.5 g=0.5 b=1\nnode 4 normal_combine base=@2 detail=@3\noutput a 2\noutput b 4\n");
+    for (p, q) in o["a"].px.iter().zip(&o["b"].px) {
+        assert!((p[0] - q[0]).abs() < 0.02 && (p[1] - q[1]).abs() < 0.02, "{p:?} vs {q:?}");
+    }
+    // stroke of a disc: zero in the centre and far outside, bright on the edge
+    let o = run("node 1 circle radius=0.3 softness=0.001\nnode 2 shape_stroke in=@1 width=6\noutput a 2\n");
+    let t = &o["a"];
+    assert!(t.at(32, 32)[0] < 0.01 && t.at(1, 1)[0] < 0.01);
+    let edge = (0..64).map(|x| t.at(x, 32)[0]).fold(0.0f32, f32::max);
+    assert!(edge > 0.9, "stroke peak {edge}");
+    // glow: bright inside the shape, fading outside
+    let o = run("node 1 circle radius=0.2 softness=0.001\nnode 2 shape_glow in=@1 width=40\noutput a 2\n");
+    let t = &o["a"];
+    assert!(t.at(32, 32)[0] > 0.99);
+    let row: Vec<f32> = (32..64).map(|x| t.at(x, 32)[0]).collect();
+    assert!(row.windows(2).all(|w| w[1] <= w[0] + 1e-4), "glow must fall off monotonically: {row:?}");
+    assert!(row.iter().any(|v| *v > 0.05 && *v < 0.95), "glow needs a soft falloff: {row:?}");
+    // reflected gradient goes 0 -> 1 -> 0
+    let o = run("node 1 gradient_reflected angle=0\noutput a 1\n");
+    let t = &o["a"];
+    assert!(t.at(0, 0)[0] < 0.05 && t.at(32, 0)[0] > 0.95 && t.at(63, 0)[0] < 0.1);
+    // the colour and luminosity blends: luminosity of a grey foreground keeps the background hue
+    let o = run("node 1 color r=0.9 g=0.3 b=0.1\nnode 2 color r=0.5 g=0.5 b=0.5 gray=0\nnode 3 blend fg=@2 bg=@1 mode=18 opacity=1\noutput a 3\n");
+    let p = o["a"].px[0];
+    assert!(p[0] > p[2], "hue lost: {p:?}");
+}

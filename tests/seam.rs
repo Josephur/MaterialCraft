@@ -157,7 +157,7 @@ fn filters_commute_with_wrapped_shifts() {
     ];
     let mut bad = Vec::new();
     for c in filters {
-        let kind = c.split(' ').next().unwrap();
+        let _kind = c.split(' ').next().unwrap();
         let mut line = format!("node 1 {c}");
         if !line.contains("in=@") {
             line += " in=@100";

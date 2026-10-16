@@ -6,7 +6,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
-## 1. Implemented (111 node types)
+## 1. Implemented (120 node types)
 
 ### Generators: noise
 - White Noise
@@ -109,7 +109,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Memory: intermediate textures are freed as soon as every node that reads them has finished, so large graphs at 4K fit
 
 ### Quality checks
-- 45 automated tests, including: a wrap-around check that rolls the input of 30 filters and requires the output to roll identically (proves every filter wraps at the borders), seam checks on every node, every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import and per-output links
+- 46 automated tests, including: a wrap-around check that rolls the input of 30 filters and requires the output to roll identically (proves every filter wraps at the borders), seam checks on every node, every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import and per-output links
 - `cargo run --release --example node_sheet -- out_dir` renders a PNG for every node type for visual review
 
 ---
@@ -176,7 +176,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ## 2b. Designer feature gap (checked against Adobe's node library and release notes, Oct 2026)
 
-We have 111 node types; Designer's library has roughly 500. Missing, by area:
+We have 120 node types; Designer's library has roughly 500. Missing, by area:
 
 ### Noises and generators
 - (done in batch 1: Cells, Fractal Sum, Waveform, Gaussian Spots) Fur 1-3, Fluid, Liquid, Caustics, Moisture Noise, Messy Fibers 1-3, Microscope View, Anisotropic Noise, Blue Noise, Voronoi Fractal, Clouds 2-3, Directional Noise 2-4, Directional Scratches, Dirt 1-5, Dirt Gradient, White Noise Fast
@@ -184,25 +184,25 @@ We have 111 node types; Designer's library has roughly 500. Missing, by area:
 - Grunge: Grunge Map 001-015 and the named grunges (Concrete, Damas, Galvanic, Leaks, Leaky Paint, Rough Dirty, Rust Fine, Scratches x3, Shavings, Splashes Dusty, Spots Dirty); we only have one 4-variant Grunge node
 
 ### Patterns and shapes
-- Alveolus, Arc Pavement, Brick 2, Brick Generator, Checker 2, Fibers 1-2, Gaussian 1-2, Gradient Axial Reflected, Gradient Linear 1-3, Height Extrude, Mesh 1-2, Panorama Shape, Polygon 2, Scratches Generator, Shape Extrude, Shape Mapper, Starburst, Tile Random 1-2, Triangle Grid, Weave 2, Weave Generator
+- Alveolus, Arc Pavement, Brick 2, Brick Generator, Checker 2, Fibers 1-2, Gaussian 1-2, Gradient Linear 1-3, Height Extrude, Mesh 1-2, Panorama Shape, Polygon 2, Scratches Generator, Shape Extrude, Shape Mapper, Tile Random 1-2, Weave 2, Weave Generator
 - Shape Splatter family: Shape Splatter, Splatter Blend, Splatter Data Extract, Splatter to Mask
 - 3D Linear Gradient, 3D Volume Mask, Cube 3D (and GBuffers)
 
 ### Adjustments, blending, blurs, channels
-- (done in batch 1: Auto Levels, Channel Mixer, Color to Mask, Grayscale Conversion, Histogram Shift, Pow, Replace Color) Chrominance Extract, Contrast/Luminosity, Convert to Linear / sRGB, Hald CLUT, HDR Range Viewer, Height Map Frequencies Mapper, Histogram Scan Non-Uniform, Histogram Select, Lighting Cancel High/Low Frequencies, Luminance Highpass, Min Max
-- Blend modes: Color, Luminosity, Dissolve; Multi Switch (we now have 17 modes: added Color Dodge/Burn, Linear Burn/Light, Hard Light, Exclusion, Divide)
+- (done in batch 1: Auto Levels, Channel Mixer, Color to Mask, Grayscale Conversion, Histogram Shift, Pow, Replace Color) Contrast/Luminosity, Convert to Linear / sRGB, Hald CLUT, HDR Range Viewer, Height Map Frequencies Mapper, Histogram Scan Non-Uniform, Histogram Select, Lighting Cancel High/Low Frequencies, Luminance Highpass, Min Max
+- Blend modes: Multi Switch (we have 20 modes incl. Color Dodge/Burn, Linear Burn/Light, Hard Light, Exclusion, Divide, Color, Luminosity, Dissolve)
 - Blurs: Anisotropic, Non Uniform and Radial Blur are done (batch 1)
 - Channels: Alpha Merge done; RGBA Split, Alpha Split (need multi-output nodes), Pre-multiplied <-> Straight
 
 ### Effects and warps
 - Cross Section, Curvature Sobel, Diffusion (Color, Grayscale, UV), Emboss With Gloss, Uber Emboss, Extend Shape, FXAA, Reaction Diffusion, Summed Area Table, Vector Morph
-- Multi Directional Warp, Non Uniform Directional Warp, Nearest sampling option in warps
-- Shadows, Shape Glow, Shape Stroke (Glow, Mosaic and Shape Drop Shadow are done)
+- Nearest sampling option in warps (Multi and Non Uniform Directional Warp are done)
+- Shadows (Glow, Mosaic, Shape Drop Shadow, Shape Glow and Shape Stroke are done)
 - Flood Fill family: Flood Fill Mapper, to BBox Size, to Index, to Position
 - Ray-traced nodes: AO (RTAO), Shadows, Irradiance, Bent Normal; HBAO as a separate AO node; 3D texture nodes (Position, SDF, Surface/Volume Render, Offset)
 
 ### Normal map tools
-- Bent Normal, Facing Normal, Height Normal Blender, Height to Normal (World Units), Normal Combine, Normal Sobel, Normal Transform (done: Normal Invert, Normalize, Vector Rotation, Normal to Height via FFT, Sobel)
+- Bent Normal, Facing Normal, Height Normal Blender, Height to Normal (World Units), Normal Sobel, Normal Transform (done: Normal Invert, Normalize, Vector Rotation, Normal to Height via FFT, Sobel)
 
 ### Transforms
 - Auto Crop, Cartesian <-> Polar, Clone, Noise Upscale 1-3, Safe Transform, Non-Square Transform, Non-Uniform Rotation, Symmetry Slice (Skew and Symmetry are done), Trapezoid Transform, Quad Transform
