@@ -31,9 +31,12 @@ pub struct View {
     pub light_yaw: f32,
     pub light_pitch: f32,
     pub light_intensity: f32,
+    /// The light is placed relative to the camera (yaw/pitch are offsets from the view direction), so the object stays
+    /// lit while it is orbited. Off: the light is fixed in the scene.
+    pub light_follows_camera: bool,
     pub exposure: f32,
     pub ambient: f32,
-    pub shape: u32, // 0 sphere, 1 cube, 2 plane (all tessellated meshes)
+    pub shape: u32, // see SHAPES: 0 sphere, 1 cube, 2 plane, 3.. more (all tessellated meshes)
     pub tiling: f32,
     /// One of the RELIEF_* modes.
     pub relief: u32,
@@ -61,6 +64,7 @@ impl Default for View {
             light_yaw: 0.9,
             light_pitch: 0.7,
             light_intensity: 3.0,
+            light_follows_camera: true,
             exposure: 1.0,
             ambient: 1.0,
             shape: 0,
@@ -76,6 +80,29 @@ impl Default for View {
     }
 }
 
+
+/// Key light direction and the opposite soft fill light (unit vectors pointing TO the lights).
+pub fn light_dirs(v: &View) -> (V, V) {
+    let (ly, lp) = (v.light_yaw, v.light_pitch);
+    let (lsy, lcy) = ly.sin_cos();
+    let (lsp, lcp) = lp.sin_cos();
+    let local = [lsy * lcp, lsp, lcy * lcp];
+    let ldir = if v.light_follows_camera {
+        let (sy, cy) = v.yaw.sin_cos();
+        let (sp, cp) = v.pitch.sin_cos();
+        let eye0 = [sy * cp, sp, cy * cp];
+        let fwd = norm(mul(eye0, -1.0));
+        let right = norm(cross(fwd, [0.0, 1.0, 0.0]));
+        let up = cross(right, fwd);
+        norm(add(add(mul(right, local[0]), mul(up, local[1])), mul(fwd, -local[2])))
+    } else {
+        norm(local)
+    };
+    // the fill comes from the opposite side, a little lower, so shadowed sides never go black
+    let fill = norm([-ldir[0] * 0.7, -0.35 * ldir[1].signum() * 0.5 - 0.15, -ldir[2] * 0.7]);
+    (ldir, fill)
+}
+
 // ------------------------------------------------------------------------------------------------ mesh
 pub struct Mesh {
     pub pos: Vec<V>,
@@ -87,6 +114,8 @@ pub struct Mesh {
     pub sv: Vec<f32>,
     /// 0..1 displacement fade per vertex (0 at sphere poles, ramps to 0 at cube edges) so displaced meshes stay closed
     pub fade: Vec<f32>,
+    /// normals of the undisplaced surface (used to decide which walls face the camera)
+    pub base_nrm: Vec<V>,
     pub tris: Vec<[u32; 3]>,
 }
 
@@ -208,6 +237,291 @@ fn raw_cube(n: u32, tiling: f32) -> Raw {
     r
 }
 
+
+// ------------------------------------------------------------------------------------------------ more shapes
+/// Shapes the viewer can show, in menu order: (name, shape id). Ids 0..2 are the original sphere, cube and plane.
+pub const SHAPES: [(&str, u32); 13] = [
+    ("Cube", 1),
+    ("Cylinder", 3),
+    ("Hollow box", 4),
+    ("Inner box", 5),
+    ("Plane", 2),
+    ("Plane (hi-res)", 6),
+    ("Sphere", 0),
+    ("Cloth", 7),
+    ("Mat ball", 8),
+    ("Rounded cube", 9),
+    ("Rounded cylinder", 10),
+    ("Sphere 2 tiles", 11),
+    ("Torus", 12),
+];
+
+pub fn shape_name(id: u32) -> &'static str {
+    SHAPES.iter().find(|s| s.1 == id).map(|s| s.0).unwrap_or("Sphere")
+}
+
+/// Shapes viewed from the inside: faces turned away from the camera are not drawn, so the far walls show.
+pub fn shape_culls(id: u32) -> bool {
+    id == 5
+}
+
+/// Give vertices that sit at the same place the same weld id, so displacement and shading stay closed across seams.
+fn weld_by_position(r: &mut Raw, smooth: bool) {
+    let mut ids: std::collections::HashMap<[i32; 3], u32> = std::collections::HashMap::new();
+    for i in 0..r.pos.len() {
+        let p = r.pos[i];
+        let k = [(p[0] * 4000.0).round() as i32, (p[1] * 4000.0).round() as i32, (p[2] * 4000.0).round() as i32];
+        let next = ids.len() as u32;
+        r.weld[i] = *ids.entry(k).or_insert(next);
+    }
+    if smooth {
+        // one shared normal per spot, so smooth surfaces stay crack-free when displaced
+        let mut acc = vec![[0.0f32; 3]; ids.len()];
+        for i in 0..r.pos.len() {
+            acc[r.weld[i] as usize] = add(acc[r.weld[i] as usize], r.nrm[i]);
+        }
+        for i in 0..r.pos.len() {
+            let a = acc[r.weld[i] as usize];
+            if dot(a, a) > 1e-6 {
+                r.nrm[i] = norm(a);
+            }
+        }
+    }
+}
+
+/// A (nu+1) x (nv+1) grid sampled from a parametric surface `f(u, v)`, u and v in 0..1. Normals and tangents come from
+/// finite differences. The surface must be oriented so that dP/dv x dP/du points to the visible side (the plane
+/// convention: u runs right, v runs down). `fade_edge` > 0 ramps the displacement to zero at the patch borders.
+fn patch<F: Fn(f32, f32) -> V>(r: &mut Raw, nu: u32, nv: u32, tiling: f32, uvs: (f32, f32), fade_edge: f32, f: F) {
+    let first = r.pos.len() as u32;
+    let (eu, ev) = (0.5 / nu as f32, 0.5 / nv as f32);
+    for j in 0..=nv {
+        for i in 0..=nu {
+            let (u, v) = (i as f32 / nu as f32, j as f32 / nv as f32);
+            let (u0, u1) = ((u - eu).max(0.0), (u + eu).min(1.0));
+            let (v0, v1) = ((v - ev).max(0.0), (v + ev).min(1.0));
+            let dpu = mul(sub(f(u1, v), f(u0, v)), 1.0 / (u1 - u0));
+            let dpv = mul(sub(f(u, v1), f(u, v0)), 1.0 / (v1 - v0));
+            let n = norm(cross(dpv, dpu));
+            let t = norm(dpu);
+            let edge = u.min(1.0 - u).min(v).min(1.0 - v);
+            let fade = if fade_edge > 0.0 { smoothstep01(edge / fade_edge) } else { 1.0 };
+            let su = (len(dpu) / (uvs.0 * tiling)).max(0.05);
+            let sv = (len(dpv) / (uvs.1 * tiling)).max(0.05);
+            r.push(f(u, v), n, t, [u * uvs.0 * tiling, v * uvs.1 * tiling], su, sv, 0, fade);
+        }
+    }
+    r.grid_tris(first, nu, nv);
+}
+
+/// One flat rectangle: centre `c`, axes `tg` (u) and `bt` (v, running down), half sizes `hu`, `hv`. tg x bt is the normal.
+fn quad(r: &mut Raw, n: u32, tiling: f32, c: V, tg: V, bt: V, hu: f32, hv: f32, fade_edge: f32) {
+    let base = 1.6; // object length one uv tile spans at tiling 1
+    let nu = ((n as f32 * hu / 0.8).ceil() as u32).max(2);
+    let nv = ((n as f32 * hv / 0.8).ceil() as u32).max(2);
+    patch(r, nu, nv, tiling, (2.0 * hu / base, 2.0 * hv / base), fade_edge, |u, v| add(add(c, mul(tg, (u - 0.5) * 2.0 * hu)), mul(bt, (0.5 - v) * 2.0 * hv)));
+}
+
+/// A revolved profile around the Y axis. `segs` are polylines/curves (radius, y) given so that the outward normal is the
+/// profile direction rotated to the left; the result is welded along seams and between segments.
+struct Seg {
+    pts: Vec<[f32; 2]>,
+    /// ramp the displacement to zero at the start / end (hard edges)
+    fade0: bool,
+    fade1: bool,
+}
+
+fn seg_line(a: [f32; 2], b: [f32; 2], steps: usize, fade0: bool, fade1: bool) -> Seg {
+    Seg { pts: (0..=steps).map(|i| { let t = i as f32 / steps as f32; [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t] }).collect(), fade0, fade1 }
+}
+
+fn seg_arc(c: [f32; 2], rad: f32, a0: f32, a1: f32, steps: usize, fade0: bool, fade1: bool) -> Seg {
+    Seg { pts: (0..=steps).map(|i| { let a = a0 + (a1 - a0) * i as f32 / steps as f32; [c[0] + rad * a.cos(), c[1] + rad * a.sin()] }).collect(), fade0, fade1 }
+}
+
+fn revolve(r: &mut Raw, n: u32, tiling: f32, ku: f32, segs: &[Seg]) {
+    let nu = n * 2;
+    // arc length along the whole profile gives the v coordinate, so texels stay square
+    let mut acc = 0.0f32;
+    for sg in segs {
+        let m = sg.pts.len();
+        let first = r.pos.len() as u32;
+        let lens: Vec<f32> = (0..m).map(|k| if k == 0 { 0.0 } else { ((sg.pts[k][0] - sg.pts[k - 1][0]).powi(2) + (sg.pts[k][1] - sg.pts[k - 1][1]).powi(2)).sqrt() }).collect();
+        let total: f32 = lens.iter().sum();
+        let mut run = 0.0f32;
+        for k in 0..m {
+            run += lens[k];
+            let (a, b) = (sg.pts[k.saturating_sub(1)], sg.pts[(k + 1).min(m - 1)]);
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let dl = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-9);
+            let (nr, ny) = (-d[1] / dl, d[0] / dl);
+            let rad = sg.pts[k][0];
+            let y = sg.pts[k][1];
+            let edge = run.min(total - run);
+            let mut fade: f32 = 1.0;
+            if sg.fade0 && run < edge + 1e-6 {
+                fade = fade.min(smoothstep01(run / 0.03));
+            }
+            if sg.fade1 && (total - run) <= run + 1e-6 {
+                fade = fade.min(smoothstep01((total - run) / 0.03));
+            }
+            for i in 0..=nu {
+                let lon = i as f32 / nu as f32 * TAU - PI;
+                let (sl, cl) = lon.sin_cos();
+                let pos = [rad * sl, y, rad * cl];
+                let nrm = norm([nr * sl, ny, nr * cl]);
+                r.push(pos, nrm, [cl, 0.0, -sl], [i as f32 / nu as f32 * tiling * ku, (acc + run) * tiling / 3.14], (TAU * rad.max(0.05) / (ku * tiling)).max(0.05), 3.14 / tiling, 0, fade);
+            }
+        }
+        r.grid_tris(first, nu, (m - 1) as u32);
+        acc += total;
+    }
+}
+
+fn raw_plane_hires(n: u32, tiling: f32) -> Raw {
+    raw_plane((n * 2).min(1024), tiling)
+}
+
+fn raw_cylinder(n: u32, tiling: f32) -> Raw {
+    let (rad, h) = (0.8, 0.8);
+    let st = (n / 2).max(4) as usize;
+    let mut r = Raw::new();
+    let segs = [
+        seg_line([0.0, h], [rad, h], st, false, true),
+        seg_line([rad, h], [rad, -h], (n as usize).max(8), true, true),
+        seg_line([rad, -h], [0.0, -h], st, true, false),
+    ];
+    revolve(&mut r, n, tiling, 2.0, &segs);
+    weld_by_position(&mut r, false);
+    r
+}
+
+fn raw_rounded_cylinder(n: u32, tiling: f32) -> Raw {
+    let (rad, h, rr) = (0.8, 0.8, 0.2);
+    let st = (n / 2).max(4) as usize;
+    let arc = (n / 4).max(6) as usize;
+    let mut r = Raw::new();
+    let segs = [
+        seg_line([0.0, h], [rad - rr, h], st, false, false),
+        seg_arc([rad - rr, h - rr], rr, PI / 2.0, 0.0, arc, false, false),
+        seg_line([rad, h - rr], [rad, -h + rr], (n as usize).max(8), false, false),
+        seg_arc([rad - rr, -h + rr], rr, 0.0, -PI / 2.0, arc, false, false),
+        seg_line([rad - rr, -h], [0.0, -h], st, false, false),
+    ];
+    revolve(&mut r, n, tiling, 2.0, &segs);
+    weld_by_position(&mut r, true);
+    r
+}
+
+fn raw_torus(n: u32, tiling: f32) -> Raw {
+    let (big, small) = (0.68, 0.34);
+    let steps = (n as usize).max(12);
+    let seg = Seg { pts: (0..=steps).map(|i| { let t = i as f32 / steps as f32 * TAU; [big + small * t.cos(), -small * t.sin()] }).collect(), fade0: false, fade1: false };
+    let mut r = Raw::new();
+    revolve(&mut r, n, tiling, 4.0, &[seg]);
+    weld_by_position(&mut r, true);
+    r
+}
+
+fn raw_mat_ball(n: u32, tiling: f32) -> Raw {
+    let (rad, cy) = (0.8, 0.2);
+    let steps = (n as usize).max(12);
+    let ball = Seg { pts: (0..=steps).map(|i| { let t = i as f32 / steps as f32 * PI; [rad * t.sin(), cy + rad * t.cos()] }).collect(), fade0: false, fade1: false };
+    let (top, bot, pr) = (cy - rad, cy - rad - 0.18, 1.2);
+    let st = (n / 2).max(4) as usize;
+    let segs = [ball, seg_line([0.0, top], [pr, top], st, true, true), seg_line([pr, top], [pr, bot], 8, true, true), seg_line([pr, bot], [0.0, bot], st, true, false)];
+    let mut r = Raw::new();
+    revolve(&mut r, n, tiling, 2.0, &segs);
+    weld_by_position(&mut r, false);
+    r
+}
+
+/// Cube with rounded edges: every cube-face point is pulled onto the surface of a box with rounded corners.
+fn raw_rounded_cube(n: u32, tiling: f32) -> Raw {
+    let (h, rr) = (0.8f32, 0.22f32);
+    let inner = h - rr;
+    let faces: [(V, V, V); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    let mut r = Raw::new();
+    let nn = (n * 5 / 8).max(12);
+    for (nrm, tg, bt) in faces {
+        patch(&mut r, nn, nn, tiling, (1.0, 1.0), 0.03, |u, v| {
+            let q = add(add(mul(nrm, h), mul(tg, (u - 0.5) * 2.0 * h)), mul(bt, (0.5 - v) * 2.0 * h));
+            let c = [q[0].clamp(-inner, inner), q[1].clamp(-inner, inner), q[2].clamp(-inner, inner)];
+            add(c, mul(norm(sub(q, c)), rr))
+        });
+    }
+    weld_by_position(&mut r, true);
+    r
+}
+
+/// Box open at the top with a thick wall: outer faces, inner faces (normals point into the cavity) and the rim.
+fn raw_hollow_box(n: u32, tiling: f32) -> Raw {
+    let (h, hi) = (0.8f32, 0.62f32);
+    let faces: [(V, V, V); 5] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    let nn = (n * 5 / 8).max(8);
+    let mut r = Raw::new();
+    for (nrm, tg, bt) in faces {
+        quad(&mut r, nn, tiling, mul(nrm, h), tg, bt, h, h, 0.02);
+        // the cavity wall faces the other way: mirror one axis so that tg x bt = -nrm
+        quad(&mut r, nn, tiling, mul(nrm, hi), mul(tg, -1.0), bt, hi, hi, 0.02);
+    }
+    let mid = (h + hi) * 0.5;
+    let half = (h - hi) * 0.5;
+    let (tg, bt) = ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+    quad(&mut r, nn, tiling, [0.0, h, mid], tg, bt, h, half, 0.02);
+    quad(&mut r, nn, tiling, [0.0, h, -mid], tg, bt, h, half, 0.02);
+    quad(&mut r, nn, tiling, [mid, h, 0.0], tg, bt, half, hi, 0.02);
+    quad(&mut r, nn, tiling, [-mid, h, 0.0], tg, bt, half, hi, 0.02);
+    weld_by_position(&mut r, false);
+    r
+}
+
+/// The six walls of a box seen from the inside (outer faces are culled, so the far walls show).
+fn raw_inner_box(n: u32, tiling: f32) -> Raw {
+    let h = 0.8f32;
+    let faces: [(V, V, V); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ];
+    let mut r = Raw::new();
+    let nn = (n * 5 / 8).max(8);
+    for (nrm, tg, bt) in faces {
+        quad(&mut r, nn, tiling, mul(nrm, h), mul(tg, -1.0), bt, h, h, 0.02);
+    }
+    weld_by_position(&mut r, false);
+    r
+}
+
+/// A draped sheet: a plane with soft folds.
+fn raw_cloth(n: u32, tiling: f32) -> Raw {
+    let size = PLANE_HALF * 2.0;
+    let mut r = Raw::new();
+    patch(&mut r, n, n, tiling, (size / 1.6, size / 1.6), 0.0, |u, v| {
+        let (x, y) = ((u - 0.5) * size, (0.5 - v) * size);
+        let z = 0.17 * (2.3 * x + 0.9 * (1.4 * y).sin()).sin() + 0.09 * (1.9 * y - 1.2 * x + 0.6).sin() + 0.04 * (6.0 * x + 3.0 * y).sin();
+        [x, y, z]
+    });
+    weld_by_position(&mut r, true);
+    r
+}
+
 /// Build the shape mesh, displacing it along the surface normal when a height map is given.
 pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amount: f32, level: f32) -> Mesh {
     let n = tess.clamp(8, 768);
@@ -215,6 +529,16 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
     let r = match shape {
         0 => raw_sphere(n, tiling),
         1 => raw_cube((n * 5 / 8).max(8), tiling),
+        3 => raw_cylinder(n, tiling),
+        4 => raw_hollow_box(n, tiling),
+        5 => raw_inner_box(n, tiling),
+        6 => raw_plane_hires(n, tiling),
+        7 => raw_cloth(n, tiling),
+        8 => raw_mat_ball(n, tiling),
+        9 => raw_rounded_cube(n, tiling),
+        10 => raw_rounded_cylinder(n, tiling),
+        11 => raw_sphere(n, tiling * 2.0),
+        12 => raw_torus(n, tiling),
         _ => raw_plane(n, tiling),
     };
     let nv = r.pos.len();
@@ -256,7 +580,7 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
         let t = sub(r.tan[i], mul(nrm[i], dot(r.tan[i], nrm[i])));
         tan[i] = if dot(t, t) > 1e-12 { norm(t) } else { r.tan[i] };
     }
-    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, fade: r.fade, tris: r.tris }
+    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, fade: r.fade, base_nrm: r.nrm, tris: r.tris }
 }
 
 // ------------------------------------------------------------------------------------------------ rasteriser
@@ -375,7 +699,7 @@ fn raster_clipped(band: &mut [Frag], y_start: usize, w: usize, cam: &Cam, tri: u
     }
 }
 
-fn rasterize(mesh: &Mesh, cam: &Cam) -> Vec<Frag> {
+fn rasterize(mesh: &Mesh, cam: &Cam, cull: bool) -> Vec<Frag> {
     let (w, h) = (cam.w, cam.h);
     let none = Frag { z: f32::INFINITY, tri: NO_TRI, b1: 0.0, b2: 0.0 };
     let mut frags = vec![none; w * h];
@@ -391,6 +715,13 @@ fn rasterize(mesh: &Mesh, cam: &Cam) -> Vec<Frag> {
                 let y_end = y_start + band.len() / w;
                 for (ti, t) in mesh.tris.iter().enumerate() {
                     let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
+                    if cull {
+                        // walls whose (smoothed) normal faces away from the camera are not drawn
+                        let nn = add(add(mesh.base_nrm[i0], mesh.base_nrm[i1]), mesh.base_nrm[i2]);
+                        if dot(nn, sub(cam.eye, mesh.pos[i0])) <= 0.0 {
+                            continue;
+                        }
+                    }
                     if view[i0][2] >= NEAR && view[i1][2] >= NEAR && view[i2][2] >= NEAR {
                         let (p0, p1, p2) = (proj[i0], proj[i1], proj[i2]);
                         if p0[1].max(p1[1]).max(p2[1]) < y_start as f32 || p0[1].min(p1[1]).min(p2[1]) > y_end as f32 {
@@ -488,15 +819,12 @@ pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
     let tf = (20.0f32).to_radians().tan();
     let aspect = w as f32 / h as f32;
     let cam = Cam { eye, fwd, right, up, tf, aspect, w, h };
-    let (lsy, lcy) = v.light_yaw.sin_cos();
-    let (lsp, lcp) = v.light_pitch.sin_cos();
-    let ldir = norm([lsy * lcp, lsp, lcy * lcp]);
-    let fill = norm([-ldir[0] * 0.7, -0.45, -ldir[2] * 0.5]);
+    let (ldir, fill) = light_dirs(v);
 
     let tiling = v.tiling.max(0.1);
     let displace = v.relief == RELIEF_DISPLACE && v.height_scale > 0.0 && m.height.is_some();
     let mesh = build_mesh(v.shape, v.tess, tiling, m.height, if displace { v.height_scale } else { 0.0 }, v.height_level);
-    let frags = rasterize(&mesh, &cam);
+    let frags = rasterize(&mesh, &cam, shape_culls(v.shape));
     let wire_on = v.wireframe;
 
     Tex::from_fn(w, h, |px, py| {

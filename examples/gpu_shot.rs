@@ -87,7 +87,15 @@ fn main() -> eframe::Result<()> {
     let (w, h) = (a.get(4).and_then(|s| s.parse().ok()).unwrap_or(900.0f32), a.get(5).and_then(|s| s.parse().ok()).unwrap_or(700.0f32));
     let wire = a.iter().any(|s| s == "wire");
     let arg = |k: &str| a.iter().find_map(|s| s.strip_prefix(k).map(String::from));
-    let maps = if let Some(r) = arg("rough=") {
+    let gsize: usize = arg("size=").and_then(|s| s.parse().ok()).unwrap_or(1024);
+    let gout;
+    let maps = if let Some(path) = arg("graph=") {
+        // real material: evaluate a .mcg and hand its outputs to the viewer
+        let g = materialcraft::graph::Graph::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+        gout = g.evaluate(Some(gsize)).unwrap();
+        let get = |k: &str| gout.get(k);
+        gpu3d::prepare(&MapInputs { base: get("basecolor"), normal: get("normal"), rough: get("roughness"), metal: get("metallic"), ao: get("ambient_occlusion"), emissive: get("emissive"), height: get("height") })
+    } else if let Some(r) = arg("rough=") {
         // uniform material test: rough=0.3 metal=0 color=0.8,0.2,0.2
         let r: f32 = r.parse().unwrap_or(0.5);
         let m: f32 = arg("metal=").and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -101,7 +109,7 @@ fn main() -> eframe::Result<()> {
     };
     let gpu = gpu3d::new_shared();
     gpu.lock().unwrap().set_maps(maps);
-    let view = View { shape, relief, wireframe: wire, yaw: 0.35, pitch: 0.5, dist: if shape == 2 { 3.2 } else { 3.4 }, height_scale: 0.12, ..View::default() };
+    let view = View { shape, relief, wireframe: wire, yaw: 0.35, pitch: 0.5, dist: if shape == 2 { 3.2 } else { 3.4 }, height_scale: 0.08, ..View::default() };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([w, h]),
         multisampling: if a.iter().any(|s| s == "nomsaa") { 0 } else { 4 },

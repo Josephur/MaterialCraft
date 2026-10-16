@@ -309,8 +309,8 @@ fn color_wheel(ui: &mut egui::Ui, id: Id, rgb: &mut [f32; 3]) -> bool {
     painter.add(egui::Shape::mesh(mesh));
     // markers
     let ha = h * std::f32::consts::TAU;
-    painter.circle(c + vec2(ha.cos(), ha.sin()) * ((r_in + r_out) * 0.5), 5.5, hsv_color32(h, 1.0, 1.0), Stroke::new(2.0, Color32::WHITE));
-    painter.circle(pos2(sq.min.x + sv * sq.width(), sq.min.y + (1.0 - vv) * sq.height()), 5.0, Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8), Stroke::new(2.0, if vv > 0.55 { Color32::BLACK } else { Color32::WHITE }));
+    painter.circle(c + vec2(ha.cos(), ha.sin()) * ((r_in + r_out) * 0.5), 5.5, hsv_color32(h, 1.0, 1.0), Stroke::new(2.0_f32, Color32::WHITE));
+    painter.circle(pos2(sq.min.x + sv * sq.width(), sq.min.y + (1.0 - vv) * sq.height()), 5.0, Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8), Stroke::new(2.0_f32, if vv > 0.55 { Color32::BLACK } else { Color32::WHITE }));
     changed
 }
 
@@ -376,7 +376,7 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
         let r = Rect::from_min_max(pos2(bar.min.x + bar.width() * i as f32 / segs as f32, bar.min.y), pos2(bar.min.x + bar.width() * (i + 1) as f32 / segs as f32 + 1.0, bar.max.y));
         painter.rect_filled(r, 0.0, c32(grad_at(stops, t)));
     }
-    painter.rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::from_gray(20)));
+    painter.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, Color32::from_gray(20)));
     let mut sel = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(stops.len() - 1);
     let bar_resp = ui.interact(bar, id.with("bar"), Sense::click());
     let mut grabbed = false;
@@ -401,7 +401,7 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
         painter.add(egui::Shape::convex_polygon(vec![pos2(x, bar.max.y + 1.0), pos2(x - 5.0, bar.max.y + 8.0), pos2(x + 5.0, bar.max.y + 8.0)], edge, Stroke::NONE));
         let sq = Rect::from_center_size(pos2(x, bar.max.y + 15.0), vec2(11.0, 9.0));
         painter.rect_filled(sq, 1.0, c32(stops[i].1));
-        painter.rect_stroke(sq, 1.0, Stroke::new(1.5, edge));
+        painter.rect_stroke(sq, 1.0, Stroke::new(1.5_f32, edge));
     }
     if bar_resp.clicked() && !grabbed && stops.len() < 16 {
         if let Some(p) = bar_resp.interact_pointer_pos() {
@@ -457,7 +457,7 @@ impl App {
                     let (r, resp) = ui.allocate_exact_size(vec2(22.0, 18.0), Sense::click());
                     ui.painter().rect_filled(r, Rounding::same(3.0), Color32::from_rgb(col[0], col[1], col[2]));
                     if c.color as usize == i {
-                        ui.painter().rect_stroke(r, Rounding::same(3.0), Stroke::new(2.0, Color32::WHITE));
+                        ui.painter().rect_stroke(r, Rounding::same(3.0), Stroke::new(2.0_f32, Color32::WHITE));
                     }
                     if resp.clicked() {
                         c.color = i as u8;
@@ -542,7 +542,11 @@ impl App {
         let get = |k: &str, d: f32| node.nums.get(k).copied().unwrap_or(d);
 
         // ---- inputs overview
-        let sl = slots(&kind);
+        let mut sl = slots(&kind);
+        // a graph node only has inputs when that graph defines Input nodes
+        if kind == "subgraph" && !node.strs.get("graph").and_then(|g| self.g.subgraphs.get(g)).map(|sg| sg.nodes.values().any(|x| x.kind == "input")).unwrap_or(true) {
+            sl.clear();
+        }
         if !sl.is_empty() {
             egui::CollapsingHeader::new(egui::RichText::new("INPUTS").strong()).default_open(true).show(ui, |ui| {
                 for (name, req) in &sl {
@@ -589,7 +593,7 @@ impl App {
                             ui.vertical(|ui| {
                                 let (r, _) = ui.allocate_exact_size(vec2(54.0, 36.0), Sense::hover());
                                 ui.painter().rect_filled(r, 3.0, c32(rgb));
-                                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0, Color32::from_gray(15)));
+                                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0_f32, Color32::from_gray(15)));
                                 let mut hex = rgb_hex(rgb);
                                 if ui.add(egui::TextEdit::singleline(&mut hex).desired_width(60.0)).changed() {
                                     if let Some(c) = parse_hex(&hex) {
@@ -637,8 +641,7 @@ impl App {
                 }
                 "output" => {
                     let usage = node.strs.get("usage").cloned().unwrap_or_else(|| "basecolor".into());
-                    let in_sub = !self.parents.is_empty();
-                    let names: Vec<&str> = if in_sub { vec!["out"] } else { OUTPUT_NAMES.to_vec() };
+                    let names: Vec<&str> = OUTPUT_NAMES.to_vec();
                     ui.horizontal(|ui| {
                         row_label(ui, "Usage");
                         egui::ComboBox::from_id_salt(("usage", id)).selected_text(usage_label(&usage)).show_ui(ui, |ui| {

@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! MaterialCraft visual editor. Run: cargo run --release --features gui --bin materialcraft-gui
 use eframe::egui::{
     self, epaint::CubicBezierShape, Align2, Color32, ColorImage, FontId, Id, Key, Modifiers, PointerButton, Pos2, Rect,
@@ -10,7 +11,7 @@ use materialcraft::tex::Tex;
 use materialcraft::export::{self, Format};
 use materialcraft::gpu3d::{self, MapInputs};
 use materialcraft::{ops, png};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
@@ -102,13 +103,38 @@ enum Act {
     NewGraph,
     Home,
     Drop(String, Pos2),
-    ImportGraph(PathBuf, Option<Pos2>),
-    ImportGraphDialog,
+    ImportGraph(PathBuf, Option<Pos2>, Option<String>),
+    /// Import a graph of an open package (index, graph name or None for its main graph) as a node.
+    ImportFromPkg(usize, Option<String>, Option<Pos2>),
+    NewPackage,
+    NewGraphIn(usize),
+    SwitchPkg(usize),
+    SavePkg(usize),
+    ClosePkg(usize),
 }
 
-/// Drag payload: a graph file from the Explorer that is dropped on the canvas to become a node.
+/// Drag payload: a graph of an open package (package index, graph label, graph name or None for the main graph).
 #[derive(Clone)]
-struct GraphDrag(PathBuf, String);
+struct GraphDrag(usize, String, Option<String>);
+
+/// A package that is open in the workspace but not the one being edited right now.
+struct Pkg {
+    path: Option<PathBuf>,
+    name: String,
+    g: Graph,
+    modified: bool,
+}
+
+fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut g = Graph::parse_unchecked(&text).map_err(|e| e.to_string())?;
+    g.migrate_outputs();
+    auto_layout_if_unplaced(&mut g);
+    if !g.meta.get("identifier").map(|s| !s.is_empty()).unwrap_or(false) {
+        g.meta.insert("identifier".into(), path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
+    }
+    Ok(Pkg { path: Some(path.to_path_buf()), name: path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), g, modified: false })
+}
 
 struct EvalResult {
     gen: u64,
@@ -122,7 +148,7 @@ struct ExportUi {
     open: bool,
     dir: Option<PathBuf>,
     prefix: String,
-    sizes: [bool; 5],
+    sizes: [bool; 6],
     depth16: bool,
     fmt: Format,
     quality: u8,
@@ -153,13 +179,24 @@ struct App {
     zoom: f32,
     canvas_rect: Rect,
     connecting: Option<u32>,
+    /// Output name of the graph-node socket a link is being dragged from.
+    connecting_out: Option<String>,
+    /// Output name to apply when a node created from a link drag gets connected.
+    link_out: Option<String>,
     rubber: Option<Pos2>,
     comment_members: Vec<u32>,
     search: Option<SearchState>,
     acts: Vec<Act>,
     status: (String, bool),
     file: Option<PathBuf>,
+    /// editor preview resolution in pixels; 0 = the graph's own size (capped at 4096)
     prev_size: usize,
+    /// a quick low-resolution result was just shown; compute the full-size one next
+    refine: bool,
+    job_quick: bool,
+    job_quick_wanted: bool,
+    /// set to stop the running evaluation when a newer one is started
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tile_preview: bool,
     thumbs: HashMap<u32, egui::TextureHandle>,
     node_err: HashMap<u32, String>,
@@ -172,8 +209,13 @@ struct App {
     gpu: gpu3d::Shared,
     gpu_on: bool,
     gpu_maps_dirty: bool,
-    graph_files: Vec<PathBuf>,
-    graph_files_at: Option<std::time::Instant>,
+    /// Open packages in display order; `None` marks the one being edited (its live state is in `g`, `file`, ...).
+    pkgs: Vec<Option<Pkg>>,
+    pkg_active: usize,
+    /// Package that new graphs go to (selected in the Explorer).
+    pkg_sel: usize,
+    unsaved_name: String,
+    confirm_close: Option<usize>,
     dirty: bool,
     dirty3d: bool,
     gen: u64,
@@ -238,13 +280,19 @@ impl App {
             zoom: 0.9,
             canvas_rect: Rect::from_min_size(Pos2::ZERO, vec2(900.0, 500.0)),
             connecting: None,
+            connecting_out: None,
+            link_out: None,
             rubber: None,
             comment_members: Vec::new(),
             search: None,
             acts: Vec::new(),
             status: ("Press Tab in the graph to add a node at the cursor.".into(), true),
             file: None,
-            prev_size: 256,
+            prev_size: 0,
+            refine: false,
+            job_quick: false,
+            job_quick_wanted: true,
+            cancel: Default::default(),
             tile_preview: false,
             thumbs: HashMap::new(),
             node_err: HashMap::new(),
@@ -257,19 +305,22 @@ impl App {
             gpu: gpu3d::new_shared(),
             gpu_on: true,
             gpu_maps_dirty: true,
-            graph_files: Vec::new(),
-            graph_files_at: None,
+            pkgs: Vec::new(),
+            pkg_active: 0,
+            pkg_sel: 0,
+            unsaved_name: "Unsaved Package".into(),
+            confirm_close: None,
             dirty: true,
             dirty3d: true,
             gen: 0,
             job: None,
             lib_search: String::new(),
             text_focus: false,
-            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false], depth16: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
+            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
-            new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, depth16: false },
+            new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, depth16: false, dest: None },
             recent,
             home_filter: String::new(),
             home_page: 0,
@@ -300,32 +351,41 @@ impl App {
         }
     }
 
-    /// Other graph files that can be dragged into this graph: siblings of the open file plus recent files.
-    fn refresh_graph_files(&mut self) {
-        let mut v: Vec<PathBuf> = Vec::new();
-        if let Some(dir) = self.file.as_ref().and_then(|f| f.parent()) {
-            if let Ok(rd) = std::fs::read_dir(dir) {
-                v.extend(rd.flatten().map(|e| e.path()));
-            }
-        }
-        v.extend(self.recent.iter().cloned());
-        v.retain(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("mcg" | "mca")) && p.is_file() && Some(p) != self.file.as_ref());
-        v.sort();
-        v.dedup();
-        self.graph_files = v;
-        self.graph_files_at = Some(std::time::Instant::now());
-    }
-
     /// Import a saved graph file as a subgraph of the current graph and place it as a node.
-    fn import_graph_file(&mut self, p: PathBuf, at: Option<Pos2>) {
+    fn import_graph_file(&mut self, p: PathBuf, at: Option<Pos2>, graph: Option<String>) {
         let loaded = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| Graph::parse_unchecked(&t).map_err(|e| e.to_string()));
-        let mut other = match loaded {
+        let other = match loaded {
             Ok(g) => g,
             Err(e) => return self.status(format!("Cannot import {}: {e}", p.display()), false),
         };
+        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into());
+        self.import_graph_value(other, stem, at, graph);
+    }
+
+    /// Import a graph of an open package as a node.
+    fn import_from_pkg(&mut self, i: usize, graph: Option<String>, at: Option<Pos2>) {
+        let Some(pk) = self.pkgs.get(i).and_then(|p| p.as_ref()) else {
+            return self.status("Drag graphs from another package onto this graph", false);
+        };
+        let stem = pk.name.trim_end_matches(".mcg").trim_end_matches(".mca").to_string();
+        let other = pk.g.clone();
+        self.import_graph_value(other, stem, at, graph);
+    }
+
+    /// Embed `other` (or one named graph of it) as a subgraph of the current graph and place it as a node.
+    fn import_graph_value(&mut self, mut other: Graph, mut stem: String, at: Option<Pos2>, graph: Option<String>) {
         other.migrate_outputs();
         auto_layout_if_unplaced(&mut other);
-        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into());
+        // a specific graph of the package: it becomes the imported root, the other graphs stay available to it
+        if let Some(gn) = graph.filter(|gn| other.subgraphs.contains_key(gn)) {
+            let mut sel = other.subgraphs.remove(&gn).unwrap_or_default();
+            sel.subgraphs = std::mem::take(&mut other.subgraphs);
+            sel.resources = other.resources.clone();
+            other = sel;
+            stem = format!("{stem}_{gn}");
+        } else if let Some(id) = other.meta.get("identifier").filter(|s| !s.is_empty()) {
+            stem = id.clone();
+        }
         let base: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
         let mut name = base.clone();
         let mut i = 2;
@@ -336,12 +396,199 @@ impl App {
         self.snap();
         if let Err(e) = self.g.import_graph(other, &name) {
             self.undo.pop();
-            return self.status(format!("Cannot import {}: {e}", p.display()), false);
+            return self.status(format!("Cannot import '{stem}': {e}"), false);
+        }
+        // the copy only exists to feed the node, so keep it out of the Explorer's graph list
+        let prefix = format!("{name}__");
+        for (k, sg) in self.g.subgraphs.iter_mut() {
+            if *k == name || k.starts_with(&prefix) {
+                sg.meta.insert("embedded".into(), "1".into());
+            }
         }
         let pos = at.unwrap_or_else(|| self.view_center_world());
         self.add_node_at("subgraph", Some(&name), pos);
         self.undo.pop(); // one undo step for the whole import
-        self.status(format!("Imported '{name}' as a node - double-click it to look inside; pick its output in Properties"), true);
+        self.status(format!("Added '{name}' as a node - drag from one of its output sockets to connect it"), true);
+    }
+
+    // ------------------------------------------------------------ workspace of packages
+    fn ws_init(&mut self) {
+        if self.pkgs.is_empty() {
+            self.pkgs = vec![None];
+            self.pkg_active = 0;
+            self.pkg_sel = 0;
+        }
+        if self.pkg_active >= self.pkgs.len() {
+            self.pkg_active = 0;
+        }
+        if self.pkg_sel >= self.pkgs.len() {
+            self.pkg_sel = self.pkg_active;
+        }
+    }
+
+    /// Start a fresh workspace holding just the package that is about to be loaded.
+    fn ws_fresh(&mut self) {
+        self.pkgs = vec![None];
+        self.pkg_active = 0;
+        self.pkg_sel = 0;
+        self.confirm_close = None;
+    }
+
+    fn pkg_title(&self, i: usize) -> String {
+        match self.pkgs.get(i) {
+            Some(Some(p)) => p.name.clone(),
+            _ => self.package_label(),
+        }
+    }
+
+    fn pkg_modified(&self, i: usize) -> bool {
+        match self.pkgs.get(i) {
+            Some(Some(p)) => p.modified || p.path.is_none(),
+            _ => self.modified || self.file.is_none(),
+        }
+    }
+
+    /// True when closing package `i` would lose changes.
+    fn pkg_dirty(&self, i: usize) -> bool {
+        match self.pkgs.get(i) {
+            Some(Some(p)) => p.modified,
+            _ => self.modified,
+        }
+    }
+
+    fn unique_unsaved_name(&self) -> String {
+        let taken = |n: &str| (0..self.pkgs.len()).any(|i| self.pkg_title(i) == n);
+        let mut n = "Unsaved Package".to_string();
+        let mut k = 2;
+        while taken(&n) {
+            n = format!("Unsaved Package {k}");
+            k += 1;
+        }
+        n
+    }
+
+    fn snapshot_active(&mut self) -> Pkg {
+        self.goto_root();
+        Pkg { path: self.file.clone(), name: self.package_label(), g: self.g.clone(), modified: self.modified }
+    }
+
+    fn load_active(&mut self, p: Pkg) {
+        self.parents.clear();
+        self.g = p.g;
+        self.clear_views();
+        self.file = p.path;
+        self.unsaved_name = p.name;
+        self.modified = p.modified;
+        self.clear_history();
+        self.thumbs.clear();
+        self.screen = Screen::Editor;
+        self.fit_view();
+        self.active = self.g.nodes.keys().next().copied();
+    }
+
+    /// Make open package `i` the one shown in the editor.
+    fn switch_pkg(&mut self, i: usize) {
+        self.ws_init();
+        self.pkg_sel = i.min(self.pkgs.len() - 1);
+        if i == self.pkg_active || i >= self.pkgs.len() {
+            return;
+        }
+        let Some(target) = self.pkgs[i].take() else { return };
+        let snap = self.snapshot_active();
+        self.pkgs[self.pkg_active] = Some(snap);
+        self.load_active(target);
+        self.pkg_active = i;
+    }
+
+    /// Add a new package to the workspace and edit it.
+    fn add_pkg_active(&mut self, p: Pkg) {
+        if self.screen != Screen::Editor {
+            self.ws_fresh();
+            self.load_active(p);
+            return;
+        }
+        self.ws_init();
+        let snap = self.snapshot_active();
+        self.pkgs[self.pkg_active] = Some(snap);
+        self.pkgs.push(None);
+        self.pkg_active = self.pkgs.len() - 1;
+        self.pkg_sel = self.pkg_active;
+        self.load_active(p);
+    }
+
+    /// Open package files into the workspace (File > Open while editing).
+    fn open_packages(&mut self, files: Vec<PathBuf>) {
+        self.ws_init();
+        let mut last = None;
+        for p in files {
+            let open_at = (0..self.pkgs.len()).find(|&i| match &self.pkgs[i] {
+                Some(k) => k.path.as_ref() == Some(&p),
+                None => self.file.as_ref() == Some(&p),
+            });
+            if let Some(i) = open_at {
+                self.pkg_sel = i;
+                self.status(format!("{} is already open", p.display()), false);
+                continue;
+            }
+            match read_pkg(&p) {
+                Ok(pk) => {
+                    self.pkgs.push(Some(pk));
+                    self.pkg_sel = self.pkgs.len() - 1;
+                    self.push_recent(&p);
+                    last = Some(p);
+                }
+                Err(e) => self.status(format!("Open failed: {}: {e}", p.display()), false),
+            }
+        }
+        if let Some(p) = last {
+            self.status(format!("Opened package {} - drag its graphs onto the canvas", p.display()), true);
+        }
+    }
+
+    /// Add a new graph from the New dialog to open package `dest` and open it in the editor.
+    fn add_graph_to_pkg(&mut self, dest: usize, g: Graph, name: &str) {
+        self.switch_pkg(dest);
+        self.goto_root();
+        let base: String = name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+        let base = if base.is_empty() { "Material_Graph".to_string() } else { base };
+        let root_id = self.gname();
+        let mut unique = base.clone();
+        let mut k = 2;
+        while self.g.subgraphs.contains_key(&unique) || unique == root_id {
+            unique = format!("{base}_{k}");
+            k += 1;
+        }
+        self.snap();
+        self.g.subgraphs.insert(unique.clone(), g);
+        self.enter_sub(&unique);
+        self.modified = true;
+        self.status(format!("Created graph '{unique}' in {}", self.package_label()), true);
+    }
+
+    fn close_pkg(&mut self, i: usize) {
+        self.ws_init();
+        if i >= self.pkgs.len() {
+            return;
+        }
+        if self.pkgs.len() == 1 {
+            self.pkgs.clear();
+            self.screen = Screen::Home;
+            self.modified = false;
+            return;
+        }
+        if i == self.pkg_active {
+            let t = if i + 1 < self.pkgs.len() { i + 1 } else { i - 1 };
+            let Some(target) = self.pkgs[t].take() else { return };
+            self.load_active(target);
+            self.pkgs.remove(i);
+            self.pkg_active = if t > i { t - 1 } else { t };
+        } else {
+            self.pkgs.remove(i);
+            if i < self.pkg_active {
+                self.pkg_active -= 1;
+            }
+        }
+        self.pkg_sel = self.pkg_active;
     }
 
     fn status(&mut self, msg: impl Into<String>, ok: bool) {
@@ -410,6 +657,11 @@ impl App {
     }
 
     fn try_connect(&mut self, src: u32, dst: u32, slot: &str) {
+        self.try_connect_out(src, dst, slot, None);
+    }
+
+    /// Connect `src` (reading its named output when it is a graph node) to input `slot` of `dst`.
+    fn try_connect_out(&mut self, src: u32, dst: u32, slot: &str, out: Option<String>) {
         if src == dst || self.depends_on(src, dst) {
             self.status("Connection rejected: it would create a cycle.", false);
             return;
@@ -417,6 +669,14 @@ impl App {
         self.snap();
         if let Some(n) = self.g.nodes.get_mut(&dst) {
             n.ins.insert(slot.to_string(), src);
+            match out {
+                Some(o) => {
+                    n.in_out.insert(slot.to_string(), o);
+                }
+                None => {
+                    n.in_out.remove(slot);
+                }
+            }
             self.dirty = true;
         }
     }
@@ -482,8 +742,12 @@ impl App {
             let first = slots(&e.kind).first().map(|s| s.0.to_string());
             if let Some(slot) = first {
                 if src != id && e.kind != "input" {
+                    let o = self.link_out.take();
                     if let Some(n) = self.g.nodes.get_mut(&id) {
-                        n.ins.insert(slot, src);
+                        n.ins.insert(slot.clone(), src);
+                        if let Some(o) = o {
+                            n.in_out.insert(slot, o);
+                        }
                     }
                 }
             }
@@ -628,6 +892,18 @@ impl App {
         }
     }
 
+    /// The shown graph changed (switch, open, enter or leave a subgraph): drop the previews of the old one right away
+    /// instead of leaving them on screen until the new evaluation finishes.
+    fn clear_views(&mut self) {
+        self.maps.clear();
+        self.tex2d = None;
+        self.thumbs.clear();
+        self.node_err.clear();
+        self.dirty3d = true;
+        self.gpu_maps_dirty = true;
+        self.dirty = true;
+    }
+
     fn enter_sub(&mut self, name: &str) {
         let Some(sub) = self.g.subgraphs.get(name).cloned() else {
             return self.status(format!("subgraph '{name}' not found"), false);
@@ -641,6 +917,7 @@ impl App {
         auto_layout_if_unplaced(&mut w);
         let parent = std::mem::replace(&mut self.g, w);
         self.parents.push((parent, name.to_string()));
+        self.clear_views();
         self.clear_history();
         self.fit_view();
     }
@@ -655,6 +932,7 @@ impl App {
             }
             parent.subgraphs.insert(name, sub);
             self.g = parent;
+            self.clear_views();
             self.clear_history();
             self.fit_view();
         }
@@ -711,8 +989,13 @@ impl App {
 
     // ------------------------------------------------------------ file operations
     fn open_file(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() else { return };
-        self.open_path(p);
+        let Some(files) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_files() else { return };
+        if self.screen == Screen::Editor {
+            // a project is already open: the opened files join the workspace as packages in the Explorer
+            self.open_packages(files);
+        } else if let Some(p) = files.into_iter().next() {
+            self.open_path(p);
+        }
     }
 
     fn save_to(&mut self, p: PathBuf) {
@@ -770,7 +1053,7 @@ impl App {
         let Some(dir) = self.export.dir.clone() else {
             return self.status("Choose an export folder first.", false);
         };
-        let sizes: Vec<usize> = [256usize, 512, 1024, 2048, 4096].iter().zip(self.export.sizes).filter(|(_, on)| *on).map(|(s, _)| *s).collect();
+        let sizes: Vec<usize> = [256usize, 512, 1024, 2048, 4096, 8192].iter().zip(self.export.sizes).filter(|(_, on)| *on).map(|(s, _)| *s).collect();
         if sizes.is_empty() {
             return self.status("Select at least one resolution.", false);
         }
@@ -835,7 +1118,15 @@ impl App {
     // ------------------------------------------------------------ background evaluation
     fn spawn_eval(&mut self) {
         let g = self.g.clone();
-        let size = self.prev_size;
+        let full = self.preview_full();
+        // big previews first show a quick low-resolution pass, then refine to the full size
+        let quick = full > 512 && self.job_quick_wanted;
+        let size = if quick { 512 } else { full };
+        // stop the older evaluation (it would only finish stale results) and start this one at once
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        let cancel: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        self.cancel = cancel.clone();
+        self.job_quick = quick;
         let mut keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
         if let Some(a) = self.active {
             keep.push(a);
@@ -845,9 +1136,18 @@ impl App {
         let (tx, rx) = channel();
         self.job = Some(rx);
         std::thread::spawn(move || {
-            let r = g.evaluate_all(size, &keep);
+            let r = g.evaluate_all_cancellable(size, &keep, cancel);
             let _ = tx.send(EvalResult { gen, thumbs: r.thumbs, errors: r.errors, kept: r.kept, outputs: g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect() });
         });
+    }
+
+    /// Resolution of the editor preview: the chosen size, or the graph's own size (at most 4096).
+    fn preview_full(&self) -> usize {
+        if self.prev_size == 0 {
+            self.g.size.clamp(16, 4096)
+        } else {
+            self.prev_size
+        }
     }
 
     fn poll_eval(&mut self, ctx: &egui::Context) {
@@ -855,11 +1155,19 @@ impl App {
         match rx.try_recv() {
             Ok(r) => {
                 self.job = None;
+                if self.job_quick {
+                    self.refine = true;
+                }
                 if r.gen != self.gen {
                     return;
                 }
-                let mut opts = egui::TextureOptions::LINEAR;
-                opts.wrap_mode = egui::TextureWrapMode::Repeat;
+                // like Designer's 2D view: zoomed in, every texel is a crisp square; zoomed out, a mip chain keeps it smooth
+                let opts = egui::TextureOptions {
+                    magnification: egui::TextureFilter::Nearest,
+                    minification: egui::TextureFilter::Linear,
+                    wrap_mode: egui::TextureWrapMode::Repeat,
+                    mipmap_mode: Some(egui::TextureFilter::Linear),
+                };
                 self.thumbs.retain(|id, _| r.thumbs.contains_key(id));
                 for (id, bytes) in &r.thumbs {
                     let img = ColorImage::from_rgba_unmultiplied([THUMB, THUMB], bytes);
@@ -994,7 +1302,7 @@ fn apply_theme(ctx: &egui::Context) {
     v.window_fill = Color32::from_rgb(52, 52, 52);
     v.extreme_bg_color = Color32::from_rgb(30, 30, 30);
     v.faint_bg_color = Color32::from_rgb(52, 52, 52);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(28, 28, 28));
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(28, 28, 28));
     v.widgets.inactive.bg_fill = Color32::from_rgb(66, 66, 66);
     v.widgets.inactive.weak_bg_fill = Color32::from_rgb(62, 62, 62);
     v.widgets.hovered.bg_fill = Color32::from_rgb(88, 88, 88);
@@ -1002,7 +1310,7 @@ fn apply_theme(ctx: &egui::Context) {
     v.widgets.active.bg_fill = Color32::from_rgb(235, 130, 20);
     v.widgets.active.weak_bg_fill = Color32::from_rgb(235, 130, 20);
     v.selection.bg_fill = Color32::from_rgb(220, 120, 20);
-    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    v.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
     v.window_rounding = Rounding::same(3.0);
     v.menu_rounding = Rounding::same(3.0);
     style.visuals = v;

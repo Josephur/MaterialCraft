@@ -25,6 +25,25 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Unit gradient vectors for 4096 evenly spaced angles (replaces a cos/sin per lattice corner).
+fn grad_table() -> &'static [[f32; 2]; 4096] {
+    static T: std::sync::OnceLock<Box<[[f32; 2]; 4096]>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut t = Box::new([[0.0f32; 2]; 4096]);
+        for (i, e) in t.iter_mut().enumerate() {
+            let a = i as f32 / 4096.0 * TAU;
+            *e = [a.cos(), a.sin()];
+        }
+        t
+    })
+}
+
+/// Gradient at a lattice point: same pseudo-random angle as `rnd(x, y, seed) * TAU`, quantised to 4096 steps.
+#[inline]
+fn grad_at(x: i32, y: i32, seed: u32) -> [f32; 2] {
+    grad_table()[(hash2(x, y, seed) >> 20) as usize]
+}
+
 /// Tileable gradient (Perlin) noise in 0..1. `px`,`py` are integer lattice periods.
 pub fn perlin(u: f32, v: f32, px: i32, py: i32, seed: u32) -> f32 {
     let px = px.max(1);
@@ -37,9 +56,10 @@ pub fn perlin(u: f32, v: f32, px: i32, py: i32, seed: u32) -> f32 {
     let iy = fyl as i32;
     let fx = x - fxl;
     let fy = y - fyl;
+    let tab = grad_table();
     let g = |cx: i32, cy: i32, dx: f32, dy: f32| {
-        let a = rnd(cx.rem_euclid(px), cy.rem_euclid(py), seed) * TAU;
-        a.cos() * dx + a.sin() * dy
+        let c = tab[(hash2(cx.rem_euclid(px), cy.rem_euclid(py), seed) >> 20) as usize];
+        c[0] * dx + c[1] * dy
     };
     let n00 = g(ix, iy, fx, fy);
     let n10 = g(ix + 1, iy, fx - 1.0, fy);
@@ -56,10 +76,13 @@ pub fn fbm(u: f32, v: f32, px: i32, py: i32, octaves: u32, gain: f32, seed: u32,
     let mut amp = 1.0;
     let mut sum = 0.0;
     let mut norm = 0.0;
-    let mut cx = px.max(1);
-    let mut cy = py.max(1);
-    for o in 0..octaves.clamp(1, 10) {
-        let n = perlin(u, v, cx, cy, seed.wrapping_add(o.wrapping_mul(131)));
+    let cx = px.max(1);
+    let cy = py.max(1);
+    // Every octave is rotated by about 26.6 degrees and scaled by sqrt(5) with the INTEGER matrix [[2, -1], [1, 2]], so
+    // the lattice directions of different octaves never line up (no visible grid) and the noise still tiles exactly.
+    let (mut a, mut b) = (u, v);
+    for o in 0..octaves.clamp(1, 12) {
+        let n = perlin(a, b, cx, cy, seed.wrapping_add(o.wrapping_mul(131)));
         let n = match mode {
             1 => 1.0 - (2.0 * n - 1.0).abs(),
             2 => (2.0 * n - 1.0).abs(),
@@ -68,11 +91,19 @@ pub fn fbm(u: f32, v: f32, px: i32, py: i32, octaves: u32, gain: f32, seed: u32,
         sum += n * amp;
         norm += amp;
         amp *= gain;
-        cx = cx.saturating_mul(2).min(1 << 14);
-        cy = cy.saturating_mul(2).min(1 << 14);
+        let (na, nb) = (2.0 * a - b, a + 2.0 * b);
+        // keep the coordinates small: whole periods do not change a periodic function
+        a = na.rem_euclid(1.0);
+        b = nb.rem_euclid(1.0);
     }
     if norm > 0.0 {
-        sum / norm
+        // averaged octaves cluster around mid grey; stretch them so the result uses most of the 0..1 range
+        let m = sum / norm;
+        let k = match mode {
+            0 => 1.7,
+            _ => 1.35,
+        };
+        (0.5 + (m - 0.5) * k).clamp(0.0, 1.0)
     } else {
         0.0
     }
@@ -109,6 +140,30 @@ pub fn voronoi(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> (f32
     }
     let k = std::f32::consts::FRAC_1_SQRT_2;
     ((f1 * k).clamp(0.0, 1.0), (f2 * k).clamp(0.0, 1.0), id)
+}
+
+/// Soft round spots, one disc per cell, tileable. `shape(id)` gives the (inner, outer) radius of a cell's disc in the
+/// same normalised distance units as `voronoi`; discs may overlap the neighbouring cells, so the union of the 3x3
+/// surrounding discs is taken (no straight cuts where cells meet). `grain` is added to the distance.
+pub fn spots<F: Fn(f32) -> (f32, f32)>(u: f32, v: f32, px: i32, py: i32, seed: u32, shape: F, grain: f32) -> f32 {
+    let (px, py) = (px.max(1), py.max(1));
+    let (x, y) = (u * px as f32, v * py as f32);
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let mut best = 0.0f32;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (cx, cy) = (ix + dx, iy + dy);
+            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5);
+            let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5);
+            let d = (((fx - x).powi(2) + (fy - y).powi(2)).sqrt() * k + grain).max(0.0);
+            let (lo, hi) = shape(rnd(wx, wy, seed.wrapping_add(999)));
+            let t = ((d - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+            best = best.max(1.0 - t * t * (3.0 - 2.0 * t));
+        }
+    }
+    best
 }
 
 pub struct Vor {
@@ -170,8 +225,7 @@ impl GradGrid {
         let mut g = Vec::with_capacity((px as usize) * (py as usize));
         for y in 0..py {
             for x in 0..px {
-                let a = rnd(x, y, seed) * TAU;
-                g.push([a.cos(), a.sin()]);
+                g.push(grad_at(x, y, seed));
             }
         }
         GradGrid { px, py, g }

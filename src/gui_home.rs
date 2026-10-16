@@ -12,6 +12,8 @@ struct NewDlg {
     name: String,
     size: usize,
     depth16: bool,
+    /// Package the graph is added to; None = a new package.
+    dest: Option<usize>,
 }
 
 struct Template {
@@ -163,10 +165,12 @@ enum Ic {
     Sphere,
     Dot,
     Input,
+    Package,
+    GraphIcon,
 }
 
 fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
-    let st = Stroke::new(1.4, col);
+    let st = Stroke::new(1.4_f32, col);
     let r = |dx: f32, dy: f32, w: f32, h: f32| Rect::from_min_size(pos2(c.x + dx, c.y + dy), vec2(w, h));
     let l = |a: (f32, f32), b: (f32, f32)| p.line_segment([pos2(c.x + a.0, c.y + a.1), pos2(c.x + b.0, c.y + b.1)], st);
     match ic {
@@ -233,7 +237,7 @@ fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
         Ic::Sphere => {
             p.circle_stroke(c, 6.0, st);
             let pts: Vec<Pos2> = (0..=20).map(|k| { let a = k as f32 / 20.0 * std::f32::consts::TAU; pos2(c.x + a.cos() * 6.0, c.y + a.sin() * 2.4) }).collect();
-            p.add(egui::Shape::line(pts, Stroke::new(1.0, col)));
+            p.add(egui::Shape::line(pts, Stroke::new(1.0_f32, col)));
         }
         Ic::Dot => {
             p.circle_stroke(c, 5.0, st);
@@ -245,6 +249,23 @@ fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
             l((-3.5, -3.5), (1.0, 0.0));
             l((-3.5, 3.5), (1.0, 0.0));
         }
+        Ic::Package => {
+            let top = [pos2(c.x, c.y - 7.0), pos2(c.x + 6.5, c.y - 3.5), pos2(c.x, c.y), pos2(c.x - 6.5, c.y - 3.5)];
+            p.add(egui::Shape::closed_line(top.to_vec(), st));
+            l((-6.5, -3.5), (-6.5, 3.5));
+            l((6.5, -3.5), (6.5, 3.5));
+            l((0.0, 0.0), (0.0, 7.0));
+            l((-6.5, 3.5), (0.0, 7.0));
+            l((6.5, 3.5), (0.0, 7.0));
+        }
+        Ic::GraphIcon => {
+            p.rect_stroke(r(-7.0, -6.0, 5.0, 4.0), 1.0, st);
+            p.rect_stroke(r(-7.0, 2.0, 5.0, 4.0), 1.0, st);
+            p.rect_stroke(r(3.0, -2.0, 5.0, 4.0), 1.0, st);
+            l((-2.0, -4.0), (0.5, 0.0));
+            l((-2.0, 4.0), (0.5, 0.0));
+            l((0.5, 0.0), (3.0, 0.0));
+        }
         Ic::Star => {
             let mut pts = Vec::new();
             for i in 0..10 {
@@ -255,6 +276,40 @@ fn draw_icon(p: &egui::Painter, c: Pos2, ic: Ic, col: Color32) {
             p.add(egui::Shape::closed_line(pts, st));
         }
     }
+}
+
+fn explorer_icon(ui: &mut egui::Ui, ic: Ic) {
+    let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+    draw_icon(ui.painter(), rect.center(), ic, Color32::from_gray(200));
+}
+
+/// A graph row in the Explorer: graph icon, name, and (expandable) its outputs. Returns the name's response.
+fn graph_row(ui: &mut egui::Ui, name: &str, outs: &[String], selected: bool, key: (&str, String)) -> egui::Response {
+    let id = ui.make_persistent_id(("grow", key.0, key.1));
+    let mut resp = None;
+    let head = |ui: &mut egui::Ui, resp: &mut Option<egui::Response>| {
+        explorer_icon(ui, Ic::GraphIcon);
+        let txt = if selected { egui::RichText::new(name).strong().color(Color32::WHITE) } else { egui::RichText::new(name) };
+        *resp = Some(ui.add(egui::Label::new(txt).selectable(false).sense(Sense::click_and_drag())));
+    };
+    if outs.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            head(ui, &mut resp);
+        });
+    } else {
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| head(ui, &mut resp))
+            .body(|ui| {
+                for o in outs {
+                    ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        ui.small(usage_label(o));
+                    });
+                }
+            });
+    }
+    resp.unwrap_or_else(|| ui.label(""))
 }
 
 fn entry_icon(kind: &str) -> Ic {
@@ -293,8 +348,8 @@ fn panel_header(ui: &mut egui::Ui, title: &str, closable: bool) -> bool {
         let resp = ui.interact(cr, Id::new(("hdr_close", title)), Sense::click());
         let col = if resp.hovered() { Color32::WHITE } else { Color32::from_gray(150) };
         let c = cr.center();
-        ui.painter().line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], Stroke::new(1.3, col));
-        ui.painter().line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], Stroke::new(1.3, col));
+        ui.painter().line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], Stroke::new(1.3_f32, col));
+        ui.painter().line_segment([c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0)], Stroke::new(1.3_f32, col));
         clicked = resp.clicked();
     }
     clicked
@@ -387,7 +442,7 @@ impl App {
     fn package_label(&self) -> String {
         match &self.file {
             Some(p) => p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
-            None => "Unsaved Package".into(),
+            None => self.unsaved_name.clone(),
         }
     }
 
@@ -416,8 +471,10 @@ impl App {
                 if !g.meta.contains_key("identifier") {
                     g.meta.insert("identifier".into(), p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
                 }
+                self.ws_fresh();
                 self.parents.clear();
                 self.g = g;
+                self.clear_views();
                 self.push_recent(&p);
                 self.file = Some(p.clone());
                 self.clear_history();
@@ -431,23 +488,30 @@ impl App {
         }
     }
 
+    fn open_new_dialog(&mut self, dest: Option<usize>) {
+        self.ws_init();
+        self.new_dlg.dest = if self.screen == Screen::Editor { dest } else { None };
+        self.new_dlg.name = if self.new_dlg.dest.is_some() { "Material_Graph".into() } else { "Graph".into() };
+        self.new_dlg.open = true;
+    }
+
     fn create_from_dialog(&mut self) {
         let t = &TEMPLATES[self.new_dlg.sel.min(TEMPLATES.len() - 1)];
         let mut name: String = self.new_dlg.name.trim().replace(' ', "_");
         if name.is_empty() {
-            name = "Graph".into();
+            name = if self.new_dlg.dest.is_some() { "Material_Graph".into() } else { "Graph".into() };
         }
-        self.parents.clear();
-        self.g = template_graph(t, &name, self.new_dlg.size, self.new_dlg.depth16);
-        self.file = None;
-        self.clear_history();
-        self.thumbs.clear();
-        self.modified = true;
+        let g = template_graph(t, &name, self.new_dlg.size, self.new_dlg.depth16);
         self.new_dlg.open = false;
-        self.screen = Screen::Editor;
-        self.need_fit = true;
-        self.active = self.g.nodes.keys().next().copied();
-        self.status(format!("Created '{name}' from template '{}'", t.name), true);
+        match self.new_dlg.dest.filter(|_| self.screen == Screen::Editor) {
+            Some(dest) => self.add_graph_to_pkg(dest, g, &name),
+            None => {
+                let unsaved = if self.screen == Screen::Editor { self.unique_unsaved_name() } else { "Unsaved Package".to_string() };
+                self.add_pkg_active(Pkg { path: None, name: unsaved, g, modified: true });
+                self.need_fit = true;
+                self.status(format!("Created package with '{name}' from template '{}'", t.name), true);
+            }
+        }
     }
 
     fn open_example(&mut self) {
@@ -455,8 +519,10 @@ impl App {
             g.migrate_outputs();
             auto_layout(&mut g);
             g.meta.insert("identifier".into(), "Brick_wall".into());
+            self.ws_fresh();
             self.parents.clear();
             self.g = g;
+            self.clear_views();
             self.file = None;
             self.clear_history();
             self.thumbs.clear();
@@ -578,7 +644,7 @@ impl App {
                 );
                 let br = Rect::from_min_size(rect.left_top() + vec2(40.0, 170.0), vec2(92.0, 32.0));
                 let resp = ui.interact(br, Id::new("go_learn"), Sense::click());
-                p.rect_stroke(br, 16.0, Stroke::new(2.0, Color32::WHITE));
+                p.rect_stroke(br, 16.0, Stroke::new(2.0_f32, Color32::WHITE));
                 if resp.hovered() {
                     p.rect_filled(br, 16.0, Color32::from_white_alpha(30));
                 }
@@ -617,7 +683,7 @@ impl App {
                     if resp.hovered() {
                         ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(38, 38, 38));
                     }
-                    ui.painter().line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, Color32::from_rgb(44, 44, 44)));
+                    ui.painter().line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0_f32, Color32::from_rgb(44, 44, 44)));
                     let col = if meta.is_some() { Color32::from_gray(225) } else { Color32::from_gray(110) };
                     ui.painter().text(rect.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &name, FontId::proportional(12.5), col);
                     if let Some(m) = &meta {
@@ -689,12 +755,12 @@ impl App {
         let mut open = true;
         let mut create = false;
         let mut cancel = false;
-        egui::Window::new("New Graph").open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).fixed_size(vec2(780.0, 470.0)).show(ctx, |ui| {
+        egui::Window::new(if self.new_dlg.dest.is_some() { "New Material Graph" } else { "New Package" }).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).fixed_size(vec2(780.0, 470.0)).show(ctx, |ui| {
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(vec2(340.0, 400.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.label(egui::RichText::new("TEMPLATES").size(12.0).color(Color32::from_gray(200)));
                     ui.add_space(4.0);
-                    egui::Frame::none().fill(Color32::from_rgb(32, 32, 32)).stroke(Stroke::new(1.0, Color32::from_rgb(60, 60, 60))).show(ui, |ui| {
+                    egui::Frame::none().fill(Color32::from_rgb(32, 32, 32)).stroke(Stroke::new(1.0_f32, Color32::from_rgb(60, 60, 60))).show(ui, |ui| {
                         ui.set_min_size(vec2(334.0, 366.0));
                         egui::ScrollArea::vertical().id_salt("tmpl").max_height(366.0).show(ui, |ui| {
                             for (i, t) in TEMPLATES.iter().enumerate() {
@@ -702,7 +768,7 @@ impl App {
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 21.0), Sense::click());
                                 if sel {
                                     ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(40, 62, 100));
-                                    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::from_rgb(60, 120, 230)));
+                                    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(60, 120, 230)));
                                 } else if resp.hovered() {
                                     ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(44, 44, 44));
                                 }
@@ -729,7 +795,7 @@ impl App {
                     ui.strong("Parent size (initial working resolution)");
                     ui.horizontal(|ui| {
                         egui::ComboBox::from_id_salt("nd_w").width(150.0).selected_text(format!("{} px", self.new_dlg.size)).show_ui(ui, |ui| {
-                            for s in [128usize, 256, 512, 1024, 2048, 4096] {
+                            for s in [128usize, 256, 512, 1024, 2048, 4096, 8192] {
                                 ui.selectable_value(&mut self.new_dlg.size, s, format!("{s} px"));
                             }
                         });
@@ -747,8 +813,20 @@ impl App {
                     });
                     ui.add_space(8.0);
                     ui.strong("Create graph in package");
-                    egui::ComboBox::from_id_salt("nd_pkg").width(380.0).selected_text("New package").show_ui(ui, |ui| {
-                        let _ = ui.selectable_label(true, "New package");
+                    let names: Vec<String> = if self.screen == Screen::Editor { (0..self.pkgs.len()).map(|i| self.pkg_title(i)).collect() } else { Vec::new() };
+                    let shown = match self.new_dlg.dest {
+                        Some(i) => names.get(i).cloned().unwrap_or_else(|| "New package".into()),
+                        None => "New package".into(),
+                    };
+                    egui::ComboBox::from_id_salt("nd_pkg").width(380.0).selected_text(shown).show_ui(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            if ui.selectable_label(self.new_dlg.dest == Some(i), n).clicked() {
+                                self.new_dlg.dest = Some(i);
+                            }
+                        }
+                        if ui.selectable_label(self.new_dlg.dest.is_none(), "New package").clicked() {
+                            self.new_dlg.dest = None;
+                        }
                     });
                     ui.add_space(12.0);
                     egui::CollapsingHeader::new(egui::RichText::new("Template details").strong()).default_open(true).show(ui, |ui| {
@@ -787,8 +865,43 @@ impl App {
         }
     }
 
+    /// Ask before closing a package that has unsaved changes.
+    fn confirm_close_ui(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.confirm_close else { return };
+        if i >= self.pkgs.len() {
+            self.confirm_close = None;
+            return;
+        }
+        let name = self.pkg_title(i);
+        let (mut save, mut discard, mut cancel) = (false, false, false);
+        egui::Window::new("Close package").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.label(format!("'{name}' has unsaved changes."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                save = ui.button("Save").clicked();
+                discard = ui.button("Discard changes").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if save {
+            self.confirm_close = None;
+            self.switch_pkg(i);
+            self.save();
+            if !self.modified {
+                let i = self.pkg_active;
+                self.close_pkg(i);
+            }
+        } else if discard {
+            self.confirm_close = None;
+            self.close_pkg(i);
+        } else if cancel {
+            self.confirm_close = None;
+        }
+    }
+
     // ------------------------------------------------------------ explorer
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
+        self.ws_init();
         if panel_header(ui, "EXPLORER", true) {
             self.show[0] = false;
         }
@@ -796,65 +909,123 @@ impl App {
             if icon_btn(ui, Ic::Save, "Save package", true).clicked() {
                 self.acts.push(Act::Save);
             }
-            if icon_btn(ui, Ic::Open, "Open package", true).clicked() {
+            if icon_btn(ui, Ic::Open, "Open package(s)", true).clicked() {
                 self.acts.push(Act::Open);
             }
         });
-        let pkg = format!("{}{}", self.package_label(), if self.modified || self.file.is_none() { "*" } else { "" });
+        // right-click on empty space: package actions
+        let area = ui.available_rect_before_wrap();
+        let bg = ui.interact(area, Id::new("explorer_bg"), Sense::click());
+        bg.context_menu(|ui| {
+            if ui.button("New Package").clicked() {
+                self.acts.push(Act::NewPackage);
+                ui.close_menu();
+            }
+            if ui.button("New Material Graph").clicked() {
+                self.acts.push(Act::NewGraphIn(self.pkg_sel));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Open Package(s)...").clicked() {
+                self.acts.push(Act::Open);
+                ui.close_menu();
+            }
+        });
+        let current = self.parents.last().map(|(_, n)| n.clone());
+        let n_pkgs = self.pkgs.len();
         egui::ScrollArea::vertical().id_salt("explorer").auto_shrink([false, false]).show(ui, |ui| {
-            let root_subs: Vec<String> = match self.parents.first() {
-                Some((p, _)) => p.subgraphs.keys().cloned().collect(),
-                None => self.g.subgraphs.keys().cloned().collect(),
-            };
-            let current = self.parents.last().map(|(_, n)| n.clone());
-            egui::CollapsingHeader::new(egui::RichText::new(pkg).italics().strong()).default_open(true).show(ui, |ui| {
-                let g = self.gname();
-                if ui.selectable_label(current.is_none(), format!("  {g}")).clicked() {
-                    for _ in 0..self.parents.len() {
-                        self.acts.push(Act::ExitSub);
-                    }
-                }
-                for name in root_subs {
-                    if ui.selectable_label(current.as_deref() == Some(name.as_str()), format!("      {name}")).clicked() {
-                        for _ in 0..self.parents.len() {
-                            self.acts.push(Act::ExitSub);
+            for i in 0..n_pkgs {
+                let is_active = i == self.pkg_active;
+                let label = format!("{}{}", self.pkg_title(i), if self.pkg_modified(i) { "*" } else { "" });
+                // graphs of this package: (name, outputs, is the package's main graph)
+                let (main_name, graphs): (String, Vec<(String, Vec<String>, bool)>) = {
+                    let root: &Graph = match self.pkgs.get(i) {
+                        Some(Some(p)) => &p.g,
+                        _ => self.parents.first().map(|p| &p.0).unwrap_or(&self.g),
+                    };
+                    let main = root.meta.get("identifier").cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| "Graph".into());
+                    let mut v = vec![(main.clone(), root.output_idents(), true)];
+                    v.extend(root.subgraphs.iter().filter(|(_, s)| !s.meta.contains_key("embedded")).map(|(k, s)| (k.clone(), s.output_idents(), false)));
+                    (main, v)
+                };
+                let _ = main_name;
+                let id = ui.make_persistent_id(("pkg", i));
+                let selected = self.pkg_sel == i;
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
+                    .show_header(ui, |ui| {
+                        explorer_icon(ui, Ic::Package);
+                        let mut txt = egui::RichText::new(&label).italics().strong();
+                        if selected {
+                            txt = txt.color(Color32::WHITE);
                         }
-                        self.acts.push(Act::EnterSub(name));
-                    }
-                }
-                let root = self.parents.first().map(|p| &p.0).unwrap_or(&self.g);
-                let files: BTreeSet<String> = root.nodes.values().filter(|n| n.kind == "bitmap").filter_map(|n| n.strs.get("file")).map(|f| std::path::Path::new(f).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| f.clone())).collect();
-                if !files.is_empty() {
-                    ui.add_space(4.0);
-                    ui.small("Resources");
-                    for f in files {
-                        ui.label(format!("      {f}"));
-                    }
-                }
-                ui.add_space(6.0);
-                ui.small("Graphs - drag onto the canvas to use as a node");
-                if ui.small_button("Import graph file...").clicked() {
-                    self.acts.push(Act::ImportGraphDialog);
-                }
-                if self.graph_files_at.map(|t| t.elapsed().as_secs_f32() > 3.0).unwrap_or(true) {
-                    self.refresh_graph_files();
-                }
-                let files = self.graph_files.clone();
-                if files.is_empty() {
-                    ui.weak("      (no other .mcg/.mca files next to the open graph or in recent files)");
-                }
-                for f in files {
-                    let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                    let r = ui.add(egui::Label::new(format!("      {name}")).sense(Sense::click_and_drag()));
-                    if r.drag_started() {
-                        r.dnd_set_drag_payload(GraphDrag(f.clone(), name.clone()));
-                    }
-                    if r.double_clicked() {
-                        self.acts.push(Act::ImportGraph(f.clone(), None));
-                    }
-                    r.on_hover_text(format!("{}\nDrag onto the canvas (or double-click) to add it as a node", f.display()));
-                }
-            });
+                        let r = ui.add(egui::Label::new(txt).selectable(false).sense(Sense::click()));
+                        if r.clicked() {
+                            self.pkg_sel = i;
+                        }
+                        r.on_hover_text(match self.pkgs.get(i) {
+                            Some(Some(p)) => p.path.as_ref().map(|x| x.display().to_string()).unwrap_or_else(|| "Not saved yet".into()),
+                            _ => self.file.as_ref().map(|x| x.display().to_string()).unwrap_or_else(|| "Not saved yet".into()),
+                        })
+                        .context_menu(|ui| {
+                            self.pkg_sel = i;
+                            ui.menu_button("New", |ui| {
+                                if ui.button("Material Graph").clicked() {
+                                    self.acts.push(Act::NewGraphIn(i));
+                                    ui.close_menu();
+                                }
+                            });
+                            if ui.button("Save Package").clicked() {
+                                self.acts.push(Act::SavePkg(i));
+                                ui.close_menu();
+                            }
+                            if ui.button("Close Package").clicked() {
+                                self.acts.push(Act::ClosePkg(i));
+                                ui.close_menu();
+                            }
+                        });
+                    })
+                    .body(|ui| {
+                        for (name, outs, is_main) in &graphs {
+                            let on = is_active && if *is_main { current.is_none() } else { current.as_deref() == Some(name.as_str()) };
+                            let r = graph_row(ui, name, outs, on, ("pkg", format!("{i}/{is_main}/{name}")));
+                            let sub = if *is_main { None } else { Some(name.clone()) };
+                            if r.dragged() {
+                                if is_active {
+                                    if let Some(s) = &sub {
+                                        r.dnd_set_drag_payload(format!("subgraph: {s}"));
+                                    }
+                                } else {
+                                    r.dnd_set_drag_payload(GraphDrag(i, name.clone(), sub.clone()));
+                                }
+                            }
+                            if r.clicked() {
+                                self.pkg_sel = i;
+                                if !is_active {
+                                    self.acts.push(Act::SwitchPkg(i));
+                                } else {
+                                    for _ in 0..self.parents.len() {
+                                        self.acts.push(Act::ExitSub);
+                                    }
+                                }
+                                if let Some(s) = sub.clone() {
+                                    self.acts.push(Act::EnterSub(s));
+                                }
+                            }
+                            r.on_hover_text("Click to open - drag onto the canvas to use it as a node");
+                        }
+                        if is_active {
+                            let root = self.parents.first().map(|p| &p.0).unwrap_or(&self.g);
+                            let files: BTreeSet<String> = root.nodes.values().filter(|n| n.kind == "bitmap").filter_map(|n| n.strs.get("file")).map(|f| std::path::Path::new(f).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| f.clone())).collect();
+                            if !files.is_empty() {
+                                ui.add_space(4.0);
+                                ui.small("Resources");
+                                for f in files {
+                                    ui.label(format!("      {f}"));
+                                }
+                            }
+                        }
+                    });
+            }
         });
     }
 
@@ -1032,7 +1203,7 @@ impl App {
             } else {
                 painter.image(t.id(), img, uv, Color32::WHITE);
             }
-            painter.rect_stroke(img, 0.0, Stroke::new(1.0, Color32::from_gray(70)));
+            painter.rect_stroke(img, 0.0, Stroke::new(1.0_f32, Color32::from_gray(70)));
         } else {
             painter.text(rect.center(), Align2::CENTER_CENTER, "select a node to view its result", FontId::proportional(12.5), Color32::from_gray(120));
         }
@@ -1051,9 +1222,11 @@ impl App {
                 if icon_btn(ui, Ic::Grid, "Tile 2x2 preview", true).clicked() {
                     self.tile_preview = !before;
                 }
-                egui::ComboBox::from_id_salt("psize").width(70.0).selected_text(format!("{}px", self.prev_size)).show_ui(ui, |ui| {
+                let shown = if self.prev_size == 0 { format!("{}px (graph)", self.preview_full()) } else { format!("{}px", self.prev_size) };
+                egui::ComboBox::from_id_salt("psize").width(110.0).selected_text(shown).show_ui(ui, |ui| {
                     let b = self.prev_size;
-                    for s in [128usize, 256, 512, 1024] {
+                    ui.selectable_value(&mut self.prev_size, 0, "Graph size");
+                    for s in [128usize, 256, 512, 1024, 2048, 4096] {
                         ui.selectable_value(&mut self.prev_size, s, format!("{s}px"));
                     }
                     if b != self.prev_size {
@@ -1067,7 +1240,7 @@ impl App {
     // ------------------------------------------------------------ 3D view
     fn view3d_panel(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-        let shape = ["Sphere", "Cube", "Plane"][self.view3d.shape.min(2) as usize];
+        let shape = render3d::shape_name(self.view3d.shape);
         let engine = if self.gpu_ready() { "GPU" } else { "CPU" };
         if panel_header(ui, &format!("{shape} - {engine} - 3D VIEW"), true) {
             self.show[2] = false;
@@ -1075,9 +1248,12 @@ impl App {
         let mut ch = false;
         egui::menu::bar(ui, |ui| {
             ui.menu_button("Scene", |ui| {
-                for (i, n) in ["Sphere", "Cube", "Plane"].iter().enumerate() {
-                    if ui.selectable_label(self.view3d.shape == i as u32, *n).clicked() {
-                        self.view3d.shape = i as u32;
+                for (k, (n, id)) in render3d::SHAPES.iter().enumerate() {
+                    if k == 7 {
+                        ui.separator();
+                    }
+                    if ui.selectable_label(self.view3d.shape == *id, *n).clicked() {
+                        self.view3d.shape = *id;
                         ch = true;
                         ui.close_menu();
                     }
@@ -1125,6 +1301,7 @@ impl App {
                 }
             });
             ui.menu_button("Lights", |ui| {
+                ch |= ui.checkbox(&mut self.view3d.light_follows_camera, "Light follows the camera").changed();
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.light_intensity, 0.0..=10.0).text("Intensity")).changed();
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.light_yaw, -3.14..=3.14).text("Azimuth")).changed();
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.light_pitch, -1.4..=1.4).text("Elevation")).changed();
@@ -1235,9 +1412,9 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
                 let before = self.view3d.shape;
-                egui::ComboBox::from_id_salt("shape3d").width(90.0).selected_text(shape).show_ui(ui, |ui| {
-                    for (i, n) in ["Sphere", "Cube", "Plane"].iter().enumerate() {
-                        ui.selectable_value(&mut self.view3d.shape, i as u32, *n);
+                egui::ComboBox::from_id_salt("shape3d").width(120.0).selected_text(shape).show_ui(ui, |ui| {
+                    for (n, id) in render3d::SHAPES.iter() {
+                        ui.selectable_value(&mut self.view3d.shape, *id, *n);
                     }
                 });
                 if before != self.view3d.shape {
@@ -1350,7 +1527,17 @@ impl App {
         egui::TopBottomPanel::top("menu").frame(egui::Frame::none().fill(Color32::from_rgb(34, 34, 34)).inner_margin(egui::Margin::symmetric(6.0, 2.0))).show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    for (label, a) in [("New graph...   Ctrl+N", Act::NewGraph), ("Open...   Ctrl+O", Act::Open), ("Save   Ctrl+S", Act::Save), ("Save as...", Act::SaveAs)] {
+                    ui.menu_button("New", |ui| {
+                        if ui.button("Material Graph...   Ctrl+N").clicked() {
+                            acts.push(Act::NewGraph);
+                            ui.close_menu();
+                        }
+                        if ui.button("Empty Package...").clicked() {
+                            acts.push(Act::NewPackage);
+                            ui.close_menu();
+                        }
+                    });
+                    for (label, a) in [("Open package(s)...   Ctrl+O", Act::Open), ("Save   Ctrl+S", Act::Save), ("Save as...", Act::SaveAs)] {
                         if ui.button(label).clicked() {
                             acts.push(a);
                             ui.close_menu();
@@ -1444,7 +1631,7 @@ impl App {
         egui::TopBottomPanel::top("toolbar").frame(egui::Frame::none().fill(Color32::from_rgb(38, 38, 38)).inner_margin(egui::Margin::symmetric(6.0, 1.0))).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 for (ic, tip, a, en) in [
-                    (Ic::New, "New graph (Ctrl+N)", Act::NewGraph, true),
+                    (Ic::New, "New material graph (Ctrl+N)", Act::NewGraph, true),
                     (Ic::Open, "Open (Ctrl+O)", Act::Open, true),
                     (Ic::Save, "Save (Ctrl+S)", Act::Save, true),
                 ] {
@@ -1581,7 +1768,7 @@ impl App {
                 ui.label("Parent Size:");
                 let before = self.g.size;
                 egui::ComboBox::from_id_salt("tb_size").width(70.0).selected_text(format!("{}", self.g.size)).show_ui(ui, |ui| {
-                    for s in [128usize, 256, 512, 1024, 2048, 4096] {
+                    for s in [128usize, 256, 512, 1024, 2048, 4096, 8192] {
                         ui.selectable_value(&mut self.g.size, s, format!("{s}"));
                     }
                 });
@@ -1650,7 +1837,7 @@ impl eframe::App for App {
             }
             if self.screen == Screen::Editor {
                 let at = ctx.input(|i| i.pointer.latest_pos()).filter(|q| self.canvas_rect.contains(*q));
-                self.acts.push(Act::ImportGraph(p, at));
+                self.acts.push(Act::ImportGraph(p, at, None));
             } else {
                 self.open_path(p);
             }
@@ -1790,6 +1977,7 @@ impl eframe::App for App {
 
         self.editor_ui(ctx);
         self.new_dialog(ctx);
+        self.confirm_close_ui(ctx);
         if let Some(t) = self.copy_out.take() {
             ctx.copy_text(t);
         }
@@ -1798,8 +1986,14 @@ impl eframe::App for App {
         for a in todo {
             self.do_act(a);
         }
-        if self.dirty && self.job.is_none() {
+        if self.dirty {
             self.dirty = false;
+            self.refine = false;
+            self.job_quick_wanted = true;
+            self.spawn_eval();
+        } else if self.refine && self.job.is_none() {
+            self.refine = false;
+            self.job_quick_wanted = false;
             self.spawn_eval();
         }
         if self.job.is_some() {

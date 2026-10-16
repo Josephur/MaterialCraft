@@ -485,3 +485,98 @@ fn whole_graph_can_be_imported_and_used_as_a_node() {
     let mut h2 = G2::default();
     assert!(h2.import_graph(G2::default(), "x").is_err());
 }
+
+#[test]
+fn links_can_read_a_specific_output_of_a_graph_node() {
+    let other = G2::parse("size 64\nnode 1 perlin scale=4 seed=3\nnode 2 invert in=@1\noutput height 2\noutput basecolor 1\noutput normal 1\n").unwrap();
+    assert_eq!(other.output_idents(), vec!["basecolor", "normal", "height"], "outputs are listed in canonical order");
+    let mut host = G2::parse_unchecked("size 64\nnode 1 subgraph graph=\"mat\"\nnode 2 invert in=@1.height\nnode 3 invert in=@1.basecolor\noutput a 2\noutput b 3\n").unwrap();
+    host.import_graph(other.clone(), "mat").unwrap();
+    host.validate().unwrap();
+    // round trip keeps the per-link output
+    let again = G2::parse_unchecked(&host.to_text()).unwrap();
+    assert_eq!(again.nodes[&2].in_out.get("in").map(String::as_str), Some("height"));
+    let out = again.evaluate(Some(32)).unwrap();
+    let direct = other.evaluate(Some(32)).unwrap();
+    let inv = |t: &materialcraft::tex::Tex| materialcraft::ops::invert(t).px;
+    assert_eq!(out["a"].px, inv(&direct["height"]));
+    assert_eq!(out["b"].px, inv(&direct["basecolor"]));
+    assert_ne!(out["a"].px, out["b"].px, "the two outputs differ");
+    // unknown output names are a clean error
+    let mut bad = G2::parse_unchecked("size 64\nnode 1 subgraph graph=\"mat\"\nnode 2 invert in=@1.nosuch\noutput a 2\n").unwrap();
+    bad.import_graph(other, "mat").unwrap();
+    assert!(bad.evaluate(Some(16)).is_err());
+}
+
+#[test]
+fn fast_blur_matches_a_true_gaussian_and_keeps_the_mean() {
+    use materialcraft::ops;
+    use materialcraft::tex::Tex;
+    let n = 128usize;
+    let t = Tex::gray_fn(n, n, |u, v| noise::fbm(u, v, 6, 6, 4, 0.5, 3, 0));
+    let sigma = 6.0f32;
+    let fast = ops::blur(&t, sigma);
+    // reference: direct separable gaussian with wrap-around
+    let r = (sigma * 4.0) as i64;
+    let k: Vec<f32> = (-r..=r).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
+    let ks: f32 = k.iter().sum();
+    let mut tmp = t.clone();
+    for y in 0..n {
+        for x in 0..n {
+            tmp.px[y * n + x][0] = (0..k.len()).map(|i| t.at(x as i64 + i as i64 - r, y as i64)[0] * k[i]).sum::<f32>() / ks;
+        }
+    }
+    let mut max_err = 0.0f32;
+    let (mut mean_a, mut mean_b) = (0.0f64, 0.0f64);
+    for y in 0..n {
+        for x in 0..n {
+            let v = (0..k.len()).map(|i| tmp.at(x as i64, y as i64 + i as i64 - r)[0] * k[i]).sum::<f32>() / ks;
+            max_err = max_err.max((v - fast.px[y * n + x][0]).abs());
+            mean_a += v as f64;
+            mean_b += fast.px[y * n + x][0] as f64;
+        }
+    }
+    assert!(max_err < 0.02, "box-approximated gaussian differs by {max_err}");
+    assert!(((mean_a - mean_b) / (n * n) as f64).abs() < 1e-4, "mean not preserved");
+}
+
+#[test]
+fn results_look_the_same_at_every_resolution() {
+    // parameters are resolution independent: the average of every output must barely change between 128 and 512 px
+    let g = Graph::parse(EXAMPLE).unwrap();
+    let lo = g.evaluate(Some(128)).unwrap();
+    let hi = g.evaluate(Some(512)).unwrap();
+    for (name, a) in &lo {
+        let b = &hi[name];
+        let mean = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| (p[0] + p[1] + p[2]) as f64 / 3.0).sum::<f64>() / t.px.len() as f64;
+        let (ma, mb) = (mean(a), mean(b));
+        assert!((ma - mb).abs() < 0.06, "{name}: mean {ma:.3} at 128px vs {mb:.3} at 512px");
+    }
+}
+
+#[test]
+fn large_sizes_are_accepted() {
+    for s in [2048, 4096, 8192] {
+        let text = format!("size {s}\nnode 1 fbm scale=4\noutput a 1\n");
+        assert!(Graph::parse(&text).is_ok(), "size {s} rejected");
+    }
+    assert!(Graph::parse("size 16384\nnode 1 fbm\noutput a 1\n").is_err());
+}
+
+#[test]
+fn a_cancelled_evaluation_stops_early() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    let mut g = Graph::parse(EXAMPLE).unwrap();
+    g.size = 1024;
+    let keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
+    let flag = Arc::new(AtomicBool::new(false));
+    let t0 = std::time::Instant::now();
+    let full = g.evaluate_all_cancellable(1024, &keep, flag.clone());
+    let full_time = t0.elapsed();
+    assert!(!full.kept.is_empty(), "uncancelled run must deliver its outputs");
+    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    let t1 = std::time::Instant::now();
+    let r = g.evaluate_all_cancellable(1024, &keep, flag);
+    assert!(r.kept.is_empty(), "a cancelled run must not deliver outputs");
+    assert!(t1.elapsed() < full_time / 4 + std::time::Duration::from_millis(50), "cancelled run still took {:?} (full run {:?})", t1.elapsed(), full_time);
+}

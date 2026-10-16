@@ -8,6 +8,9 @@ struct NodeSnap {
     pos: [f32; 2],
     graph_name: Option<String>,
     dot: bool,
+    /// Output names of a graph node with several outputs (empty = a single default output).
+    outs: Vec<String>,
+    in_out: Vec<(String, String)>,
 }
 
 impl App {
@@ -38,11 +41,13 @@ impl App {
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let released = ui.input(|i| i.pointer.any_released());
         let mut acts: Vec<Act> = Vec::new();
-        if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<String>(), pointer) {
+        // taking a payload of the wrong type would discard it, so check which kind is being dragged first
+        if egui::DragAndDrop::has_payload_of_type::<GraphDrag>(ui.ctx()) {
+            if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<GraphDrag>(), pointer) {
+                acts.push(Act::ImportFromPkg(payload.0, payload.2.clone(), Some(p)));
+            }
+        } else if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<String>(), pointer) {
             acts.push(Act::Drop((*payload).clone(), p));
-        }
-        if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<GraphDrag>(), pointer) {
-            acts.push(Act::ImportGraph(payload.0.clone(), Some(p)));
         }
 
         if resp.hovered() {
@@ -78,8 +83,8 @@ impl App {
         let ts = move |p: [f32; 2]| pos2(org.x + p[0] * z, org.y + p[1] * z);
 
         // grid
-        let minor = Stroke::new(1.0, Color32::from_rgb(63, 63, 63));
-        let major = Stroke::new(1.0, Color32::from_rgb(50, 50, 50));
+        let minor = Stroke::new(1.0_f32, Color32::from_rgb(63, 63, 63));
+        let major = Stroke::new(1.0_f32, Color32::from_rgb(50, 50, 50));
         let step = 32.0 * z;
         if step > 6.0 {
             let (ox, oy) = (self.pan.x.rem_euclid(step), self.pan.y.rem_euclid(step));
@@ -109,7 +114,7 @@ impl App {
             painter.rect_filled(r, Rounding::same(4.0 * z), base.gamma_multiply(0.16));
             let title = Rect::from_min_size(r.min, vec2(r.width(), 22.0 * z));
             painter.rect_filled(title, Rounding { nw: 4.0 * z, ne: 4.0 * z, sw: 0.0, se: 0.0 }, base.gamma_multiply(0.5));
-            painter.rect_stroke(r, Rounding::same(4.0 * z), Stroke::new(if selected { 2.0 } else { 1.0 }, if selected { Color32::from_rgb(255, 160, 40) } else { base.gamma_multiply(0.8) }));
+            painter.rect_stroke(r, Rounding::same(4.0 * z), Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(255, 160, 40) } else { base.gamma_multiply(0.8) }));
             painter.text(title.left_center() + vec2(8.0 * z, 0.0), Align2::LEFT_CENTER, &c.text, FontId::proportional(13.0 * z), Color32::WHITE);
             let tr = ui.interact(title, Id::new(("cmt", ci)), Sense::click_and_drag());
             if tr.drag_started() {
@@ -156,15 +161,32 @@ impl App {
             .map(|(id, n)| NodeSnap {
                 id: *id,
                 kind: n.kind.clone(),
-                slots: slots(&n.kind),
+                // a graph node only has input sockets when that graph defines inputs
+                slots: if n.kind == "subgraph" && !n.strs.get("graph").and_then(|g| self.g.subgraphs.get(g)).map(|sg| sg.nodes.values().any(|x| x.kind == "input")).unwrap_or(true) { Vec::new() } else { slots(&n.kind) },
                 ins: n.ins.iter().map(|(k, v)| (k.clone(), *v)).collect(),
                 pos: n.pos,
                 graph_name: n.strs.get("graph").cloned(),
                 dot: n.kind == "dot",
+                outs: n.strs.get("graph").filter(|_| n.kind == "subgraph").and_then(|g| self.g.subgraphs.get(g)).map(|sg| sg.output_idents()).filter(|o| o.len() >= 2).unwrap_or_default(),
+                in_out: n.in_out.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             })
             .collect();
         let posmap: HashMap<u32, ([f32; 2], bool)> = snaps.iter().map(|s| (s.id, (s.pos, s.dot))).collect();
         let out_port = move |p: [f32; 2], dot: bool| if dot { ts(p) + vec2(24.0 * z, 12.0 * z) } else { ts(p) + vec2(CARD * z, (BAR + CARD * 0.5) * z) };
+        let outs_map: HashMap<u32, Vec<String>> = snaps.iter().filter(|s| !s.outs.is_empty()).map(|s| (s.id, s.outs.clone())).collect();
+        let node_h = |n_outs: usize| if n_outs >= 2 { BAR + CARD.max(20.0 * n_outs as f32) } else { CARD_H };
+        let out_port_i = move |p: [f32; 2], i: usize, n: usize| {
+            let h = BAR + CARD.max(20.0 * n as f32);
+            ts(p) + vec2(CARD * z, (BAR + (h - BAR) * (i as f32 + 1.0) / (n as f32 + 1.0)) * z)
+        };
+        // where the link of output `name` of node `src` leaves its card
+        let src_port = |src: u32, name: Option<&str>| -> Option<Pos2> {
+            let sp = posmap.get(&src)?;
+            Some(match outs_map.get(&src) {
+                Some(o) => out_port_i(sp.0, name.and_then(|nm| o.iter().position(|x| x == nm)).unwrap_or(0), o.len()),
+                None => out_port(sp.0, sp.1),
+            })
+        };
         let in_port = move |p: [f32; 2], i: usize, n: usize, dot: bool| if dot { ts(p) + vec2(0.0, 12.0 * z) } else { ts(p) + vec2(0.0, (BAR + CARD * (i as f32 + 1.0) / (n as f32 + 1.0)) * z) };
         let link = |painter: &egui::Painter, a: Pos2, b: Pos2, col: Color32, w: f32| {
             let dx = ((b.x - a.x).abs() * 0.5).max(40.0 * z);
@@ -175,28 +197,33 @@ impl App {
         for s in &snaps {
             let n = s.slots.len();
             for (slot, src) in &s.ins {
-                if let (Some(i), Some(sp)) = (s.slots.iter().position(|x| x.0 == slot), posmap.get(src)) {
+                if let (Some(i), Some(a)) = (s.slots.iter().position(|x| x.0 == slot), src_port(*src, s.in_out.iter().find(|(k, _)| k == slot).map(|(_, v)| v.as_str()))) {
                     let hot = self.sel.contains(&s.id) || self.sel.contains(src);
-                    link(&painter, out_port(sp.0, sp.1), in_port(s.pos, i, n, s.dot), if hot { Color32::from_rgb(255, 170, 60) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
+                    link(&painter, a, in_port(s.pos, i, n, s.dot), if hot { Color32::from_rgb(255, 170, 60) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
                 }
             }
         }
 
-        let in_sub = !self.parents.is_empty();
-        let out_names: Vec<&'static str> = if in_sub { vec!["out"] } else { OUTPUT_NAMES.to_vec() };
+        let out_names: Vec<&'static str> = OUTPUT_NAMES.to_vec();
         let mut ports: Vec<(u32, &'static str, Pos2)> = Vec::new();
-        let mut out_ports: Vec<(u32, Pos2)> = Vec::new();
+        let mut out_ports: Vec<(u32, Option<String>, Pos2)> = Vec::new();
+        // sockets that have a link attached (drawn filled orange)
+        let used_ports: HashSet<(u32, String)> = snaps
+            .iter()
+            .flat_map(|s| s.ins.iter().map(move |(slot, src)| (*src, s.in_out.iter().find(|(k, _)| k == slot).map(|(_, v)| v.clone()))))
+            .filter_map(|(src, name)| outs_map.get(&src).map(|o| (src, name.unwrap_or_else(|| o[0].clone()))))
+            .collect();
         let mut cards: Vec<Rect> = Vec::new();
 
         for s in &snaps {
             let id = s.id;
-            let card = Rect::from_min_size(ts(s.pos), if s.dot { vec2(24.0, 24.0) } else { vec2(CARD, CARD_H) } * z);
+            let card = Rect::from_min_size(ts(s.pos), if s.dot { vec2(24.0, 24.0) } else { vec2(CARD, node_h(s.outs.len())) } * z);
             cards.push(card);
             let selected = self.sel.contains(&id);
             let err = self.node_err.get(&id).cloned();
             if s.dot {
                 let sel_col = if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_gray(150) };
-                painter.circle(card.center(), 9.0 * z, Color32::from_rgb(38, 38, 38), Stroke::new(if selected { 2.4 } else { 1.3 }, sel_col));
+                painter.circle(card.center(), 9.0 * z, Color32::from_rgb(38, 38, 38), Stroke::new(if selected { 2.4_f32 } else { 1.3_f32 }, sel_col));
                 painter.circle_filled(card.center(), 3.2 * z, Color32::from_gray(200));
             } else {
             painter.rect_filled(card.translate(vec2(2.0, 3.0) * z), Rounding::same(3.0 * z), Color32::from_black_alpha(70));
@@ -226,21 +253,21 @@ impl App {
                 painter.rect_filled(th, 0.0, Color32::from_rgba_unmultiplied(170, 30, 30, 150));
                 painter.text(th.center(), Align2::CENTER_CENTER, "!", FontId::proportional(30.0 * z), Color32::WHITE);
             }
-            painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(if selected { 2.4 } else { 1.0 }, if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_rgb(14, 14, 14) }));
+            painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(if selected { 2.4_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_rgb(14, 14, 14) }));
             if self.active == Some(id) && !selected {
-                painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(1.5, Color32::from_rgb(150, 150, 150)));
+                painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(1.5_f32, Color32::from_rgb(150, 150, 150)));
             }
 
             if s.kind == "output" {
                 let bc = card.left_top() + vec2(3.0, -1.0) * z;
-                painter.circle(bc, 10.5 * z, Color32::from_rgb(30, 30, 30), Stroke::new(1.5, Color32::from_gray(205)));
-                painter.circle_stroke(bc, 5.6 * z, Stroke::new(1.3, Color32::from_gray(235)));
+                painter.circle(bc, 10.5 * z, Color32::from_rgb(30, 30, 30), Stroke::new(1.5_f32, Color32::from_gray(205)));
+                painter.circle_stroke(bc, 5.6 * z, Stroke::new(1.3_f32, Color32::from_gray(235)));
                 let mut pts = Vec::new();
                 for k in 0..=24 {
                     let a = k as f32 / 24.0 * std::f32::consts::TAU;
                     pts.push(bc + vec2(a.cos() * 5.6, a.sin() * 2.2) * z);
                 }
-                painter.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_gray(200))));
+                painter.add(egui::Shape::line(pts, Stroke::new(1.0_f32, Color32::from_gray(200))));
                 painter.circle_filled(bc + vec2(-1.8, -1.8) * z, 1.4 * z, Color32::WHITE);
                 painter.text(card.left_top() + vec2(16.0, -4.0) * z, Align2::LEFT_BOTTOM, format!("({ident})"), FontId::proportional(9.0 * z), Color32::from_gray(150));
                 let bits = if self.g.meta.get("output_format").map(|f| f == "16").unwrap_or(false) { 16 } else { 8 };
@@ -338,29 +365,49 @@ impl App {
             });
 
             // ports
-            if s.kind != "output" {
+            if s.kind != "output" && s.outs.len() >= 2 {
+                // a graph node: one socket per output, labelled to the right of the card
+                for (oi, oname) in s.outs.iter().enumerate() {
+                    let op = out_port_i(s.pos, oi, s.outs.len());
+                    out_ports.push((id, Some(oname.clone()), op));
+                    let used = used_ports.contains(&(id, oname.clone()));
+                    painter.circle(op, 4.8 * z, if used { Color32::from_rgb(240, 170, 50) } else { Color32::from_rgb(200, 200, 200) }, Stroke::new(1.0_f32, Color32::BLACK));
+                    if z >= 0.45 {
+                        painter.text(op + vec2(9.0 * z, 0.0), Align2::LEFT_CENTER, usage_label(oname), FontId::proportional(10.5 * z.max(0.7)), Color32::from_gray(175));
+                    }
+                    let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id, oi)), Sense::drag());
+                    if pr.drag_started() {
+                        self.connecting = Some(id);
+                        self.connecting_out = Some(oname.clone());
+                    }
+                }
+            } else if s.kind != "output" {
                 let op = out_port(s.pos, s.dot);
-                out_ports.push((id, op));
-                painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0, Color32::BLACK));
+                out_ports.push((id, None, op));
+                painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0_f32, Color32::BLACK));
                 let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id)), Sense::drag());
                 if pr.drag_started() {
                     self.connecting = Some(id);
+                    self.connecting_out = None;
                 }
             }
             let n = s.slots.len();
             for (i, (slot, required)) in s.slots.iter().enumerate() {
                 let ip = in_port(s.pos, i, n, s.dot);
                 ports.push((id, *slot, ip));
-                painter.circle(ip, 4.5 * z, if s.kind == "output" { Color32::from_rgb(240, 170, 50) } else if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2, Color32::from_rgb(190, 190, 190)));
+                painter.circle(ip, 4.5 * z, if s.kind == "output" { Color32::from_rgb(240, 170, 50) } else if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2_f32, Color32::from_rgb(190, 190, 190)));
                 let ir = ui.interact(Rect::from_center_size(ip, Vec2::splat(14.0 * z)), Id::new(("in", id, i)), Sense::drag());
                 if ir.drag_started() {
                     let had = self.g.nodes.get(&id).and_then(|nd| nd.ins.get(*slot).copied());
                     if let Some(old) = had {
                         self.snap();
+                        let mut old_out = None;
                         if let Some(nd) = self.g.nodes.get_mut(&id) {
                             nd.ins.remove(*slot);
+                            old_out = nd.in_out.remove(*slot);
                         }
                         self.connecting = Some(old);
+                        self.connecting_out = old_out;
                         self.dirty = true;
                     } else {
                         self.connecting_in = Some((id, slot.to_string()));
@@ -374,20 +421,23 @@ impl App {
 
         // connection drag
         if let Some(src) = self.connecting {
-            if let (Some(pt), Some(sp)) = (pointer, posmap.get(&src)) {
-                link(&painter, out_port(sp.0, sp.1), pt, Color32::from_rgb(255, 190, 70), 2.0);
+            if let (Some(pt), Some(a)) = (pointer, src_port(src, self.connecting_out.as_deref())) {
+                link(&painter, a, pt, Color32::from_rgb(255, 190, 70), 2.0);
             }
             if released {
                 if let Some(pt) = pointer {
                     let near = ports.iter().filter(|(_, _, p)| (*p - pt).length() < 14.0 * z).min_by(|a, b| (a.2 - pt).length().partial_cmp(&(b.2 - pt).length()).unwrap_or(std::cmp::Ordering::Equal));
                     if let Some((dst, slot, _)) = near {
                         let (dst, slot) = (*dst, slot.to_string());
-                        self.try_connect(src, dst, &slot);
+                        let o = self.connecting_out.clone();
+                        self.try_connect_out(src, dst, &slot, o);
                     } else if rect.contains(pt) && !cards.iter().any(|c| c.contains(pt)) {
+                        self.link_out = self.connecting_out.clone();
                         self.open_search(pt, Some(src));
                     }
                 }
                 self.connecting = None;
+                self.connecting_out = None;
             }
         }
 
@@ -399,10 +449,10 @@ impl App {
             }
             if released {
                 if let Some(pt) = pointer {
-                    let near = out_ports.iter().filter(|(_, p)| (*p - pt).length() < 14.0 * z).min_by(|a, b| (a.1 - pt).length().partial_cmp(&(b.1 - pt).length()).unwrap_or(std::cmp::Ordering::Equal));
-                    if let Some((src, _)) = near {
-                        let src = *src;
-                        self.try_connect(src, dst, &slot);
+                    let near = out_ports.iter().filter(|(_, _, p)| (*p - pt).length() < 14.0 * z).min_by(|a, b| (a.2 - pt).length().partial_cmp(&(b.2 - pt).length()).unwrap_or(std::cmp::Ordering::Equal));
+                    if let Some((src, oname, _)) = near {
+                        let (src, oname) = (*src, oname.clone());
+                        self.try_connect_out(src, dst, &slot, oname);
                     } else if rect.contains(pt) && !cards.iter().any(|c| c.contains(pt)) {
                         self.open_search_to(pt, dst, slot.clone());
                     }
@@ -415,7 +465,7 @@ impl App {
         if let Some(start) = self.rubber {
             if let Some(pt) = pointer {
                 let r = Rect::from_two_pos(start, pt);
-                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(255, 160, 40, 28), Stroke::new(1.0, Color32::from_rgb(255, 160, 40)));
+                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(255, 160, 40, 28), Stroke::new(1.0_f32, Color32::from_rgb(255, 160, 40)));
                 if released {
                     for (s, c) in snaps.iter().zip(&cards) {
                         if r.intersects(*c) {
@@ -520,7 +570,10 @@ impl App {
                 let p = p.unwrap_or_else(|| self.canvas_rect.center());
                 self.open_search(p, None);
             }
-            Act::NewGraph => self.new_dlg.open = true,
+            Act::NewGraph => {
+                let dest = if self.screen == Screen::Editor { self.ws_init(); Some(self.pkg_sel) } else { None };
+                self.open_new_dialog(dest);
+            }
             Act::Home => self.screen = Screen::Home,
             Act::Drop(key, p) => {
                 let world = self.screen_to_world(p);
@@ -529,16 +582,32 @@ impl App {
                     self.spawn(&e, w, None);
                 }
             }
-            Act::ImportGraph(path, p) => {
+            Act::ImportGraph(path, p, gn) => {
                 let at = p.map(|p| {
                     let w = self.screen_to_world(p);
                     pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5)
                 });
-                self.import_graph_file(path, at);
+                self.import_graph_file(path, at, gn);
             }
-            Act::ImportGraphDialog => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() {
-                    self.import_graph_file(p, None);
+            Act::ImportFromPkg(i, gn, p) => {
+                let at = p.map(|p| {
+                    let w = self.screen_to_world(p);
+                    pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5)
+                });
+                self.import_from_pkg(i, gn, at);
+            }
+            Act::NewPackage => self.open_new_dialog(None),
+            Act::NewGraphIn(i) => self.open_new_dialog(Some(i)),
+            Act::SwitchPkg(i) => self.switch_pkg(i),
+            Act::SavePkg(i) => {
+                self.switch_pkg(i);
+                self.save();
+            }
+            Act::ClosePkg(i) => {
+                if self.pkg_dirty(i) {
+                    self.confirm_close = Some(i);
+                } else {
+                    self.close_pkg(i);
                 }
             }
             Act::NewOutput(usage, from) => self.new_output(&usage, from),
@@ -701,7 +770,7 @@ impl App {
                 });
                 ui.label("Resolutions (one sub-folder each when several are selected):");
                 ui.horizontal(|ui| {
-                    for (i, s) in [256, 512, 1024, 2048, 4096].iter().enumerate() {
+                    for (i, s) in [256, 512, 1024, 2048, 4096, 8192].iter().enumerate() {
                         ui.checkbox(&mut self.export.sizes[i], s.to_string());
                     }
                 });
@@ -780,7 +849,7 @@ impl App {
                 }
                 ui.separator();
                 egui::ComboBox::from_label("Resolution").selected_text(self.bake.s.size.to_string()).show_ui(ui, |ui| {
-                    for s in [256usize, 512, 1024, 2048] {
+                    for s in [256usize, 512, 1024, 2048, 4096] {
                         ui.selectable_value(&mut self.bake.s.size, s, s.to_string());
                     }
                 });

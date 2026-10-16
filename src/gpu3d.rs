@@ -64,36 +64,65 @@ fn b8(v: f32) -> u8 {
 }
 
 /// Convert graph outputs into upload-ready buffers. All colour maps are brought to the largest map size.
+/// Bring a map to `size` x `size`: exact box averaging when shrinking by a whole factor (no aliasing, e.g. 8K -> 4K),
+/// bilinear otherwise.
+fn fit(t: &Tex, size: usize) -> Tex {
+    if t.w == size && t.h == size {
+        return t.clone();
+    }
+    if t.w > size && t.h > size && t.w % size == 0 && t.h % size == 0 {
+        let (fx, fy) = (t.w / size, t.h / size);
+        let inv = 1.0 / (fx * fy) as f32;
+        let px = par_map(size * size, |i| {
+            let (x0, y0) = ((i % size) * fx, (i / size) * fy);
+            let mut a = [0.0f32; 4];
+            for y in y0..y0 + fy {
+                for x in x0..x0 + fx {
+                    let p = t.px[y * t.w + x];
+                    for c in 0..4 {
+                        a[c] += p[c];
+                    }
+                }
+            }
+            [a[0] * inv, a[1] * inv, a[2] * inv, a[3] * inv]
+        });
+        return Tex { w: size, h: size, px };
+    }
+    Tex::from_fn(size, size, |u, v| t.sample(u, v))
+}
+
+/// Convert graph outputs into upload-ready buffers. All colour maps are brought to the largest map size.
 pub fn prepare(m: &MapInputs) -> GpuMaps {
     let all = [m.base, m.normal, m.rough, m.metal, m.ao, m.emissive];
-    let size = all.iter().flatten().map(|t| t.w.max(t.h)).max().unwrap_or(4).clamp(1, 8192);
-    let px = |t: Option<&Tex>, dflt: [f32; 4], i: usize| -> [f32; 4] {
-        match t {
-            None => dflt,
-            Some(t) if t.w == size && t.h == size => t.px[i],
-            Some(t) => t.sample(((i % size) as f32 + 0.5) / size as f32, ((i / size) as f32 + 0.5) / size as f32),
+    let size = all.iter().flatten().map(|t| t.w.max(t.h)).max().unwrap_or(4).clamp(1, 4096);
+    let fitted: Vec<Option<Tex>> = all.iter().map(|t| t.filter(|t| t.w != size || t.h != size).map(|t| fit(t, size))).collect();
+    let px = |k: usize, t: Option<&Tex>, dflt: [f32; 4], i: usize| -> [f32; 4] {
+        match (&fitted[k], t) {
+            (Some(f), _) => f.px[i],
+            (None, Some(t)) => t.px[i],
+            (None, None) => dflt,
         }
     };
     let n = size * size;
-    let rgba = |t: Option<&Tex>, dflt: [f32; 4]| -> Vec<u8> {
+    let rgba = |k: usize, t: Option<&Tex>, dflt: [f32; 4]| -> Vec<u8> {
         let v: Vec<[u8; 4]> = par_map(n, |i| {
-            let p = px(t, dflt, i);
+            let p = px(k, t, dflt, i);
             [b8(p[0]), b8(p[1]), b8(p[2]), 255]
         });
         v.into_iter().flatten().collect()
     };
-    let base = rgba(m.base, [0.5, 0.5, 0.5, 1.0]);
-    let normal = rgba(m.normal, [0.5, 0.5, 1.0, 1.0]);
+    let base = rgba(0, m.base, [0.5, 0.5, 0.5, 1.0]);
+    let normal = rgba(1, m.normal, [0.5, 0.5, 1.0, 1.0]);
     let rma: Vec<u8> = {
         let v: Vec<[u8; 4]> = par_map(n, |i| {
-            let r = lum(px(m.rough, [0.5, 0.5, 0.5, 1.0], i));
-            let me = lum(px(m.metal, [0.0, 0.0, 0.0, 1.0], i));
-            let a = lum(px(m.ao, [1.0, 1.0, 1.0, 1.0], i));
+            let r = lum(px(2, m.rough, [0.5, 0.5, 0.5, 1.0], i));
+            let me = lum(px(3, m.metal, [0.0, 0.0, 0.0, 1.0], i));
+            let a = lum(px(4, m.ao, [1.0, 1.0, 1.0, 1.0], i));
             [b8(r), b8(me), b8(a), 255]
         });
         v.into_iter().flatten().collect()
     };
-    let emissive = m.emissive.map(|e| rgba(Some(e), [0.0, 0.0, 0.0, 1.0]));
+    let emissive = m.emissive.map(|e| rgba(5, Some(e), [0.0, 0.0, 0.0, 1.0]));
     let height = m.height.map(|h| (h.w, h.h, h.px.iter().map(|p| lum(*p)).collect::<Vec<f32>>()));
     GpuMaps { size, base, normal, rma, emissive, height }
 }
@@ -208,6 +237,7 @@ uniform int uHasHeight;
 uniform int uHasEmis;
 uniform int uWire;
 uniform int uShadow;
+uniform int uCull;
 out vec4 oColor;
 
 const float PI = 3.14159265;
@@ -216,9 +246,9 @@ vec2 gdy;
 
 // Smooth gradient only: used for diffuse ambient light.
 vec3 envSoft(vec3 d) {
-    vec3 sky = vec3(0.16, 0.20, 0.30);
-    vec3 hor = vec3(0.50, 0.50, 0.52);
-    vec3 ground = vec3(0.07, 0.06, 0.055);
+    vec3 sky = vec3(0.30, 0.34, 0.42);
+    vec3 hor = vec3(0.52, 0.52, 0.53);
+    vec3 ground = vec3(0.20, 0.19, 0.18);
     return d.y > 0.0 ? mix(hor, sky, pow(d.y, 0.6)) : mix(hor, ground, pow(-d.y, 0.5));
 }
 
@@ -228,25 +258,37 @@ vec3 env(vec3 d, float r) {
     float soft = r * r;
     vec3 col = mix(envSoft(d), vec3(0.30), soft * 0.5);
     float w = 0.015 + soft * 0.9;
-    float keyI = 7.0 / (1.0 + soft * 10.0);
+    float keyI = 4.5 / (1.0 + soft * 14.0);
     float key = smoothstep(0.93 - w, 0.93 + 0.015, dot(d, uL));
     col += vec3(1.0, 0.96, 0.90) * key * keyI;
     // tall side strip opposite the key
     vec3 side = normalize(vec3(-uL.z, 0.0, uL.x));
     float sdot = dot(normalize(vec3(d.x, 0.0, d.z) + 1e-5), side);
     float strip = smoothstep(0.93 - w, 0.97, sdot) * smoothstep(0.02 - w, 0.12, d.y) * (1.0 - smoothstep(0.55, 0.75 + w, d.y));
-    col += vec3(0.85, 0.92, 1.0) * strip * 2.6 / (1.0 + soft * 6.0);
+    col += vec3(0.85, 0.92, 1.0) * strip * 1.5 / (1.0 + soft * 10.0);
     // top panel
     float top = smoothstep(0.90 - w, 0.97, d.y);
-    col += vec3(1.0) * top * 1.6 / (1.0 + soft * 6.0);
+    col += vec3(1.0) * top * 1.0 / (1.0 + soft * 10.0);
     // bright horizon line
     float hl = exp(-pow(d.y / (0.035 + soft * 0.4), 2.0));
-    col += vec3(0.9) * hl * 0.5 / (1.0 + soft * 4.0);
+    col += vec3(0.9) * hl * 0.25 / (1.0 + soft * 8.0);
     return col;
 }
 
 vec3 aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+// Tone map on luminance so saturated colours keep their hue (a per-channel curve turns bright oranges pink and white),
+// then let only the very brightest highlights roll off per channel.
+float acesL(float x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+vec3 tonemap(vec3 c) {
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    vec3 hue = c * (acesL(l) / max(l, 1e-4));
+    hue = min(hue, vec3(1.0)) ;
+    return mix(hue, aces(c), smoothstep(2.0, 8.0, l) * 0.7);
 }
 
 vec3 envBrdf(vec3 f0, float rough, float ndv) {
@@ -315,7 +357,7 @@ float hshadow(vec2 uv, vec3 lt) {
         float ray = h0 + s * slope;
         res = min(res, 1.0 - smoothstep(0.0, 0.10 * depth + 1e-5, hs - ray));
     }
-    return mix(0.25, 1.0, res);
+    return mix(0.55, 1.0, res);
 }
 
 void main() {
@@ -324,6 +366,8 @@ void main() {
         return;
     }
     vec3 N = normalize(vN);
+    // shapes seen from the inside: walls that face away from the camera are not drawn
+    if (uCull == 1 && dot(N, uEye - vPos) < 0.0) discard;
     vec3 T = normalize(vT - N * dot(vT, N));
     vec3 B = cross(N, T);
     vec3 V = normalize(uEye - vPos);
@@ -343,7 +387,7 @@ void main() {
     vec3 rma = textureGrad(uRma, uv, gdx, gdy).rgb;
     float rough = clamp(rma.r, 0.04, 1.0);
     float metal = clamp(rma.g, 0.0, 1.0);
-    float ao = clamp(rma.b, 0.0, 1.0) * cav;
+    float ao = mix(1.0, clamp(rma.b, 0.0, 1.0), 0.85) * cav;
     vec3 nm = textureGrad(uNormal, uv, gdx, gdy).xyz;
     vec3 tn = vec3((nm.xy * 2.0 - 1.0) * uNormalAmt, max(nm.z * 2.0 - 1.0, 0.05));
     if (uMode == 1 && uHasHeight == 1 && uBump > 0.0) {
@@ -378,16 +422,17 @@ void main() {
     vec3 spec = dd * g * f / (4.0 * max(ndl, 1e-3) * ndv) * ndl;
     vec3 diff = albedo * (1.0 - metal) * (1.0 - f) / PI * ndl * uLightI * 1.15;
     float ndl2 = max(dot(n, uFill), 0.0);
-    vec3 diffFill = albedo * (1.0 - metal) / PI * ndl2 * uLightI * 0.35;
+    vec3 diffFill = albedo * (1.0 - metal) / PI * ndl2 * uLightI * 0.5;
     vec3 refl = reflect(-V, n);
     vec3 envR = env(refl, rough);
     vec3 envD = envSoft(n);
     vec3 ambD = albedo * (1.0 - metal) * envD * uAmbient;
     float specOcc = clamp(pow(ndv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
-    vec3 ambS = envR * envBrdf(f0, rough, ndv) * uAmbient * specOcc;
+    float horizon = clamp(1.0 + 1.2 * dot(refl, back ? -N : N), 0.0, 1.0);
+    vec3 ambS = envR * envBrdf(f0, rough, ndv) * uAmbient * specOcc * horizon * horizon;
     vec3 col = ((diff + spec * uLightI * 1.2) * sh + diffFill + (ambD * ao + ambS)) * uExposure;
     if (uHasEmis == 1) col += textureGrad(uEmis, uv, gdx, gdy).rgb;
-    col = aces(col);
+    col = tonemap(col);
     col = pow(col, vec3(1.0 / 2.2));
     oColor = vec4(col, 1.0);
 }
@@ -513,7 +558,7 @@ fn bytes_of<T>(v: &[T]) -> &[u8] {
 
 const UNIFORMS: &[&str] = &[
     "uVP", "uHeight", "uDisp", "uLevel", "uVtxLod", "uBase", "uNormal", "uRma", "uEmis", "uEye", "uL", "uFill", "uLightI", "uExposure", "uAmbient", "uNormalAmt", "uBump",
-    "uDepth", "uTexel", "uMode", "uHasHeight", "uHasEmis", "uWire", "uShadow",
+    "uDepth", "uTexel", "uMode", "uHasHeight", "uHasEmis", "uWire", "uShadow", "uCull",
 ];
 
 unsafe fn init(gl: &glow::Context, maps: &GpuMaps, aniso_req: f32) -> Result<Res, String> {
@@ -654,15 +699,16 @@ pub fn paint(shared: &Shared, info: &PaintCallbackInfo, painter: &egui_glow::Pai
     }
     let aspect = vp_px.width_px as f32 / vp_px.height_px as f32;
     let cam = camera(view, aspect);
-    let (lsy, lcy) = view.light_yaw.sin_cos();
-    let (lsp, lcp) = view.light_pitch.sin_cos();
-    let ldir = crate::v3::norm([lsy * lcp, lsp, lcy * lcp]);
-    let fill = crate::v3::norm([-ldir[0] * 0.7, -0.45, -ldir[2] * 0.5]);
+    let (ldir, fill) = crate::render3d::light_dirs(view);
     let has_h = r.height.is_some();
     let disp = if has_h && view.relief == RELIEF_DISPLACE { view.height_scale } else { 0.0 };
     let mesh_n = {
         let n = view.tess.clamp(8, 768);
-        if view.shape == 1 { (n * 5 / 8).max(8) } else { n }
+        match view.shape {
+            1 | 4 | 5 | 9 => (n * 5 / 8).max(8),
+            6 => (n * 2).min(1024),
+            _ => n,
+        }
     } as f32;
     let (hw, hh) = r.height.as_ref().map(|t| (t.w, t.h)).unwrap_or((1, 1));
     let vtx_lod = ((hw as f32 * view.tiling.max(0.1) / mesh_n).max(1.0)).log2();
@@ -710,6 +756,7 @@ pub fn paint(shared: &Shared, info: &PaintCallbackInfo, painter: &egui_glow::Pai
         gl.uniform_1_i32(loc("uHasHeight"), has_h as i32);
         gl.uniform_1_i32(loc("uHasEmis"), r.emis.is_some() as i32);
         gl.uniform_1_i32(loc("uShadow"), self_shadow as i32);
+        gl.uniform_1_i32(loc("uCull"), crate::render3d::shape_culls(view.shape) as i32);
         gl.uniform_1_i32(loc("uWire"), 0);
         let units: [(&str, glow::Texture); 5] = [
             ("uBase", r.base.id),

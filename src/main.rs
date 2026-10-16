@@ -203,8 +203,9 @@ fn run(args: &[String]) -> Result<(), String> {
                     }
                     if r3d {
                         let maps = Maps { base: b, normal: n, rough: r, metal: m, ao: a, emissive: out.get("emissive"), height: out.get("height") };
-                        for (i, name) in ["sphere", "cube", "plane"].iter().enumerate() {
-                            let v = View { shape: i as u32, ..View::default() };
+                        for (label, id) in render3d::SHAPES.iter() {
+                            let name: String = label.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                            let v = View { shape: *id, ..View::default() };
                             let img = render3d::render(&maps, &v, 512, 512);
                             write_png(&d.join(format!("render_{name}.png")), &img, 8)?;
                             println!("wrote {}", d.join(format!("render_{name}.png")).display());

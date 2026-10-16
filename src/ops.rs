@@ -8,16 +8,148 @@ fn sm(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Shortest signed distance on a wrapping unit axis: maps any offset into [-0.5, 0.5], so shapes centred
+/// anywhere on a tile continue seamlessly across its borders.
+pub fn wrapd(d: f32) -> f32 {
+    d - d.round()
+}
+
+/// Evaluate a centred shape at the wrapped offset (x, y). When the shape is larger than half a tile (`big`), the
+/// neighbouring copies overlap this tile, so the union of the 3x3 copies is taken instead of only the nearest one.
+pub fn tiled_max<F: Fn(f32, f32) -> f32>(big: bool, x: f32, y: f32, f: F) -> f32 {
+    if !big {
+        return f(x, y);
+    }
+    let mut m = f32::MIN;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            m = m.max(f(x + dx as f32, y + dy as f32));
+        }
+    }
+    m
+}
+
+/// Make any texture tile: cross-fades it with a copy shifted by half a tile, with weights that hand over completely
+/// to the shifted copy at the borders. Used when an operation cannot be periodic by itself.
+pub fn seamless_blend(t: &Tex) -> Tex {
+    let (w, h) = (t.w, t.h);
+    let wt = |i: usize, n: usize| {
+        let x = (i as f32 + 0.5) / n as f32;
+        let d = (2.0 * x - 1.0).abs(); // 0 centre .. 1 border
+        let k = 1.0 - d;
+        k * k * (3.0 - 2.0 * k)
+    };
+    let mut o = t.clone();
+    for y in 0..h {
+        let wy = wt(y, h);
+        for x in 0..w {
+            let wx = wt(x, w);
+            let (x2, y2) = ((x + w / 2) % w, (y + h / 2) % h);
+            let a = t.px[y * w + x];
+            let b = t.px[y * w + x2];
+            let c = t.px[y2 * w + x];
+            let d = t.px[y2 * w + x2];
+            let mut r = [0.0f32; 4];
+            for i in 0..4 {
+                r[i] = a[i] * wx * wy + b[i] * (1.0 - wx) * wy + c[i] * wx * (1.0 - wy) + d[i] * (1.0 - wx) * (1.0 - wy);
+            }
+            o.px[y * w + x] = r;
+        }
+    }
+    o
+}
+
 // ---------- blur / sharpen ----------
+/// Widths (odd) of three successive box blurs whose combination approximates a gaussian of the given sigma.
+fn gauss_boxes(sigma: f32) -> [i64; 3] {
+    let n = 3.0f32;
+    let w_ideal = (12.0 * sigma * sigma / n + 1.0).sqrt();
+    let mut wl = w_ideal.floor() as i64;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wu = wl + 2;
+    let m_ideal = (12.0 * sigma * sigma - n * (wl * wl) as f32 - 4.0 * n * wl as f32 - 3.0 * n) / (-4.0 * wl as f32 - 4.0);
+    let m = m_ideal.round() as i64;
+    [if 0 < m { wl } else { wu }, if 1 < m { wl } else { wu }, if 2 < m { wl } else { wu }]
+}
+
+/// One wrapping box blur along the rows of `src` (width w, height h), radius r, in parallel over rows.
+fn box_rows(src: &[[f32; 4]], w: usize, h: usize, r: i64) -> Vec<[f32; 4]> {
+    let mut dst = vec![[0.0f32; 4]; w * h];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let rows_per = (h + n - 1) / n;
+    let inv = 1.0 / (2 * r + 1) as f32;
+    std::thread::scope(|sc| {
+        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * w).enumerate() {
+            sc.spawn(move || {
+                for (ri, out) in chunk.chunks_mut(w).enumerate() {
+                    let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
+                    let wi = w as i64;
+                    let mut acc = [0.0f32; 4];
+                    for k in -r..=r {
+                        let p = row[k.rem_euclid(wi) as usize];
+                        for c in 0..4 {
+                            acc[c] += p[c];
+                        }
+                    }
+                    for x in 0..wi {
+                        out[x as usize] = [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv];
+                        let add = row[(x + r + 1).rem_euclid(wi) as usize];
+                        let sub = row[(x - r).rem_euclid(wi) as usize];
+                        for c in 0..4 {
+                            acc[c] += add[c] - sub[c];
+                        }
+                    }
+                }
+            });
+        }
+    });
+    dst
+}
+
+fn transpose(src: &[[f32; 4]], w: usize, h: usize) -> Vec<[f32; 4]> {
+    let mut dst = vec![[0.0f32; 4]; w * h];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let rows_per = (w + n - 1) / n; // rows of the transposed image (= columns of the source)
+    std::thread::scope(|sc| {
+        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * h).enumerate() {
+            sc.spawn(move || {
+                for (ri, out) in chunk.chunks_mut(h).enumerate() {
+                    let x = ci * rows_per + ri;
+                    for (y, o) in out.iter_mut().enumerate() {
+                        *o = src[y * w + x];
+                    }
+                }
+            });
+        }
+    });
+    dst
+}
+
+/// Gaussian blur with wrap-around (tileable) edges. Large radii use three box passes (cost independent of the radius,
+/// within a few percent of a true gaussian); small radii use the exact kernel.
 pub fn blur(t: &Tex, sigma: f32) -> Tex {
     if sigma < 0.1 {
         return t.clone();
+    }
+    let (w, h) = (t.w, t.h);
+    if sigma >= 2.5 {
+        let mut cur = t.px.clone();
+        for bw in gauss_boxes(sigma) {
+            let r = (bw / 2).max(0);
+            // a window wider than the image would wrap more than once; the result is then simply the mean
+            cur = box_rows(&cur, w, h, r.min((w as i64 - 1) / 2));
+            cur = transpose(&cur, w, h);
+            cur = box_rows(&cur, h, w, r.min((h as i64 - 1) / 2));
+            cur = transpose(&cur, h, w);
+        }
+        return Tex { w, h, px: cur };
     }
     let r = ((sigma * 3.0).ceil() as i64).clamp(1, 64);
     let mut k: Vec<f32> = (-r..=r).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
     let s: f32 = k.iter().sum();
     k.iter_mut().for_each(|x| *x /= s);
-    let (w, h) = (t.w, t.h);
     let mut tmp = t.clone();
     for y in 0..h {
         for x in 0..w {
@@ -255,7 +387,9 @@ pub fn transform(t: &Tex, ox: f32, oy: f32, sx: f32, sy: f32, rot: f32, tile: bo
     let (s, c) = (rot * TAU).sin_cos();
     let sx = sx.abs().max(1e-4);
     let sy = sy.abs().max(1e-4);
-    Tex::from_fn(t.w, t.h, |u, v| {
+    // the resampling is periodic only if the matrix maps the tile lattice onto itself (whole numbers)
+    let whole = [c / sx, s / sx, s / sy, c / sy].iter().all(|m| (m - m.round()).abs() < 1e-3);
+    let out = Tex::from_fn(t.w, t.h, |u, v| {
         let x = u - 0.5;
         let y = v - 0.5;
         let rx = c * x + s * y;
@@ -264,8 +398,13 @@ pub fn transform(t: &Tex, ox: f32, oy: f32, sx: f32, sy: f32, rot: f32, tile: bo
         if !tile && !(0.0..1.0).contains(&su) || !tile && !(0.0..1.0).contains(&sv) {
             return [0.0, 0.0, 0.0, 1.0];
         }
-        t.sample(su, sv)
-    })
+        t.sample_cubic(su, sv)
+    });
+    if tile && !whole {
+        seamless_blend(&out)
+    } else {
+        out
+    }
 }
 
 pub fn mirror(t: &Tex, axis: u32) -> Tex {
@@ -288,7 +427,7 @@ pub fn warp(t: &Tex, w: &Tex, intensity: f32) -> Tex {
         let y = (v * w.h as f32) as i64;
         let dx = w.gray_at(x + 1, y) - w.gray_at(x - 1, y);
         let dy = w.gray_at(x, y + 1) - w.gray_at(x, y - 1);
-        t.sample(u + dx * intensity, v + dy * intensity)
+        t.sample_cubic(u + dx * intensity, v + dy * intensity)
     })
 }
 
@@ -296,7 +435,7 @@ pub fn directional_warp(t: &Tex, w: &Tex, angle: f32, intensity: f32) -> Tex {
     let (s, c) = (angle * TAU).sin_cos();
     Tex::from_fn(t.w, t.h, |u, v| {
         let d = (lum(w.sample(u, v)) - 0.5) * intensity;
-        t.sample(u + c * d, v + s * d)
+        t.sample_cubic(u + c * d, v + s * d)
     })
 }
 
@@ -306,8 +445,10 @@ pub fn normal_from_height(h: &Tex, strength: f32, directx: bool) -> Tex {
     Tex::from_fn(h.w, h.h, |u, v| {
         let x = (u * h.w as f32) as i64;
         let y = (v * h.h as f32) as i64;
-        let dx = (h.gray_at(x + 1, y) - h.gray_at(x - 1, y)) * 0.5 * k;
-        let mut dy = (h.gray_at(x, y + 1) - h.gray_at(x, y - 1)) * 0.5 * k;
+        // 3x3 Scharr kernel: smoother and more rotation-invariant than a plain central difference
+        let g = |i: i64, j: i64| h.gray_at(x + i, y + j);
+        let dx = (3.0 * (g(1, -1) - g(-1, -1)) + 10.0 * (g(1, 0) - g(-1, 0)) + 3.0 * (g(1, 1) - g(-1, 1))) / 32.0 * k;
+        let mut dy = (3.0 * (g(-1, 1) - g(-1, -1)) + 10.0 * (g(0, 1) - g(0, -1)) + 3.0 * (g(1, 1) - g(1, -1))) / 32.0 * k;
         if directx {
             dy = -dy;
         }
@@ -728,7 +869,10 @@ pub fn flood_fill(t: &Tex, thresh: f32) -> Tex {
     let n = w * h;
     let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > thresh).collect();
     let mut label = vec![0u32; n];
-    let mut bbox: Vec<[u32; 4]> = vec![[0; 4]];
+    // position of every pixel relative to the region's first pixel, measured WITHOUT wrapping, so a region that
+    // crosses a tile border still gets one continuous gradient
+    let mut rel = vec![(0i32, 0i32); n];
+    let mut bbox: Vec<[i32; 4]> = vec![[0; 4]];
     let mut stack: Vec<usize> = Vec::new();
     let mut count = 0u32;
     for s in 0..n {
@@ -738,16 +882,18 @@ pub fn flood_fill(t: &Tex, thresh: f32) -> Tex {
         count += 1;
         label[s] = count;
         stack.push(s);
-        let mut bb = [w as u32, h as u32, 0u32, 0u32];
+        let mut bb = [0i32, 0, 0, 0];
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
-            bb = [bb[0].min(x as u32), bb[1].min(y as u32), bb[2].max(x as u32), bb[3].max(y as u32)];
+            let (rx, ry) = rel[i];
+            bb = [bb[0].min(rx), bb[1].min(ry), bb[2].max(rx), bb[3].max(ry)];
             for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
                 let nx = (x as i64 + dx).rem_euclid(w as i64) as usize;
                 let ny = (y as i64 + dy).rem_euclid(h as i64) as usize;
                 let j = ny * w + nx;
                 if mask[j] && label[j] == 0 {
                     label[j] = count;
+                    rel[j] = (rx + dx as i32, ry + dy as i32);
                     stack.push(j);
                 }
             }
@@ -760,9 +906,9 @@ pub fn flood_fill(t: &Tex, thresh: f32) -> Tex {
                 return [0.0, 0.0, 0.0, 1.0];
             }
             let b = bbox[label[i] as usize];
-            let (x, y) = (i % w, i / w);
-            let gx = ((x as f32 - b[0] as f32) + 0.5) / ((b[2] - b[0] + 1) as f32);
-            let gy = ((y as f32 - b[1] as f32) + 0.5) / ((b[3] - b[1] + 1) as f32);
+            let (rx, ry) = rel[i];
+            let gx = ((rx - b[0]) as f32 + 0.5) / ((b[2] - b[0] + 1) as f32);
+            let gy = ((ry - b[1]) as f32 + 0.5) / ((b[3] - b[1] + 1) as f32);
             [0.1 + 0.9 * rnd(label[i] as i32, 3, 17), gx, gy, 1.0]
         })
         .collect();
@@ -877,7 +1023,7 @@ pub fn distance(t: &Tex, range_px: f32, thr: f32, mode: u32) -> Tex {
 pub fn vector_warp(t: &Tex, vecmap: &Tex, intensity: f32) -> Tex {
     Tex::from_fn(t.w, t.h, |u, v| {
         let m = vecmap.sample(u, v);
-        t.sample(u + (m[0] - 0.5) * 2.0 * intensity, v + (m[1] - 0.5) * 2.0 * intensity)
+        t.sample_cubic(u + (m[0] - 0.5) * 2.0 * intensity, v + (m[1] - 0.5) * 2.0 * intensity)
     })
 }
 
@@ -920,7 +1066,7 @@ pub fn slope_blur(t: &Tex, slope: &Tex, samples: u32, intensity: f32, mode: u32)
 pub fn swirl(t: &Tex, amount: f32, radius: f32) -> Tex {
     let rad = radius.max(1e-3);
     Tex::from_fn(t.w, t.h, |u, v| {
-        let (x, y) = (u - 0.5, v - 0.5);
+        let (x, y) = (wrapd(u - 0.5), wrapd(v - 0.5));
         let r = (x * x + y * y).sqrt();
         let k = (1.0 - r / rad).clamp(0.0, 1.0);
         let a = amount * k * k * TAU;

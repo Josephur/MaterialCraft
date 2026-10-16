@@ -31,9 +31,16 @@ F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
     materialcraft bake <low.obj> <high.obj> <outdir> [--size 1024]
     materialcraft nodes | check | params | testmesh | example
 
+## Platforms
+Windows, Linux and macOS use the same code: `eframe` (glow / OpenGL 3.3 core) for the window and the 3D viewport, `rfd` for
+file dialogs, and only the Rust standard library elsewhere (no platform-specific code besides where the settings folder is:
+`%APPDATA%`, `~/.config` or `~/Library/Application Support`). GitHub Actions (`.github/workflows/ci.yml`) builds and tests all three.
+Linux needs the usual X11/Wayland/GL development packages (`libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev`).
+
 ## Not implemented (honest list)
 FX-Maps, splines/paths, function graphs, SVG/font/AxF import, OCIO/ACE colour management, scripting API,
-JPEG/TIFF export, displacement/path-traced 3D rendering, custom mesh import in the 3D viewer, third-party file-format compatibility.
+EXR / HDR output, path-traced 3D rendering, custom mesh import in the 3D viewer, third-party file-format compatibility.
+See ROADMAP.md for the complete list.
 
 
 ## Nodes (86)
@@ -43,3 +50,4 @@ Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gra
 slope warps, blur and blur HQ, levels, histogram scan / range, bevel, distance, gradient map, uniform color, HSL, color match,
 make-it-tile photo / patch and more. Material: normal, ambient occlusion, curvature (smooth), height blend, edge wear, dirt, dust.
 Graph items: output (drives the 3D view), input color / grayscale (subgraphs), subgraph instances, bitmap, comment, frame, dot.
+

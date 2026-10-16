@@ -4,7 +4,7 @@ use crate::noise;
 use crate::ops;
 use crate::png;
 use crate::tex::{lum, Tex};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -20,6 +20,8 @@ pub enum Error {
     NoOutputs,
     BadSize(usize),
     Io(String),
+    /// the editor started a newer evaluation; this one stopped early
+    Cancelled,
 }
 
 impl fmt::Display for Error {
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
             Error::NoOutputs => write!(f, "graph has no outputs"),
             Error::BadSize(s) => write!(f, "invalid resolution {s} (use 1..=8192)"),
             Error::Io(m) => write!(f, "io error: {m}"),
+            Error::Cancelled => write!(f, "evaluation cancelled"),
         }
     }
 }
@@ -188,6 +191,9 @@ pub fn label(kind: &str) -> String {
     kind.split('_').map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")
 }
 
+/// Output usages in the order they are listed on a graph node.
+pub const OUTPUT_USAGES: [&str; 12] = ["basecolor", "normal", "roughness", "metallic", "height", "ambient_occlusion", "opacity", "emissive", "diffuse", "specular", "glossiness", "out"];
+
 pub fn usage_label(usage: &str) -> String {
     match usage {
         "basecolor" => "Base Color",
@@ -238,7 +244,7 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
     };
     let mut line = format!("node 1 {kind}");
     match kind {
-        "pixel_processor" => line += " expr=\"sin(u*20)*0.5+0.5\"",
+        "pixel_processor" => line += " expr=\"sin(u*18.849556)*0.5+0.5\"",
         "colorize" => line += " p0=0 r0=0.1 g0=0.1 b0=0.35 p1=1 r1=1 g1=0.8 b1=0.3",
         "merge" => line += " r=@100 g=@101 b=@100",
         "switch" => line += " a=@100 b=@101 index=1",
@@ -258,6 +264,8 @@ pub struct Node {
     pub nums: BTreeMap<String, f32>,
     pub strs: BTreeMap<String, String>,
     pub ins: BTreeMap<String, u32>,
+    /// For links coming from a graph (subgraph) node: which of its outputs the slot reads. Absent = default output.
+    pub in_out: BTreeMap<String, String>,
     pub pos: [f32; 2],
 }
 
@@ -487,7 +495,14 @@ impl Graph {
                     for kv in &t[3..] {
                         let (k, v) = kv.split_once('=').ok_or_else(|| Error::Parse(ln, format!("expected key=value, got '{kv}'")))?;
                         if let Some(r) = v.strip_prefix('@') {
-                            n.ins.insert(k.to_string(), r.parse::<u32>().map_err(|_| Error::Parse(ln, format!("bad reference '{v}'")))?);
+                            let (idpart, outpart) = match r.split_once('.') {
+                                Some((a, b)) => (a, Some(b)),
+                                None => (r, None),
+                            };
+                            n.ins.insert(k.to_string(), idpart.parse::<u32>().map_err(|_| Error::Parse(ln, format!("bad reference '{v}'")))?);
+                            if let Some(o) = outpart.filter(|o| !o.is_empty()) {
+                                n.in_out.insert(k.to_string(), o.to_string());
+                            }
                         } else if let Ok(x) = v.parse::<f32>() {
                             match k {
                                 "_x" => n.pos[0] = x,
@@ -522,6 +537,14 @@ impl Graph {
             v.push((name.clone(), name.clone(), *id));
         }
         v
+    }
+
+    /// Names of the outputs in their canonical order (base color, normal, roughness, ...).
+    pub fn output_idents(&self) -> Vec<String> {
+        let mut v: Vec<(usize, String)> = self.output_nodes().into_iter().map(|(u, i, _)| (OUTPUT_USAGES.iter().position(|x| *x == u).unwrap_or(99), i)).collect();
+        v.sort();
+        v.dedup();
+        v.into_iter().map(|x| x.1).collect()
     }
 
     /// Convert legacy `output` assignments into real Output nodes.
@@ -657,7 +680,10 @@ impl Graph {
                 s.push_str(&format!(" {k}=\"{}\"", v.replace('"', "").replace('#', "")));
             }
             for (k, v) in &n.ins {
-                s.push_str(&format!(" {k}=@{v}"));
+                match n.in_out.get(k).filter(|o| !o.is_empty() && !o.contains(|c: char| c.is_whitespace() || matches!(c, '"' | '.' | '#' | '='))) {
+                    Some(o) => s.push_str(&format!(" {k}=@{v}.{o}")),
+                    None => s.push_str(&format!(" {k}=@{v}")),
+                }
             }
             s.push('\n');
         }
@@ -888,13 +914,17 @@ impl Graph {
             return Err(Error::BadSize(size));
         }
         let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
-        let mut cache: HashMap<u32, Rc<Tex>> = HashMap::new();
+        let outs = self.output_nodes();
+        let keep: Vec<u32> = outs.iter().map(|o| o.2).collect();
+        let mut cache = Cache::for_graph(self, &keep, false);
         let mut res = BTreeMap::new();
-        for (_, name, id) in &self.output_nodes() {
+        for (_, name, id) in &outs {
             let t = eval_node(self, *id, &ctx, &[], &mut cache)?;
-            res.insert(name.clone(), (*t).clone());
+            res.insert(name.clone(), t);
         }
-        Ok(res)
+        // hand the textures over without copying when no other output shares them
+        cache.map.clear();
+        Ok(res.into_iter().map(|(k, v)| (k, Rc::try_unwrap(v).unwrap_or_else(|rc| (*rc).clone()))).collect())
     }
 
     /// Evaluate a single node (editor preview). Ignores unrelated incomplete nodes.
@@ -904,12 +934,22 @@ impl Graph {
         }
         self.check_cycles()?;
         let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
-        let mut cache: HashMap<u32, Rc<Tex>> = HashMap::new();
-        Ok((*eval_node(self, id, &ctx, &[], &mut cache)?).clone())
+        let mut cache = Cache::for_graph(self, &[id], false);
+        let t = eval_node(self, id, &ctx, &[], &mut cache)?;
+        cache.map.clear();
+        Ok(Rc::try_unwrap(t).unwrap_or_else(|rc| (*rc).clone()))
     }
 
     /// Evaluate every node once (shared cache). Produces thumbnails, per-node errors and
     /// full-resolution textures for the ids in `keep`. Result is Send, so it can run on a worker thread.
+    /// Like `evaluate_all`, but stops at the next node boundary once `cancel` is set (the editor starts a newer job).
+    pub fn evaluate_all_cancellable(&self, size: usize, keep: &[u32], cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> EvalAll {
+        CANCEL.with(|c| *c.borrow_mut() = Some(cancel));
+        let r = self.evaluate_all(size, keep);
+        CANCEL.with(|c| *c.borrow_mut() = None);
+        r
+    }
+
     pub fn evaluate_all(&self, size: usize, keep: &[u32]) -> EvalAll {
         let mut r = EvalAll { thumbs: HashMap::new(), errors: HashMap::new(), kept: HashMap::new() };
         if size == 0 || size > 8192 {
@@ -921,42 +961,62 @@ impl Graph {
             return r;
         }
         let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
-        let mut cache: HashMap<u32, Rc<Tex>> = HashMap::new();
+        // thumbnails are taken the moment a node finishes, so intermediate textures can be freed as soon as every
+        // node that reads them is done (a big graph at 4K would not fit in memory otherwise)
+        let mut cache = Cache::for_graph(self, keep, true);
         for id in self.nodes.keys() {
             match eval_node(self, *id, &ctx, &[], &mut cache) {
                 Ok(t) => {
-                    let mut px = Vec::with_capacity(THUMB * THUMB * 4);
-                    for y in 0..THUMB {
-                        for x in 0..THUMB {
-                            let p = t.sample((x as f32 + 0.5) / THUMB as f32, (y as f32 + 0.5) / THUMB as f32);
-                            for c in &p[..3] {
-                                px.push((c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-                            }
-                            px.push(255);
-                        }
-                    }
-                    r.thumbs.insert(*id, px);
                     if keep.contains(id) {
                         r.kept.insert(*id, (*t).clone());
                     }
                 }
+                Err(Error::Cancelled) => break,
                 Err(e) => {
                     r.errors.insert(*id, e.to_string());
                 }
             }
         }
+        r.thumbs = cache.thumbs.take().unwrap_or_default();
         r
     }
 }
 
-fn eval_node(g: &Graph, id: u32, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut HashMap<u32, Rc<Tex>>) -> Result<Rc<Tex>, Error> {
-    if let Some(t) = cache.get(&id) {
+fn eval_node(g: &Graph, id: u32, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut Cache) -> Result<Rc<Tex>, Error> {
+    eval_node_out(g, id, None, ctx, ext, cache)
+}
+
+/// Cache key for one named output of a graph node (plain node ids keep their own key).
+fn out_key(id: u32, out: &str) -> u32 {
+    let mut h: u32 = 2166136261;
+    for b in out.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    0x8000_0000 | ((h & 0x7fff) << 16) | (id & 0xffff)
+}
+
+thread_local! {
+    static CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn cancelled() -> bool {
+    CANCEL.with(|c| c.borrow().as_ref().map(|f| f.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false))
+}
+
+fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut Cache) -> Result<Rc<Tex>, Error> {
+    let key = cache_key(g, id, out);
+    let out = if key != id { out } else { None };
+    if let Some(t) = cache.map.get(&key) {
         return Ok(t.clone());
+    }
+    if cancelled() {
+        return Err(Error::Cancelled);
     }
     let n = g.nodes.get(&id).ok_or(Error::MissingNode(0, id))?;
     let mut ins: BTreeMap<String, Rc<Tex>> = BTreeMap::new();
     for (slot, rid) in &n.ins {
-        ins.insert(slot.clone(), eval_node(g, *rid, ctx, ext, cache)?);
+        let want = n.in_out.get(slot).map(|s| s.as_str());
+        ins.insert(slot.clone(), eval_node_out(g, *rid, want, ctx, ext, cache)?);
     }
     let t = match n.kind.as_str() {
         "input" => {
@@ -967,15 +1027,90 @@ fn eval_node(g: &Graph, id: u32, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut
                 None => Tex::solid(ctx.size, ctx.size, [0.0, 0.0, 0.0, 1.0]),
             }
         }
-        "subgraph" => run_sub(id, n, &ins, ctx)?,
-        _ => compute(id, n, &ins, ctx)?,
+        "subgraph" => run_sub(id, n, &ins, ctx, out)?,
+        _ => {
+            let t0 = std::time::Instant::now();
+            let r = compute(id, n, &ins, ctx)?;
+            if std::env::var_os("MC_PROF").is_some() {
+                eprintln!("  {:>5.0} ms  node {} {}", t0.elapsed().as_secs_f64() * 1000.0, id, n.kind);
+            }
+            r
+        }
     };
     let rc = Rc::new(t);
-    cache.insert(id, rc.clone());
+    cache.map.insert(key, rc.clone());
+    if key == id {
+        if let Some(th) = cache.thumbs.as_mut() {
+            th.insert(id, thumbnail(&rc));
+        }
+    }
+    // free inputs nobody else is waiting for
+    for (slot, rid) in &n.ins {
+        let k = cache_key(g, *rid, n.in_out.get(slot).map(|s| s.as_str()));
+        if let Some(c) = cache.left.get_mut(&k) {
+            *c = c.saturating_sub(1);
+            if *c == 0 && !cache.keep.contains(&k) {
+                cache.map.remove(&k);
+            }
+        }
+    }
     Ok(rc)
 }
 
-fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Result<Tex, Error> {
+/// Textures of finished nodes, plus what is needed to free them early.
+struct Cache {
+    map: HashMap<u32, Rc<Tex>>,
+    /// how many not-yet-evaluated links still read each cached entry; an entry is freed when it reaches zero
+    left: HashMap<u32, u32>,
+    keep: HashSet<u32>,
+    /// thumbnails taken while evaluating (editor preview)
+    thumbs: Option<HashMap<u32, Vec<u8>>>,
+}
+
+impl Cache {
+    fn plain() -> Cache {
+        Cache { map: HashMap::new(), left: HashMap::new(), keep: HashSet::new(), thumbs: None }
+    }
+
+    fn for_graph(g: &Graph, keep: &[u32], thumbs: bool) -> Cache {
+        let mut c = Cache::plain();
+        for n in g.nodes.values() {
+            for (slot, rid) in &n.ins {
+                *c.left.entry(cache_key(g, *rid, n.in_out.get(slot).map(|s| s.as_str()))).or_insert(0) += 1;
+            }
+        }
+        c.keep = keep.iter().copied().collect();
+        if thumbs {
+            c.thumbs = Some(HashMap::new());
+        }
+        c
+    }
+}
+
+/// Cache key of an output: the node id, or a hash of (id, output name) for a named output of a graph node.
+fn cache_key(g: &Graph, id: u32, out: Option<&str>) -> u32 {
+    let is_sub = out.is_some() && g.nodes.get(&id).map(|n| n.kind == "subgraph").unwrap_or(false);
+    match out {
+        Some(o) if is_sub => out_key(id, o),
+        _ => id,
+    }
+}
+
+fn thumbnail(t: &Tex) -> Vec<u8> {
+    let mut px = Vec::with_capacity(THUMB * THUMB * 4);
+    for y in 0..THUMB {
+        for x in 0..THUMB {
+            let p = t.sample((x as f32 + 0.5) / THUMB as f32, (y as f32 + 0.5) / THUMB as f32);
+            for c in &p[..3] {
+                px.push((c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            }
+            px.push(255);
+        }
+    }
+    px
+}
+
+fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx, out: Option<&str>) -> Result<Tex, Error> {
     if ctx.depth >= 8 {
         return Err(Error::BadParam(id, "subgraph nesting too deep (recursive?)".into()));
     }
@@ -992,18 +1127,23 @@ fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
     }
     let ext: Vec<Option<Rc<Tex>>> = (0..4).map(|i| ins.get(&format!("in{i}")).cloned()).collect();
-    let outs = sub.output_nodes();
-    let want = n.strs.get("output").cloned().unwrap_or_default();
-    let out_id = outs
-        .iter()
-        .find(|o| !want.is_empty() && (o.0 == want || o.1 == want))
+    let mut outs = sub.output_nodes();
+    outs.sort_by_key(|o| OUTPUT_USAGES.iter().position(|x| *x == o.0).unwrap_or(99));
+    let want = out.map(String::from).or_else(|| n.strs.get("output").cloned()).unwrap_or_default();
+    let found = outs.iter().find(|o| !want.is_empty() && (o.0 == want || o.1 == want));
+    if out.is_some() && found.is_none() {
+        return Err(Error::BadParam(id, format!("graph '{name}' has no output '{want}'")));
+    }
+    let out_id = found
         .or_else(|| outs.iter().find(|o| o.0 == "out"))
         .or_else(|| outs.first())
         .map(|o| o.2)
         .ok_or_else(|| Error::BadParam(id, format!("subgraph '{name}' has no output")))?;
     let c2 = Ctx { size: ctx.size, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1 };
-    let mut cache = HashMap::new();
-    Ok((*eval_node(&sub, out_id, &c2, &ext, &mut cache)?).clone())
+    let mut cache = Cache::for_graph(&sub, &[out_id], false);
+    let t = eval_node(&sub, out_id, &c2, &ext, &mut cache)?;
+    cache.map.clear();
+    Ok(Rc::try_unwrap(t).unwrap_or_else(|rc| (*rc).clone()))
 }
 
 fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Result<Tex, Error> {
@@ -1015,6 +1155,8 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
     let per = |k: &str, d: f32| f(k, d).round().clamp(1.0, 4096.0) as i32;
     let s = ctx.size;
     let rs = s as f32 / 512.0;
+    // one pixel in uv units: hard edges are softened by at least this much, so they are anti-aliased at any resolution
+    let px1 = 1.2 / s as f32;
     let (dis, con, inv) = (f("disorder", 0.0), f("contrast", 1.0), f("invert", 0.0) > 0.5);
     let warp = move |u: f32, v: f32| -> (f32, f32) {
         if dis <= 0.0 {
@@ -1073,14 +1215,15 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (var, p) = (f("variant", 0.0) as u32, per("scale", 8.0));
             fin(Tex::gray_fn(s, s, move |u, v| {
                 let (a, b) = warp(u, v);
-                let vr = noise::voronoi_ext(a, b, p, p, seed, 1.0);
-                let rad = match var {
-                    0 => 0.18 + 0.5 * vr.id1 * vr.id1,
-                    1 => 0.3 + 0.55 * vr.id1,
-                    _ => 0.08 + 0.3 * vr.id1,
-                };
                 let grain = if var >= 2 { (noise::fbm(u, v, p * 4, p * 4, 3, 0.5, seed.wrapping_add(5), 0) - 0.5) * 0.25 } else { 0.0 };
-                1.0 - smooth(rad * 0.8, rad, vr.f1 + grain)
+                noise::spots(a, b, p, p, seed, |id| {
+                    let rad = match var {
+                        0 => 0.18 + 0.5 * id * id,
+                        1 => 0.3 + 0.55 * id,
+                        _ => 0.08 + 0.3 * id,
+                    };
+                    (rad * 0.8, rad)
+                }, grain)
             }))
         }
         "crystal" => {
@@ -1138,9 +1281,8 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                         smooth(0.6, 0.7, line) * smooth(0.45, 0.6, m)
                     }
                     2 => {
-                        let vr = noise::voronoi_ext(a, b, 22, 22, seed, 1.0);
                         let m = noise::fbm(a, b, 6, 6, 4, 0.5, seed.wrapping_add(4), 0);
-                        (1.0 - smooth(0.12, 0.2 + vr.id1 * 0.3, vr.f1)) * smooth(0.35, 0.6, m)
+                        noise::spots(a, b, 22, 22, seed, |id| (0.12, 0.2 + id * 0.3), 0.0) * smooth(0.35, 0.6, m)
                     }
                     _ => {
                         let n = noise::fbm(a, b, 3, 3, 5, 0.6, seed, 2);
@@ -1175,7 +1317,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             })
         }
         "weave" => {
-            let (cnt, wd) = (f("count", 6.0).round().max(1.0), f("width", 0.8).clamp(0.1, 1.0));
+            let (cnt, wd) = ((f("count", 6.0) / 2.0).round().max(1.0) * 2.0, f("width", 0.8).clamp(0.1, 1.0)); // even count: the over/under pattern wraps
             Tex::gray_fn(s, s, move |u, v| {
                 let (x, y) = (u * cnt, v * cnt);
                 let (i, j) = (x.floor() as i32, y.floor() as i32);
@@ -1190,23 +1332,32 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             Tex::gray_fn(s, s, move |u, v| ops::shape_value(k, u, v, px, py, sx, sy, rot, til, so))
         }
         "star" => {
-            let (pts, inner, size, so, rot) = (f("points", 5.0).round().max(3.0), f("inner", 0.45), f("size", 0.4), f("softness", 0.01).max(1e-4), f("rotation", 0.0));
+            let (pts, inner, size, so, rot) = (f("points", 5.0).round().max(3.0), f("inner", 0.45), f("size", 0.4), f("softness", 0.01).max(px1), f("rotation", 0.0));
             Tex::gray_fn(s, s, move |u, v| {
-                let (x, y) = (u - 0.5, v - 0.5);
-                let a = y.atan2(x) - rot * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
-                let seg = std::f32::consts::TAU / pts;
-                let t = a.rem_euclid(seg) / seg;
-                let edge = size * inner + (size - size * inner) * (1.0 - (2.0 * t - 1.0).abs());
-                1.0 - smooth(-so, 0.0, (x * x + y * y).sqrt() - edge)
+                ops::tiled_max(size > 0.5, ops::wrapd(u - 0.5), ops::wrapd(v - 0.5), |x, y| {
+                    let a = y.atan2(x) - rot * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
+                    let seg = std::f32::consts::TAU / pts;
+                    let t = a.rem_euclid(seg) / seg;
+                    let edge = size * inner + (size - size * inner) * (1.0 - (2.0 * t - 1.0).abs());
+                    1.0 - smooth(-so, 0.0, (x * x + y * y).sqrt() - edge)
+                })
             })
         }
         "gradient_axial" => {
-            let (sa, ca) = (f("angle", 0.0) * std::f32::consts::TAU).sin_cos();
-            Tex::gray_fn(s, s, move |u, v| 1.0 - (2.0 * ((u - 0.5) * ca + (v - 0.5) * sa + 0.5) - 1.0).abs())
+            // direction snapped to a whole wave vector so the symmetric ramp repeats seamlessly
+            let (a, b) = ops::tileable_wave(1.0, f("angle", 0.0));
+            let (a, b) = (a as f32, b as f32);
+            Tex::gray_fn(s, s, move |u, v| 1.0 - (2.0 * ((u - 0.5) * a + (v - 0.5) * b + 0.5).rem_euclid(1.0) - 1.0).abs())
         }
         "gradient_circular" => {
+            // the angular ramp fades to a flat value towards the tile border, so neighbouring tiles meet seamlessly
             let off = f("offset", 0.0);
-            Tex::gray_fn(s, s, move |u, v| ((v - 0.5).atan2(u - 0.5) / std::f32::consts::TAU + 0.5 + off).rem_euclid(1.0))
+            Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (ops::wrapd(u - 0.5), ops::wrapd(v - 0.5));
+                let a = (y.atan2(x) / std::f32::consts::TAU + 0.5 + off).rem_euclid(1.0);
+                let w = 1.0 - smooth(0.3, 0.5, x.abs().max(y.abs()));
+                0.5 + (a - 0.5) * w
+            })
         }
         "voronoi" => {
             let (p, j, mode) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
@@ -1222,35 +1373,57 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "gradient" => {
             let (mode, (sa, ca)) = (f("mode", 0.0) as u32, (f("angle", 0.0) * std::f32::consts::TAU).sin_cos());
+            // linear mode: direction snapped to a whole wave vector and folded (0 -> 1 -> 0), so it repeats seamlessly
+            let (wa, wb) = ops::tileable_wave(1.0, f("angle", 0.0));
+            let (wa, wb) = (wa as f32, wb as f32);
+            let _ = (sa, ca);
             Tex::gray_fn(s, s, move |u, v| {
                 if mode == 1 {
-                    (((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt() * 2.0).clamp(0.0, 1.0)
+                    let (x, y) = (ops::wrapd(u - 0.5), ops::wrapd(v - 0.5));
+                    ((x * x + y * y).sqrt() * 2.0).clamp(0.0, 1.0)
                 } else {
-                    ((u - 0.5) * ca + (v - 0.5) * sa + 0.5).clamp(0.0, 1.0)
+                    1.0 - (2.0 * ((u - 0.5) * wa + (v - 0.5) * wb + 0.5).rem_euclid(1.0) - 1.0).abs()
                 }
             })
         }
         "circle" => {
-            let (r, so) = (f("radius", 0.4), f("softness", 0.01).max(1e-4));
-            Tex::gray_fn(s, s, move |u, v| 1.0 - smooth(r - so, r, ((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt()))
+            let (r, so) = (f("radius", 0.4), f("softness", 0.01).max(px1));
+            Tex::gray_fn(s, s, move |u, v| ops::tiled_max(r > 0.5, ops::wrapd(u - 0.5), ops::wrapd(v - 0.5), |x, y| 1.0 - smooth(r - so, r, (x * x + y * y).sqrt())))
         }
         "rect" => {
-            let (w, h, so) = (f("width", 0.6), f("height", 0.4), f("softness", 0.01).max(1e-4));
+            let (w, h, so) = (f("width", 0.6), f("height", 0.4), f("softness", 0.01).max(px1));
             Tex::gray_fn(s, s, move |u, v| {
-                let d = ((u - 0.5).abs() - w * 0.5).max((v - 0.5).abs() - h * 0.5);
+                let d = (ops::wrapd(u - 0.5).abs() - w * 0.5).max(ops::wrapd(v - 0.5).abs() - h * 0.5);
                 1.0 - smooth(-so, 0.0, d)
             })
         }
         "polygon" => {
-            let (sd, r, so, rot) = (f("sides", 5.0), f("radius", 0.4), f("softness", 0.01).max(1e-4), f("rotation", 0.0));
-            Tex::gray_fn(s, s, move |u, v| 1.0 - smooth(-so, 0.0, ops::polygon_sdf(u - 0.5, v - 0.5, sd, r, rot)))
+            let (sd, r, so, rot) = (f("sides", 5.0), f("radius", 0.4), f("softness", 0.01).max(px1), f("rotation", 0.0));
+            Tex::gray_fn(s, s, move |u, v| ops::tiled_max(r > 0.5, ops::wrapd(u - 0.5), ops::wrapd(v - 0.5), |x, y| 1.0 - smooth(-so, 0.0, ops::polygon_sdf(x, y, sd, r, rot))))
         }
         "checker" => {
-            let t = f("tiles", 8.0).round().max(1.0);
-            Tex::gray_fn(s, s, move |u, v| (((u * t).floor() + (v * t).floor()) as i64 & 1) as f32)
+            let t = (f("tiles", 8.0) / 2.0).round().max(1.0) * 2.0; // even count so the pattern wraps
+            // anti-aliased: blend across a cell border over about one pixel
+            let aa = (t / s as f32).max(1e-6);
+            Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (u * t, v * t);
+                let (fx, fy) = (x - x.floor(), y - y.floor());
+                let (ix, iy) = (x.floor() as i64, y.floor() as i64);
+                // signed distances (in cells) to the nearest vertical / horizontal border and which side we are on
+                let sx = ((fx.min(1.0 - fx)) / aa).min(1.0) * 0.5 + 0.5; // 0.5 at the border .. 1 inside
+                let sy = ((fy.min(1.0 - fy)) / aa).min(1.0) * 0.5 + 0.5;
+                let base = ((ix + iy) & 1) as f32;
+                // mix towards the average (0.5) at the border: at a border the neighbour cell has the opposite value
+                let kx = 1.0 - sx; // 0 inside .. 0.5 at the border
+                let ky = 1.0 - sy;
+                let v1 = base + (1.0 - 2.0 * base) * kx; // moves towards the neighbour value across x
+                let v2 = v1 + (1.0 - 2.0 * v1) * ky;
+                v2.clamp(0.0, 1.0)
+            })
         }
         "bricks" => {
             let (r, c, m, b, o, lv) = (f("rows", 8.0), f("cols", 4.0), f("mortar", 0.03), f("bevel", 0.05), f("offset", 0.5), f("lum_var", 0.3));
+            let b = b.max(1.5 * r.max(c) / s as f32); // edge ramps are at least about a pixel wide (anti-aliased)
             Tex::gray_fn(s, s, move |u, v| ops::bricks(u, v, r, c, m, b, o, lv, seed))
         }
         "tile_sampler" | "tile_generator" => {
@@ -1391,7 +1564,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "sdf_shape" => {
             let (shape, size, aspect, sides, rot, round) = (f("shape", 0.0) as u32, f("size", 0.25), f("aspect", 1.0), f("sides", 5.0), f("rotation", 0.0), f("round", 0.0));
             let (cx, cy, range) = (f("x", 0.0), f("y", 0.0), f("range", 0.25));
-            Tex::gray_fn(s, s, move |u, v| ops::sdf_to_value(ops::sdf2d(shape, u - 0.5 - cx, v - 0.5 - cy, size, aspect, sides, rot, round), range))
+            Tex::gray_fn(s, s, move |u, v| ops::sdf_to_value(ops::sdf2d(shape, ops::wrapd(u - 0.5 - cx), ops::wrapd(v - 0.5 - cy), size, aspect, sides, rot, round), range))
         }
         "sdf_op" => {
             let (op, k, range) = (f("op", 0.0) as u32, f("smooth", 0.0), f("range", 0.25));
@@ -1414,7 +1587,10 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let file = n.strs.get("file").ok_or_else(|| Error::BadParam(id, "bitmap needs file".into()))?;
             let bytes = match ctx.res.get(file) {
                 Some(b) => b.clone(),
-                None => std::fs::read(file).map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
+                // graphs written on Windows use backslashes; accept them on every platform
+                None => std::fs::read(file)
+                    .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
+                    .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
             };
             png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?
         }
@@ -1493,7 +1669,7 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 }
 
 pub const EXAMPLE: &str = r#"# Brick wall PBR material
-size 512
+size 2048
 node 1 bricks rows=8 cols=4 mortar=0.04 bevel=0.10 lum_var=0.45 seed=3
 node 2 fbm scale=8 octaves=5 seed=7
 node 3 fbm scale=32 octaves=3 seed=9

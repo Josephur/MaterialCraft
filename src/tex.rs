@@ -86,6 +86,44 @@ impl Tex {
         o
     }
 
+    /// Catmull-Rom (bicubic) wrapped sampling in uv space: sharper than bilinear for rotations, scaling and warps. The
+    /// result stays inside the range of the four nearest texels, so it never overshoots.
+    pub fn sample_cubic(&self, u: f32, v: f32) -> [f32; 4] {
+        let u = if u.is_finite() { u } else { 0.0 };
+        let v = if v.is_finite() { v } else { 0.0 };
+        let x = u * self.w as f32 - 0.5;
+        let y = v * self.h as f32 - 0.5;
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (xi, yi) = (x0 as i64, y0 as i64);
+        let wts = |t: f32| {
+            [
+                0.5 * (-t * t * t + 2.0 * t * t - t),
+                0.5 * (3.0 * t * t * t - 5.0 * t * t + 2.0),
+                0.5 * (-3.0 * t * t * t + 4.0 * t * t + t),
+                0.5 * (t * t * t - t * t),
+            ]
+        };
+        let (wx, wy) = (wts(fx), wts(fy));
+        let mut o = [0.0f32; 4];
+        for j in 0..4 {
+            for i in 0..4 {
+                let p = self.at(xi + i as i64 - 1, yi + j as i64 - 1);
+                let w = wx[i] * wy[j];
+                for c in 0..4 {
+                    o[c] += p[c] * w;
+                }
+            }
+        }
+        let n = [self.at(xi, yi), self.at(xi + 1, yi), self.at(xi, yi + 1), self.at(xi + 1, yi + 1)];
+        for c in 0..4 {
+            let lo = n.iter().map(|p| p[c]).fold(f32::MAX, f32::min);
+            let hi = n.iter().map(|p| p[c]).fold(f32::MIN, f32::max);
+            o[c] = o[c].clamp(lo, hi);
+        }
+        o
+    }
+
     pub fn map<F: Fn([f32; 4]) -> [f32; 4] + Sync>(&self, f: F) -> Tex {
         let mut out = self.clone();
         for p in out.px.iter_mut() {

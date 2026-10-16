@@ -13,5 +13,5 @@ fn main() {
     let mut px = vec![[0.0f32; 4]; 420 * 4 * 420];
     for (i, t) in sheet.iter().enumerate() { for y in 0..420 { for x in 0..420 { px[y * 1680 + i * 420 + x] = t.px[y * 420 + x]; } } }
     let big = Tex { w: 1680, h: 420, px };
-    std::fs::write("/tmp/h3d.png", materialcraft::png::encode(big.w, big.h, &big.px, 8)).unwrap();
+    std::fs::write(std::env::temp_dir().join("h3d.png"), materialcraft::png::encode(big.w, big.h, &big.px, 8)).unwrap();
 }
