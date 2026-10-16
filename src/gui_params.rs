@@ -562,6 +562,49 @@ impl App {
             });
         }
 
+        // ---- output size (like Designer: relative to input / relative to parent / absolute, plus a power-of-two modifier)
+        if !matches!(kind.as_str(), "comment" | "frame" | "dot") {
+            egui::CollapsingHeader::new(egui::RichText::new("OUTPUT SIZE").strong()).default_open(true).show(ui, |ui| {
+                let mode = get("osize_mode", 0.0).round() as i32;
+                let names = ["Relative to input", "Relative to parent", "Absolute"];
+                ui.horizontal(|ui| {
+                    row_label(ui, "Size mode");
+                    egui::ComboBox::from_id_salt(("osize_mode", id)).selected_text(names[mode.clamp(0, 2) as usize]).show_ui(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            if ui.selectable_label(mode == i as i32, *n).clicked() {
+                                nums.push(("osize_mode".into(), i as f32));
+                            }
+                        }
+                    });
+                });
+                let parent = self.g.size;
+                if mode == 2 {
+                    let e = get("osize_abs", 9.0).round().clamp(4.0, 13.0) as i32;
+                    ui.horizontal(|ui| {
+                        row_label(ui, "Size");
+                        egui::ComboBox::from_id_salt(("osize_abs", id)).selected_text(format!("{0} x {0}", 1usize << e)).show_ui(ui, |ui| {
+                            for k in 4..=13 {
+                                if ui.selectable_label(e == k, format!("{0} x {0}", 1usize << k)).clicked() {
+                                    nums.push(("osize_abs".into(), k as f32));
+                                }
+                            }
+                        });
+                    });
+                } else {
+                    let mut rel = get("osize_rel", 0.0).round() as i32;
+                    ui.horizontal(|ui| {
+                        row_label(ui, "Modifier");
+                        if ui.add(egui::Slider::new(&mut rel, -12..=12)).changed() {
+                            nums.push(("osize_rel".into(), rel as f32));
+                        }
+                    });
+                    let shown = self.nominal_node_size(id);
+                    ui.small(format!("Result: {0} x {0}  (graph {1} x {1})", shown, parent));
+                }
+                ui.small("A lower size computes faster: give heavy nodes (AO, blurs, noises) a smaller size.");
+            });
+        }
+
         egui::CollapsingHeader::new(egui::RichText::new("PARAMETERS").strong()).default_open(true).show(ui, |ui| {
             // ---- node-specific editors
             match kind.as_str() {

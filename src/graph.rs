@@ -384,10 +384,14 @@ pub struct EvalAll {
     pub thumbs: HashMap<u32, Vec<u8>>,
     pub errors: HashMap<u32, String>,
     pub kept: HashMap<u32, Tex>,
+    /// output size of every evaluated node (differs from the graph size when a node has its own Output Size)
+    pub sizes: HashMap<u32, usize>,
 }
 
 struct Ctx<'a> {
     size: usize,
+    /// the graph's own (nominal) size: absolute node sizes are scaled by size / nominal so quick previews stay proportional
+    nominal: usize,
     lib: &'a BTreeMap<String, Graph>,
     res: &'a BTreeMap<String, Vec<u8>>,
     so: u32,
@@ -913,7 +917,7 @@ impl Graph {
         if size == 0 || size > 8192 {
             return Err(Error::BadSize(size));
         }
-        let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let ctx = Ctx { size, nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
         let outs = self.output_nodes();
         let keep: Vec<u32> = outs.iter().map(|o| o.2).collect();
         let mut cache = Cache::for_graph(self, &keep, false);
@@ -933,7 +937,7 @@ impl Graph {
             return Err(Error::BadSize(size));
         }
         self.check_cycles()?;
-        let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let ctx = Ctx { size, nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
         let mut cache = Cache::for_graph(self, &[id], false);
         let t = eval_node(self, id, &ctx, &[], &mut cache)?;
         cache.map.clear();
@@ -942,16 +946,17 @@ impl Graph {
 
     /// Evaluate every node once (shared cache). Produces thumbnails, per-node errors and
     /// full-resolution textures for the ids in `keep`. Result is Send, so it can run on a worker thread.
-    /// Like `evaluate_all`, but stops at the next node boundary once `cancel` is set (the editor starts a newer job).
-    pub fn evaluate_all_cancellable(&self, size: usize, keep: &[u32], cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> EvalAll {
-        CANCEL.with(|c| *c.borrow_mut() = Some(cancel));
+    /// Like `evaluate_all`, but as editor job `job`: once `tex::CURRENT_JOB` moves on to a newer id this run stops
+    /// within a few rows and its (partial) result must be thrown away.
+    pub fn evaluate_all_cancellable(&self, size: usize, keep: &[u32], job: u64) -> EvalAll {
+        crate::tex::set_job(job);
         let r = self.evaluate_all(size, keep);
-        CANCEL.with(|c| *c.borrow_mut() = None);
+        crate::tex::set_job(0);
         r
     }
 
     pub fn evaluate_all(&self, size: usize, keep: &[u32]) -> EvalAll {
-        let mut r = EvalAll { thumbs: HashMap::new(), errors: HashMap::new(), kept: HashMap::new() };
+        let mut r = EvalAll { thumbs: HashMap::new(), errors: HashMap::new(), kept: HashMap::new(), sizes: HashMap::new() };
         if size == 0 || size > 8192 {
             r.errors.insert(0, Error::BadSize(size).to_string());
             return r;
@@ -960,7 +965,7 @@ impl Graph {
             r.errors.insert(0, e.to_string());
             return r;
         }
-        let ctx = Ctx { size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let ctx = Ctx { size, nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
         // thumbnails are taken the moment a node finishes, so intermediate textures can be freed as soon as every
         // node that reads them is done (a big graph at 4K would not fit in memory otherwise)
         let mut cache = Cache::for_graph(self, keep, true);
@@ -978,6 +983,7 @@ impl Graph {
             }
         }
         r.thumbs = cache.thumbs.take().unwrap_or_default();
+        r.sizes = std::mem::take(&mut cache.sizes);
         r
     }
 }
@@ -995,12 +1001,31 @@ fn out_key(id: u32, out: &str) -> u32 {
     0x8000_0000 | ((h & 0x7fff) << 16) | (id & 0xffff)
 }
 
-thread_local! {
-    static CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+fn cancelled() -> bool {
+    crate::tex::job_stale()
 }
 
-fn cancelled() -> bool {
-    CANCEL.with(|c| c.borrow().as_ref().map(|f| f.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false))
+/// Output size of a node, like Designer's Output Size: "Relative to input" (default; falls back to the parent size when
+/// nothing is connected), "Relative to parent", or "Absolute" (a power of two). The relative modifier moves the size
+/// up or down in powers of two (-12 .. +12), so a heavy node can run at half or quarter resolution.
+fn node_size(n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> usize {
+    let get = |k: &str, d: f32| n.nums.get(k).copied().unwrap_or(d);
+    let mode = get("osize_mode", 0.0).round() as i32;
+    let rel = get("osize_rel", 0.0).round().clamp(-12.0, 12.0) as i32;
+    let base = match mode {
+        2 => {
+            let e = get("osize_abs", 9.0).round().clamp(4.0, 13.0) as u32;
+            (((1usize << e) as f64 * ctx.size as f64 / ctx.nominal.max(1) as f64).round() as usize).max(1)
+        }
+        1 => ctx.size,
+        _ => ins.get("in").or_else(|| ins.get("bg")).or_else(|| ins.values().next()).map(|t| t.w).unwrap_or(ctx.size),
+    };
+    let mut sz = base;
+    if mode != 2 && rel != 0 {
+        sz = if rel > 0 { base << rel } else { (base >> (-rel)).max(1) };
+        sz = sz.clamp(16.min(base), 8192);
+    }
+    sz.clamp(1, 8192)
 }
 
 fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut Cache) -> Result<Rc<Tex>, Error> {
@@ -1018,6 +1043,22 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
         let want = n.in_out.get(slot).map(|s| s.as_str());
         ins.insert(slot.clone(), eval_node_out(g, *rid, want, ctx, ext, cache)?);
     }
+    // the node's own output size; inputs of another size are resampled to it
+    let sz = node_size(n, &ins, ctx);
+    if ins.values().any(|t| t.w != sz || t.h != sz) {
+        for t in ins.values_mut() {
+            if t.w != sz || t.h != sz {
+                *t = Rc::new(ops::resize(t, sz));
+            }
+        }
+    }
+    let node_ctx;
+    let ctx = if sz != ctx.size {
+        node_ctx = Ctx { size: sz, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth };
+        &node_ctx
+    } else {
+        ctx
+    };
     let t = match n.kind.as_str() {
         "input" => {
             let idx = n.nums.get("idx").copied().unwrap_or(0.0).max(0.0) as usize;
@@ -1037,8 +1078,12 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
             r
         }
     };
+    let t = if t.w != sz || t.h != sz { ops::resize(&t, sz) } else { t };
     let rc = Rc::new(t);
     cache.map.insert(key, rc.clone());
+    if key == id {
+        cache.sizes.insert(id, sz);
+    }
     if key == id {
         if let Some(th) = cache.thumbs.as_mut() {
             th.insert(id, thumbnail(&rc));
@@ -1065,11 +1110,12 @@ struct Cache {
     keep: HashSet<u32>,
     /// thumbnails taken while evaluating (editor preview)
     thumbs: Option<HashMap<u32, Vec<u8>>>,
+    sizes: HashMap<u32, usize>,
 }
 
 impl Cache {
     fn plain() -> Cache {
-        Cache { map: HashMap::new(), left: HashMap::new(), keep: HashSet::new(), thumbs: None }
+        Cache { map: HashMap::new(), left: HashMap::new(), keep: HashSet::new(), thumbs: None, sizes: HashMap::new() }
     }
 
     fn for_graph(g: &Graph, keep: &[u32], thumbs: bool) -> Cache {
@@ -1139,7 +1185,7 @@ fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx, out: O
         .or_else(|| outs.first())
         .map(|o| o.2)
         .ok_or_else(|| Error::BadParam(id, format!("subgraph '{name}' has no output")))?;
-    let c2 = Ctx { size: ctx.size, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1 };
+    let c2 = Ctx { size: ctx.size, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1 };
     let mut cache = Cache::for_graph(&sub, &[out_id], false);
     let t = eval_node(&sub, out_id, &c2, &ext, &mut cache)?;
     cache.map.clear();

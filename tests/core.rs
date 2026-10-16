@@ -565,18 +565,45 @@ fn large_sizes_are_accepted() {
 
 #[test]
 fn a_cancelled_evaluation_stops_early() {
-    use std::sync::{atomic::AtomicBool, Arc};
+    use materialcraft::tex::CURRENT_JOB;
+    use std::sync::atomic::Ordering;
     let mut g = Graph::parse(EXAMPLE).unwrap();
     g.size = 1024;
     let keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
-    let flag = Arc::new(AtomicBool::new(false));
+    CURRENT_JOB.store(777, Ordering::Relaxed);
     let t0 = std::time::Instant::now();
-    let full = g.evaluate_all_cancellable(1024, &keep, flag.clone());
+    let full = g.evaluate_all_cancellable(1024, &keep, 777);
     let full_time = t0.elapsed();
-    assert!(!full.kept.is_empty(), "uncancelled run must deliver its outputs");
-    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(!full.kept.is_empty(), "a current job must deliver its outputs");
+    // a newer job exists: the old one is stale from the start
+    CURRENT_JOB.store(778, Ordering::Relaxed);
     let t1 = std::time::Instant::now();
-    let r = g.evaluate_all_cancellable(1024, &keep, flag);
-    assert!(r.kept.is_empty(), "a cancelled run must not deliver outputs");
-    assert!(t1.elapsed() < full_time / 4 + std::time::Duration::from_millis(50), "cancelled run still took {:?} (full run {:?})", t1.elapsed(), full_time);
+    let r = g.evaluate_all_cancellable(1024, &keep, 777);
+    assert!(r.kept.is_empty(), "a stale run must not deliver outputs");
+    assert!(t1.elapsed() < full_time / 4 + std::time::Duration::from_millis(50), "stale run still took {:?} (full run {:?})", t1.elapsed(), full_time);
+}
+
+#[test]
+fn nodes_can_have_their_own_output_size() {
+    // generators follow the parent size, the modifier moves it in powers of two
+    let g = Graph::parse("size 256\nnode 1 fbm scale=4 osize_rel=-2\noutput o 1\n").unwrap();
+    let t = &g.evaluate(Some(256)).unwrap()["o"];
+    assert_eq!((t.w, t.h), (64, 64), "-2 means a quarter of the parent size");
+    let g = Graph::parse("size 256\nnode 1 fbm scale=4 osize_mode=1 osize_rel=1\noutput o 1\n").unwrap();
+    assert_eq!(g.evaluate(Some(256)).unwrap()["o"].w, 512, "+1 doubles");
+    // absolute sizes are powers of two and ignore the modifier
+    let g = Graph::parse("size 256\nnode 1 fbm scale=4 osize_mode=2 osize_abs=7 osize_rel=3\noutput o 1\n").unwrap();
+    assert_eq!(g.evaluate(Some(256)).unwrap()["o"].w, 128);
+    // filters inherit from their input; a node with another size resamples its inputs to its own size
+    let g = Graph::parse("size 256\nnode 1 fbm scale=4 osize_rel=-1\nnode 2 blur in=@1 radius=2\nnode 3 invert in=@2 osize_mode=1\noutput o 2\noutput p 3\n").unwrap();
+    let r = g.evaluate(Some(256)).unwrap();
+    assert_eq!(r["o"].w, 128, "blur follows its input");
+    assert_eq!(r["p"].w, 256, "relative-to-parent restores the graph size");
+    // quick previews scale absolute sizes with the preview resolution
+    let g = Graph::parse("size 1024\nnode 1 fbm scale=4 osize_mode=2 osize_abs=9\noutput o 1\n").unwrap();
+    assert_eq!(g.evaluate(Some(256)).unwrap()["o"].w, 128, "512 px of a 1024 graph = 1/2, so 128 at a 256 preview");
+    // everything stays tileable and finite at a reduced size
+    let g = Graph::parse("size 128\nnode 1 voronoi scale=5 osize_rel=-1\nnode 2 blur in=@1 radius=3 osize_mode=1\noutput o 2\n").unwrap();
+    let t = &g.evaluate(Some(128)).unwrap()["o"];
+    assert!(t.px.iter().all(|p| p.iter().all(|v| v.is_finite())));
 }

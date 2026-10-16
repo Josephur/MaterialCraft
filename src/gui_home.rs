@@ -1989,12 +1989,13 @@ impl eframe::App for App {
         if self.dirty {
             self.dirty = false;
             self.refine = false;
-            self.job_quick_wanted = true;
-            self.spawn_eval();
+            let first = self.first_tier();
+            self.spawn_eval(first);
         } else if self.refine && self.job.is_none() {
             self.refine = false;
-            self.job_quick_wanted = false;
-            self.spawn_eval();
+            if let Some(sz) = self.refine_size {
+                self.spawn_eval(sz);
+            }
         }
         if self.job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));

@@ -1,5 +1,32 @@
 //! Float RGBA texture with wrapped (tileable) sampling.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Id of the newest editor evaluation. A running evaluation whose own id differs is stale: the parallel loops below
+/// stop at the next row, so a superseded job gives the CPU back almost at once instead of finishing a heavy node.
+pub static CURRENT_JOB: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static MY_JOB: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Mark the calling thread as running evaluation `id` (0 = not an editor job, never stale).
+pub fn set_job(id: u64) {
+    MY_JOB.with(|c| c.set(id));
+}
+
+pub fn my_job() -> u64 {
+    MY_JOB.with(|c| c.get())
+}
+
+pub fn stale(my: u64) -> bool {
+    my != 0 && CURRENT_JOB.load(Ordering::Relaxed) != my
+}
+
+pub fn job_stale() -> bool {
+    stale(my_job())
+}
+
 #[derive(Clone, Debug)]
 pub struct Tex {
     pub w: usize,
@@ -32,10 +59,14 @@ impl Tex {
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
         let rows_per = (h + n - 1) / n;
         let fref = &f;
+        let my = my_job();
         std::thread::scope(|s| {
             for (ci, chunk) in px.chunks_mut(rows_per * w).enumerate() {
                 s.spawn(move || {
                     for (i, p) in chunk.iter_mut().enumerate() {
+                        if i % w == 0 && stale(my) {
+                            return;
+                        }
                         let idx = ci * rows_per * w + i;
                         let x = idx % w;
                         let y = idx / w;
@@ -146,10 +177,14 @@ pub fn par_map<T: Send + Default + Clone, F: Fn(usize) -> T + Sync>(n: usize, f:
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
     let per = (n + threads - 1) / threads;
     let fref = &f;
+    let my = my_job();
     std::thread::scope(|s| {
         for (ci, chunk) in out.chunks_mut(per).enumerate() {
             s.spawn(move || {
                 for (i, slot) in chunk.iter_mut().enumerate() {
+                    if i % 4096 == 0 && stale(my) {
+                        return;
+                    }
                     *slot = fref(ci * per + i);
                 }
             });

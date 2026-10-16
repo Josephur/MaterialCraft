@@ -7,7 +7,7 @@ use eframe::egui::{
 use materialcraft::bake::{self, BakeSettings};
 use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
 use materialcraft::render3d::{self, Maps, View};
-use materialcraft::tex::Tex;
+use materialcraft::tex::{self, Tex};
 use materialcraft::export::{self, Format};
 use materialcraft::gpu3d::{self, MapInputs};
 use materialcraft::{ops, png};
@@ -142,6 +142,13 @@ struct EvalResult {
     errors: HashMap<u32, String>,
     kept: HashMap<u32, Tex>,
     outputs: Vec<(String, u32)>,
+    sizes: HashMap<u32, usize>,
+    /// the 2D view image and the GPU textures are converted on the worker thread so the editor never stalls on them
+    img2d: Option<ColorImage>,
+    img_for: Option<u32>,
+    gpu: Option<gpu3d::GpuMaps>,
+    /// resolution this pass was computed at
+    size: usize,
 }
 
 struct ExportUi {
@@ -193,10 +200,12 @@ struct App {
     prev_size: usize,
     /// a quick low-resolution result was just shown; compute the full-size one next
     refine: bool,
-    job_quick: bool,
-    job_quick_wanted: bool,
-    /// set to stop the running evaluation when a newer one is started
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// resolution of the pass being computed, and the next (bigger) one to run when it finishes
+    job_size: usize,
+    refine_size: Option<usize>,
+    node_sizes: HashMap<u32, usize>,
+    /// resolution of the pass whose results are on screen (node_sizes are measured at this size)
+    pass_size: usize,
     tile_preview: bool,
     thumbs: HashMap<u32, egui::TextureHandle>,
     node_err: HashMap<u32, String>,
@@ -290,9 +299,10 @@ impl App {
             file: None,
             prev_size: 0,
             refine: false,
-            job_quick: false,
-            job_quick_wanted: true,
-            cancel: Default::default(),
+            job_size: 0,
+            refine_size: None,
+            node_sizes: HashMap::new(),
+            pass_size: 0,
             tile_preview: false,
             thumbs: HashMap::new(),
             node_err: HashMap::new(),
@@ -1116,28 +1126,78 @@ impl App {
     }
 
     // ------------------------------------------------------------ background evaluation
-    fn spawn_eval(&mut self) {
+    /// First, cheap resolution of a progressive preview: a tiny pass shows the change at once, then every pass doubles
+    /// the size until the chosen preview size is reached.
+    /// The size a node will have in the final result (what Designer shows under a node): its size in the pass on screen,
+    /// scaled up to the graph's own size.
+    fn nominal_node_size(&self, id: u32) -> usize {
+        match (self.node_sizes.get(&id), self.pass_size) {
+            (Some(&n), p) if p > 0 => ((n as u64 * self.g.size as u64) / p as u64).clamp(1, 8192) as usize,
+            _ => self.g.size,
+        }
+    }
+
+    fn first_tier(&self) -> usize {
+        let full = self.preview_full();
+        if full > 256 {
+            256
+        } else {
+            full
+        }
+    }
+
+    fn spawn_eval(&mut self, size: usize) {
         let g = self.g.clone();
         let full = self.preview_full();
-        // big previews first show a quick low-resolution pass, then refine to the full size
-        let quick = full > 512 && self.job_quick_wanted;
-        let size = if quick { 512 } else { full };
-        // stop the older evaluation (it would only finish stale results) and start this one at once
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        let cancel: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
-        self.cancel = cancel.clone();
-        self.job_quick = quick;
+        let size = size.clamp(16, full.max(16));
+        self.job_size = size;
+        self.refine_size = None;
         let mut keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
-        if let Some(a) = self.active {
+        let active = self.active;
+        if let Some(a) = active {
             keep.push(a);
         }
+        // a newer job makes every older one stale: their loops stop within a few rows
         self.gen += 1;
         let gen = self.gen;
+        tex::CURRENT_JOB.store(gen, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = channel();
         self.job = Some(rx);
         std::thread::spawn(move || {
-            let r = g.evaluate_all_cancellable(size, &keep, cancel);
-            let _ = tx.send(EvalResult { gen, thumbs: r.thumbs, errors: r.errors, kept: r.kept, outputs: g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect() });
+            let r = g.evaluate_all_cancellable(size, &keep, gen);
+            if tex::stale(gen) {
+                return; // superseded: nobody waits for this result
+            }
+            tex::set_job(gen);
+            let outputs: Vec<(String, u32)> = g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect();
+            let named = |n: &str| outputs.iter().find(|o| o.0 == n).and_then(|o| r.kept.get(&o.1));
+            let inv_gloss = named("glossiness").map(ops::invert);
+            let gpu = gpu3d::prepare(&MapInputs {
+                base: named("basecolor").or_else(|| named("out")).or_else(|| named("diffuse")),
+                normal: named("normal"),
+                rough: named("roughness").or(inv_gloss.as_ref()),
+                metal: named("metallic"),
+                ao: named("ambient_occlusion"),
+                emissive: named("emissive"),
+                height: named("height"),
+            });
+            let img2d = active.and_then(|a| r.kept.get(&a)).map(qimg);
+            tex::set_job(0);
+            if tex::stale(gen) {
+                return;
+            }
+            let _ = tx.send(EvalResult {
+                gen,
+                thumbs: r.thumbs,
+                errors: r.errors,
+                kept: r.kept,
+                outputs,
+                sizes: r.sizes,
+                img2d,
+                img_for: active,
+                gpu: Some(gpu),
+                size,
+            });
         });
     }
 
@@ -1155,11 +1215,14 @@ impl App {
         match rx.try_recv() {
             Ok(r) => {
                 self.job = None;
-                if self.job_quick {
-                    self.refine = true;
-                }
                 if r.gen != self.gen {
                     return;
+                }
+                // progressive preview: this pass is on screen, the next (double size) one starts right away
+                let full = self.preview_full();
+                if r.size < full {
+                    self.refine_size = Some((r.size * 2).min(full));
+                    self.refine = true;
                 }
                 // like Designer's 2D view: zoomed in, every texel is a crisp square; zoomed out, a mip chain keeps it smooth
                 let opts = egui::TextureOptions {
@@ -1179,8 +1242,13 @@ impl App {
                     }
                 }
                 self.node_err = r.errors;
+                self.node_sizes = r.sizes;
+                self.pass_size = r.size;
                 if let Some(a) = self.active {
-                    if let Some(t) = r.kept.get(&a) {
+                    if let (Some(img), true) = (r.img2d, r.img_for == Some(a)) {
+                        self.tex2d_size = (img.size[0], img.size[1]);
+                        self.tex2d = Some(ctx.load_texture("view2d", img, opts));
+                    } else if let Some(t) = r.kept.get(&a) {
                         self.tex2d_size = (t.w, t.h);
                         self.tex2d = Some(ctx.load_texture("view2d", qimg(t), opts));
                     } else {
@@ -1201,7 +1269,14 @@ impl App {
                     }
                 }
                 self.dirty3d = true;
-                self.gpu_maps_dirty = true;
+                if let Some(m) = r.gpu {
+                    if let Ok(mut g) = self.gpu.lock() {
+                        g.set_maps(m);
+                    }
+                    self.gpu_maps_dirty = false;
+                } else {
+                    self.gpu_maps_dirty = true;
+                }
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {

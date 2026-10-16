@@ -80,10 +80,14 @@ fn box_rows(src: &[[f32; 4]], w: usize, h: usize, r: i64) -> Vec<[f32; 4]> {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
     let rows_per = (h + n - 1) / n;
     let inv = 1.0 / (2 * r + 1) as f32;
+    let my = crate::tex::my_job();
     std::thread::scope(|sc| {
         for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * w).enumerate() {
             sc.spawn(move || {
                 for (ri, out) in chunk.chunks_mut(w).enumerate() {
+                    if crate::tex::stale(my) {
+                        return;
+                    }
                     let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
                     let wi = w as i64;
                     let mut acc = [0.0f32; 4];
@@ -1209,4 +1213,31 @@ pub fn tileable_wave(count: f32, angle_turns: f32) -> (i32, i32) {
         }
     }
     (best.1, best.2)
+}
+
+/// Resample a texture to `size` x `size` (wrapped). Shrinking by a whole factor averages the covered texels exactly
+/// (no aliasing); anything else is bilinear.
+pub fn resize(t: &Tex, size: usize) -> Tex {
+    let size = size.max(1);
+    if t.w == size && t.h == size {
+        return t.clone();
+    }
+    if t.w > size && t.h > size && t.w % size == 0 && t.h % size == 0 {
+        let (fx, fy) = (t.w / size, t.h / size);
+        let inv = 1.0 / (fx * fy) as f32;
+        return Tex::from_fn(size, size, |u, v| {
+            let (x0, y0) = (((u * size as f32) as usize).min(size - 1) * fx, ((v * size as f32) as usize).min(size - 1) * fy);
+            let mut a = [0.0f32; 4];
+            for y in y0..y0 + fy {
+                for x in x0..x0 + fx {
+                    let p = t.px[y * t.w + x];
+                    for c in 0..4 {
+                        a[c] += p[c];
+                    }
+                }
+            }
+            [a[0] * inv, a[1] * inv, a[2] * inv, a[3] * inv]
+        });
+    }
+    Tex::from_fn(size, size, |u, v| t.sample(u, v))
 }

@@ -271,8 +271,16 @@ impl App {
                 painter.circle_filled(bc + vec2(-1.8, -1.8) * z, 1.4 * z, Color32::WHITE);
                 painter.text(card.left_top() + vec2(16.0, -4.0) * z, Align2::LEFT_BOTTOM, format!("({ident})"), FontId::proportional(9.0 * z), Color32::from_gray(150));
                 let bits = if self.g.meta.get("output_format").map(|f| f == "16").unwrap_or(false) { 16 } else { 8 };
-                painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{0}x{0} - C{1}", self.g.size, bits), FontId::proportional(10.5 * z), Color32::from_gray(185));
+                painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{0}x{0} - C{1}", self.nominal_node_size(id), bits), FontId::proportional(10.5 * z), Color32::from_gray(185));
             }
+            }
+
+            // a node with its own Output Size shows it under the card, like Designer
+            if s.kind != "output" && !matches!(s.kind.as_str(), "comment" | "frame" | "dot") {
+                let ns = self.nominal_node_size(id);
+                if ns != self.g.size {
+                    painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{0}x{0}", ns), FontId::proportional(10.0 * z), Color32::from_rgb(255, 190, 110));
+                }
             }
 
             // interaction: card
