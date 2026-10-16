@@ -73,6 +73,7 @@ Status note: everything has been built and tested on Linux only. Windows and mac
 - Comment, Frame
 
 ### Editor and workflow
+- Graphs as nodes: any saved graph (`.mcg`/`.mca`) can be dragged from the Explorer onto the canvas, dropped from the OS onto the window, or added with "Import graph file..."; it becomes a subgraph node whose inputs, exposed parameters and chosen output work like any node, so complex materials can be built from simpler ones
 - Node graph with zoom, pan, rubber-band select, drag-to-connect from either end, cycle protection
 - Tab search with auto-connect, undo/redo (100 steps), copy/paste (also via OS clipboard), duplicate, auto-layout
 - Subgraph creation and editing, multiple graphs, exposed parameters
@@ -85,6 +86,7 @@ Status note: everything has been built and tested on Linux only. Windows and mac
 - True outward displacement, plus parallax relief and bump modes
 - GGX PBR, mipmaps with anisotropic filtering, 4x MSAA (falls back to none), contact shadows, ACES tone mapping
 - Light, camera, exposure and ambient controls, UV tiling, wireframe, normal strength
+- Studio reflection environment (softboxes, rim strip, horizon) that blurs with roughness, so roughness and metallic changes read clearly
 - CPU renderer as automatic fallback (Renderer menu)
 - Headless test: `cargo run --release --features gui --example gpu_shot -- out.png [shape] [relief] [w h] [nomsaa] [wire]`
 
@@ -95,11 +97,16 @@ Status note: everything has been built and tested on Linux only. Windows and mac
 - Mesh baking from OBJ (BVH): normal, world normal, AO, curvature, thickness, position, ID
 - CLI: render, publish, params, bake
 
+### Quality checks
+- 31 automated tests, including: every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import
+- `cargo run --release --example node_sheet -- out_dir` renders a PNG for every node type for visual review
+
 ---
 
 ## 2. Not implemented yet
 
 ### Graph logic
+- [ ] Separate output sockets on a graph node (today one output is chosen in Properties; a graph with several outputs needs one node per output)
 - [ ] Function graphs (variables, math, conditionals, function node family)
 - [ ] FX-Map (recursive, rule-based pattern generation)
 - [ ] Pin node, Input Value node
@@ -147,6 +154,7 @@ Status note: everything has been built and tested on Linux only. Windows and mac
 - [ ] Visual check of the 2D/3D splitter and the export window
 - [ ] Run and verify on Windows and macOS
 - [ ] Test the GPU viewport on real GPUs (NVIDIA, AMD, Intel, Apple)
+- [ ] CPU fallback renderer still uses the old plain environment (roughness/metallic look flatter than on the GPU viewport)
 - [ ] GPU viewport: wireframe at mesh resolution 256+ renders as a solid blob; map preparation runs on the main thread
 
 ---

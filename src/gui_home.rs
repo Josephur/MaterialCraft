@@ -831,6 +831,29 @@ impl App {
                         ui.label(format!("      {f}"));
                     }
                 }
+                ui.add_space(6.0);
+                ui.small("Graphs - drag onto the canvas to use as a node");
+                if ui.small_button("Import graph file...").clicked() {
+                    self.acts.push(Act::ImportGraphDialog);
+                }
+                if self.graph_files_at.map(|t| t.elapsed().as_secs_f32() > 3.0).unwrap_or(true) {
+                    self.refresh_graph_files();
+                }
+                let files = self.graph_files.clone();
+                if files.is_empty() {
+                    ui.weak("      (no other .mcg/.mca files next to the open graph or in recent files)");
+                }
+                for f in files {
+                    let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    let r = ui.add(egui::Label::new(format!("      {name}")).sense(Sense::click_and_drag()));
+                    if r.drag_started() {
+                        r.dnd_set_drag_payload(GraphDrag(f.clone(), name.clone()));
+                    }
+                    if r.double_clicked() {
+                        self.acts.push(Act::ImportGraph(f.clone(), None));
+                    }
+                    r.on_hover_text(format!("{}\nDrag onto the canvas (or double-click) to add it as a node", f.display()));
+                }
             });
         });
     }
@@ -1597,6 +1620,15 @@ impl App {
         self.search_ui(ctx);
         self.acts.extend(acts);
 
+        if let Some(p) = egui::DragAndDrop::payload::<GraphDrag>(ctx) {
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("dnd_ghost_graph")));
+                let text = format!("{} (graph)", p.1);
+                let r = painter.text(pos + vec2(14.0, 14.0), Align2::LEFT_TOP, text.clone(), FontId::proportional(12.0), Color32::WHITE);
+                painter.rect_filled(r.expand(4.0), 3.0, Color32::from_rgba_unmultiplied(20, 20, 20, 200));
+                painter.text(pos + vec2(14.0, 14.0), Align2::LEFT_TOP, text, FontId::proportional(12.0), Color32::WHITE);
+            }
+        }
         if let Some(p) = egui::DragAndDrop::payload::<String>(ctx) {
             if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("dnd_ghost")));
@@ -1610,6 +1642,19 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // graph files dropped from the OS onto the window: import as a node (editor) or open (home screen)
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        for p in dropped {
+            if !matches!(p.extension().and_then(|e| e.to_str()), Some("mcg" | "mca")) {
+                continue;
+            }
+            if self.screen == Screen::Editor {
+                let at = ctx.input(|i| i.pointer.latest_pos()).filter(|q| self.canvas_rect.contains(*q));
+                self.acts.push(Act::ImportGraph(p, at));
+            } else {
+                self.open_path(p);
+            }
+        }
         // background asset results
         if let Some(rx) = &self.banner_rx {
             if let Ok(img) = rx.try_recv() {

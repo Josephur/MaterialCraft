@@ -41,6 +41,9 @@ impl App {
         if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<String>(), pointer) {
             acts.push(Act::Drop((*payload).clone(), p));
         }
+        if let (Some(payload), Some(p)) = (resp.dnd_release_payload::<GraphDrag>(), pointer) {
+            acts.push(Act::ImportGraph(payload.0.clone(), Some(p)));
+        }
 
         if resp.hovered() {
             let sc = ui.input(|i| i.raw_scroll_delta.y);
@@ -524,6 +527,18 @@ impl App {
                 let w = pos2(world.x - CARD * 0.5, world.y - CARD_H * 0.5);
                 if let Some(e) = self.entries().into_iter().find(|e| e.label == key) {
                     self.spawn(&e, w, None);
+                }
+            }
+            Act::ImportGraph(path, p) => {
+                let at = p.map(|p| {
+                    let w = self.screen_to_world(p);
+                    pos2(w.x - CARD * 0.5, w.y - CARD_H * 0.5)
+                });
+                self.import_graph_file(path, at);
+            }
+            Act::ImportGraphDialog => {
+                if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() {
+                    self.import_graph_file(p, None);
                 }
             }
             Act::NewOutput(usage, from) => self.new_output(&usage, from),

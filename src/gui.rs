@@ -102,7 +102,13 @@ enum Act {
     NewGraph,
     Home,
     Drop(String, Pos2),
+    ImportGraph(PathBuf, Option<Pos2>),
+    ImportGraphDialog,
 }
+
+/// Drag payload: a graph file from the Explorer that is dropped on the canvas to become a node.
+#[derive(Clone)]
+struct GraphDrag(PathBuf, String);
 
 struct EvalResult {
     gen: u64,
@@ -166,6 +172,8 @@ struct App {
     gpu: gpu3d::Shared,
     gpu_on: bool,
     gpu_maps_dirty: bool,
+    graph_files: Vec<PathBuf>,
+    graph_files_at: Option<std::time::Instant>,
     dirty: bool,
     dirty3d: bool,
     gen: u64,
@@ -249,6 +257,8 @@ impl App {
             gpu: gpu3d::new_shared(),
             gpu_on: true,
             gpu_maps_dirty: true,
+            graph_files: Vec::new(),
+            graph_files_at: None,
             dirty: true,
             dirty3d: true,
             gen: 0,
@@ -288,6 +298,50 @@ impl App {
             logo_note,
             g,
         }
+    }
+
+    /// Other graph files that can be dragged into this graph: siblings of the open file plus recent files.
+    fn refresh_graph_files(&mut self) {
+        let mut v: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = self.file.as_ref().and_then(|f| f.parent()) {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                v.extend(rd.flatten().map(|e| e.path()));
+            }
+        }
+        v.extend(self.recent.iter().cloned());
+        v.retain(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("mcg" | "mca")) && p.is_file() && Some(p) != self.file.as_ref());
+        v.sort();
+        v.dedup();
+        self.graph_files = v;
+        self.graph_files_at = Some(std::time::Instant::now());
+    }
+
+    /// Import a saved graph file as a subgraph of the current graph and place it as a node.
+    fn import_graph_file(&mut self, p: PathBuf, at: Option<Pos2>) {
+        let loaded = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| Graph::parse_unchecked(&t).map_err(|e| e.to_string()));
+        let mut other = match loaded {
+            Ok(g) => g,
+            Err(e) => return self.status(format!("Cannot import {}: {e}", p.display()), false),
+        };
+        other.migrate_outputs();
+        auto_layout_if_unplaced(&mut other);
+        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into());
+        let base: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+        let mut name = base.clone();
+        let mut i = 2;
+        while self.g.subgraphs.contains_key(&name) || self.parents.iter().any(|(pg, n)| pg.subgraphs.contains_key(&name) || *n == name) {
+            name = format!("{base}_{i}");
+            i += 1;
+        }
+        self.snap();
+        if let Err(e) = self.g.import_graph(other, &name) {
+            self.undo.pop();
+            return self.status(format!("Cannot import {}: {e}", p.display()), false);
+        }
+        let pos = at.unwrap_or_else(|| self.view_center_world());
+        self.add_node_at("subgraph", Some(&name), pos);
+        self.undo.pop(); // one undo step for the whole import
+        self.status(format!("Imported '{name}' as a node - double-click it to look inside; pick its output in Properties"), true);
     }
 
     fn status(&mut self, msg: impl Into<String>, ok: bool) {

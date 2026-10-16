@@ -727,6 +727,42 @@ impl Graph {
         Ok(())
     }
 
+    /// Import a whole (already made) graph as a reusable subgraph named `name`, so it can be placed as a node in this
+    /// graph. Its own subgraphs are merged under a `name__` prefix and its embedded resources are carried over.
+    pub fn import_graph(&mut self, mut other: Graph, name: &str) -> Result<(), String> {
+        if self.subgraphs.contains_key(name) {
+            return Err(format!("subgraph '{name}' already exists"));
+        }
+        if other.nodes.is_empty() {
+            return Err("the graph is empty".into());
+        }
+        if other.output_nodes().is_empty() {
+            return Err("the graph has no Output node to use as the node's result".into());
+        }
+        other.check_cycles().map_err(|e| e.to_string())?;
+        let mut inner = std::mem::take(&mut other.subgraphs);
+        let renamed: Vec<String> = inner.keys().cloned().collect();
+        for g in std::iter::once(&mut other).chain(inner.values_mut()) {
+            for n in g.nodes.values_mut() {
+                if n.kind == "subgraph" {
+                    if let Some(r) = n.strs.get_mut("graph") {
+                        if renamed.contains(r) {
+                            *r = format!("{name}__{r}");
+                        }
+                    }
+                }
+            }
+        }
+        for (k, g) in inner {
+            self.subgraphs.insert(format!("{name}__{k}"), g);
+        }
+        for (k, v) in std::mem::take(&mut other.resources) {
+            self.resources.entry(k).or_insert(v);
+        }
+        self.subgraphs.insert(name.to_string(), other);
+        Ok(())
+    }
+
     /// Replace the selected nodes with a subgraph instance. Returns the new node id.
     pub fn extract_subgraph(&mut self, sel: &BTreeSet<u32>, name: &str) -> Result<u32, String> {
         let sel: BTreeSet<u32> = sel.iter().copied().filter(|i| self.nodes.contains_key(i)).collect();
@@ -957,9 +993,11 @@ fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
     }
     let ext: Vec<Option<Rc<Tex>>> = (0..4).map(|i| ins.get(&format!("in{i}")).cloned()).collect();
     let outs = sub.output_nodes();
+    let want = n.strs.get("output").cloned().unwrap_or_default();
     let out_id = outs
         .iter()
-        .find(|o| o.0 == "out")
+        .find(|o| !want.is_empty() && (o.0 == want || o.1 == want))
+        .or_else(|| outs.iter().find(|o| o.0 == "out"))
         .or_else(|| outs.first())
         .map(|o| o.2)
         .ok_or_else(|| Error::BadParam(id, format!("subgraph '{name}' has no output")))?;

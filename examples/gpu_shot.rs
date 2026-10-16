@@ -1,5 +1,5 @@
 //! Headless-friendly GPU viewer test: renders a procedural brick material with the GPU renderer and writes a screenshot.
-//! usage: cargo run --release --features gui --example gpu_shot -- out.png [shape 0|1|2] [relief 0..3] [width height] [nomsaa] [wire]
+//! usage: cargo run --release --features gui --example gpu_shot -- out.png [shape 0|1|2] [relief 0..3] [width height] [nomsaa] [wire] [rough=0.3 metal=0 color=r,g,b]
 use eframe::egui;
 use eframe::egui_glow;
 use materialcraft::gpu3d::{self, MapInputs, Shared};
@@ -86,8 +86,19 @@ fn main() -> eframe::Result<()> {
     let relief = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(3u32);
     let (w, h) = (a.get(4).and_then(|s| s.parse().ok()).unwrap_or(900.0f32), a.get(5).and_then(|s| s.parse().ok()).unwrap_or(700.0f32));
     let wire = a.iter().any(|s| s == "wire");
-    let (base, normal, rough, ao, height) = bricks(1024);
-    let maps = gpu3d::prepare(&MapInputs { base: Some(&base), normal: Some(&normal), rough: Some(&rough), metal: None, ao: Some(&ao), emissive: None, height: Some(&height) });
+    let arg = |k: &str| a.iter().find_map(|s| s.strip_prefix(k).map(String::from));
+    let maps = if let Some(r) = arg("rough=") {
+        // uniform material test: rough=0.3 metal=0 color=0.8,0.2,0.2
+        let r: f32 = r.parse().unwrap_or(0.5);
+        let m: f32 = arg("metal=").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let c: Vec<f32> = arg("color=").map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+        let c = if c.len() == 3 { [c[0], c[1], c[2], 1.0] } else { [0.8, 0.2, 0.2, 1.0] };
+        let (b, n, ro, me) = (Tex::solid(4, 4, c), Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [r, r, r, 1.0]), Tex::solid(4, 4, [m, m, m, 1.0]));
+        gpu3d::prepare(&MapInputs { base: Some(&b), normal: Some(&n), rough: Some(&ro), metal: Some(&me), ao: None, emissive: None, height: None })
+    } else {
+        let (base, normal, rough, ao, height) = bricks(1024);
+        gpu3d::prepare(&MapInputs { base: Some(&base), normal: Some(&normal), rough: Some(&rough), metal: None, ao: Some(&ao), emissive: None, height: Some(&height) })
+    };
     let gpu = gpu3d::new_shared();
     gpu.lock().unwrap().set_maps(maps);
     let view = View { shape, relief, wireframe: wire, yaw: 0.35, pitch: 0.5, dist: if shape == 2 { 3.2 } else { 3.4 }, height_scale: 0.12, ..View::default() };

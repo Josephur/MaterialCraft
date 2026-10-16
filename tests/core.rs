@@ -410,3 +410,78 @@ fn displacement_renders_every_shape_and_camera_without_panics() {
     let c = img.px[32 * 64 + 32];
     assert!(c[0] > c[2], "plane centre should be reddish, got {c:?}");
 }
+
+/// Every node: several resolutions, finite values, sane range, and (for nodes that should produce variation) a non-blank result.
+#[test]
+fn every_node_output_is_sane_at_several_sizes() {
+    use materialcraft::graph::{demo_graph_for, SPECS};
+    // nodes whose demo output may legitimately be a flat colour
+    let flat_ok = ["color", "invert_flat", "clamp", "histogram_range", "dust", "curvature_smooth", "curvature", "edge_detect", "height_blend", "edge_wear", "dirt", "ao", "slope_blur", "vector_warp", "distance", "flood_fill_gradient"];
+    let mut problems = Vec::new();
+    for sp in SPECS {
+        let Some(text) = demo_graph_for(sp.kind) else { continue };
+        for size in [16usize, 32, 64, 100] {
+            let g = G2::parse(&text).unwrap();
+            let out = match std::panic::catch_unwind(|| g.evaluate(Some(size))) {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => { problems.push(format!("{} @{size}: error {e}", sp.kind)); continue; }
+                Err(_) => { problems.push(format!("{} @{size}: PANIC", sp.kind)); continue; }
+            };
+            let t = &out["o"];
+            if t.px.iter().any(|p| p.iter().any(|c| !c.is_finite())) { problems.push(format!("{} @{size}: NaN/Inf", sp.kind)); continue; }
+            if t.px.iter().any(|p| p.iter().any(|c| *c < -4.0 || *c > 8.0)) { problems.push(format!("{} @{size}: wild range", sp.kind)); }
+            let (mn, mx) = t.px.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[0]).min(p[1]).min(p[2]), a.1.max(p[0]).max(p[1]).max(p[2])));
+            if mx - mn < 1e-4 && size >= 32 && !flat_ok.contains(&sp.kind) { problems.push(format!("{} @{size}: blank output ({mn})", sp.kind)); }
+        }
+    }
+    assert!(problems.is_empty(), "node problems:\n{}", problems.join("\n"));
+}
+
+/// Fuzz every documented numeric parameter of every node with extreme values: must never panic or return NaN.
+#[test]
+fn node_parameters_survive_extreme_values() {
+    use materialcraft::graph::{demo_graph_for, SPECS};
+    let mut problems = Vec::new();
+    let mut ran = 0usize;
+    for sp in SPECS {
+        let Some(text) = demo_graph_for(sp.kind) else { continue };
+        let doc = sp.doc.split_once(':').map(|x| x.1).unwrap_or("");
+        let names: Vec<String> = doc.split_whitespace().map(|w| w.split('(').next().unwrap().trim_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string()).filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !w.starts_with("expr")).collect();
+        for name in names {
+            for v in ["0", "1", "-1", "0.0001", "50", "1000"] {
+                let line = format!("node 1 {}", sp.kind);
+                let t2 = text.replacen(&line, &format!("{line} {name}={v}"), 1);
+                let Ok(g) = G2::parse(&t2) else { continue };
+                match std::panic::catch_unwind(|| g.evaluate(Some(24))) {
+                    Ok(Ok(out)) => {
+                        ran += 1;
+                        let t = &out["o"];
+                        if t.px.iter().any(|p| p.iter().any(|c| !c.is_finite())) { problems.push(format!("{} {name}={v}: NaN/Inf", sp.kind)); }
+                    }
+                    Ok(Err(_)) => {} // a clean error is acceptable
+                    Err(_) => problems.push(format!("{} {name}={v}: PANIC", sp.kind)),
+                }
+            }
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    assert!(ran > 500, "only {ran} parameter cases ran");
+    assert!(problems.is_empty(), "{} parameter problems:\n{}", problems.len(), problems.join("\n"));
+}
+
+#[test]
+fn whole_graph_can_be_imported_and_used_as_a_node() {
+    let other = G2::parse("size 64\nnode 1 perlin scale=4 seed=3\nnode 2 invert in=@1\noutput height 2\noutput basecolor 1\n").unwrap();
+    let direct = other.evaluate(Some(32)).unwrap();
+    let mut host = G2::parse_unchecked("size 64\nnode 1 subgraph graph=\"mat\" output=\"height\"\nnode 2 subgraph graph=\"mat\" output=\"basecolor\"\noutput a 1\noutput b 2\n").unwrap();
+    host.import_graph(other.clone(), "mat").unwrap();
+    assert!(host.import_graph(other, "mat").is_err(), "duplicate name must be rejected");
+    host.validate().unwrap();
+    let out = host.evaluate(Some(32)).unwrap();
+    assert_eq!(out["a"].px, direct["height"].px, "output=height must pick the height output");
+    assert_eq!(out["b"].px, direct["basecolor"].px, "output=basecolor must pick the basecolor output");
+    // an empty graph or one without outputs is refused
+    let mut h2 = G2::default();
+    assert!(h2.import_graph(G2::default(), "x").is_err());
+}

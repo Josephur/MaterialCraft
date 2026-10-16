@@ -214,14 +214,35 @@ const float PI = 3.14159265;
 vec2 gdx;
 vec2 gdy;
 
-vec3 env(vec3 d) {
-    vec3 sky = vec3(0.42, 0.52, 0.68);
-    vec3 ground = vec3(0.30, 0.28, 0.26);
-    vec3 hor = vec3(0.58);
-    vec3 b = d.y > 0.0 ? hor * (1.0 - d.y) + sky * d.y : hor * (1.0 + d.y * 0.8) + ground * (-d.y * 0.8);
-    // soft key light box so metals get a readable highlight
-    float k = pow(max(dot(d, uL), 0.0), 24.0);
-    return max(b, vec3(0.0)) + vec3(1.0, 0.96, 0.9) * k * 0.9;
+// Smooth gradient only: used for diffuse ambient light.
+vec3 envSoft(vec3 d) {
+    vec3 sky = vec3(0.16, 0.20, 0.30);
+    vec3 hor = vec3(0.50, 0.50, 0.52);
+    vec3 ground = vec3(0.07, 0.06, 0.055);
+    return d.y > 0.0 ? mix(hor, sky, pow(d.y, 0.6)) : mix(hor, ground, pow(-d.y, 0.5));
+}
+
+// Studio environment for reflections: softboxes, a rim strip and a horizon line on a dark floor. The boxes soften and
+// dim with roughness, so a smooth surface mirrors clear shapes and a rough one only shows a broad sheen.
+vec3 env(vec3 d, float r) {
+    float soft = r * r;
+    vec3 col = mix(envSoft(d), vec3(0.30), soft * 0.5);
+    float w = 0.015 + soft * 0.9;
+    float keyI = 7.0 / (1.0 + soft * 10.0);
+    float key = smoothstep(0.93 - w, 0.93 + 0.015, dot(d, uL));
+    col += vec3(1.0, 0.96, 0.90) * key * keyI;
+    // tall side strip opposite the key
+    vec3 side = normalize(vec3(-uL.z, 0.0, uL.x));
+    float sdot = dot(normalize(vec3(d.x, 0.0, d.z) + 1e-5), side);
+    float strip = smoothstep(0.93 - w, 0.97, sdot) * smoothstep(0.02 - w, 0.12, d.y) * (1.0 - smoothstep(0.55, 0.75 + w, d.y));
+    col += vec3(0.85, 0.92, 1.0) * strip * 2.6 / (1.0 + soft * 6.0);
+    // top panel
+    float top = smoothstep(0.90 - w, 0.97, d.y);
+    col += vec3(1.0) * top * 1.6 / (1.0 + soft * 6.0);
+    // bright horizon line
+    float hl = exp(-pow(d.y / (0.035 + soft * 0.4), 2.0));
+    col += vec3(0.9) * hl * 0.5 / (1.0 + soft * 4.0);
+    return col;
 }
 
 vec3 aces(vec3 x) {
@@ -359,8 +380,8 @@ void main() {
     float ndl2 = max(dot(n, uFill), 0.0);
     vec3 diffFill = albedo * (1.0 - metal) / PI * ndl2 * uLightI * 0.35;
     vec3 refl = reflect(-V, n);
-    vec3 envR = mix(env(refl), env(n), rough * rough);
-    vec3 envD = env(n);
+    vec3 envR = env(refl, rough);
+    vec3 envD = envSoft(n);
     vec3 ambD = albedo * (1.0 - metal) * envD * uAmbient;
     float specOcc = clamp(pow(ndv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
     vec3 ambS = envR * envBrdf(f0, rough, ndv) * uAmbient * specOcc;

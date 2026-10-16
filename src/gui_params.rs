@@ -683,6 +683,23 @@ impl App {
                         if ui.button("Open subgraph").clicked() {
                             self.acts.push(Act::EnterSub(g.clone()));
                         }
+                        if let Some(sub) = self.g.subgraphs.get(g) {
+                            let outs = sub.output_nodes();
+                            if outs.len() > 1 {
+                                let cur = node.strs.get("output").cloned().unwrap_or_default();
+                                let shown = if cur.is_empty() { outs.iter().find(|o| o.0 == "out").or(outs.first()).map(|o| o.1.clone()).unwrap_or_default() } else { cur };
+                                ui.horizontal(|ui| {
+                                    row_label(ui, "Output");
+                                    egui::ComboBox::from_id_salt(("subout", id)).selected_text(shown.clone()).show_ui(ui, |ui| {
+                                        for o in &outs {
+                                            if ui.selectable_label(o.1 == shown, &o.1).clicked() {
+                                                strs.push(("output".into(), Some(o.1.clone())));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        }
                     }
                 }
                 _ => {}
