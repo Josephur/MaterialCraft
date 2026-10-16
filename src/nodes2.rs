@@ -1,0 +1,418 @@
+//! Second set of nodes (Designer parity batch 1). `compute` returns Ok(None) for kinds it does not know, so the
+//! main evaluator can fall back to it. Every node here is tileable and independent of the output resolution:
+//! pixel-sized parameters are given for a 512 px texture and scaled by `size / 512`.
+use crate::graph::{Error, Node};
+use crate::noise;
+use crate::ops;
+use crate::tex::{lum, Tex};
+use std::collections::BTreeMap;
+use std::f32::consts::TAU;
+use std::rc::Rc;
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let d = b - a;
+    let t = if d.abs() < 1e-9 { if x >= b { 1.0 } else { 0.0 } } else { ((x - a) / d).clamp(0.0, 1.0) };
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+// ---------------------------------------------------------------- FFT (used by Normal To Height)
+fn fft(a: &mut [[f32; 2]], inverse: bool) {
+    let n = a.len();
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+        if i < j {
+            a.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = if inverse { TAU } else { -TAU } / len as f32;
+        let (ws, wc) = ang.sin_cos();
+        for start in (0..n).step_by(len) {
+            let (mut cr, mut ci) = (1.0f32, 0.0f32);
+            for k in 0..len / 2 {
+                let (u, v) = (a[start + k], a[start + k + len / 2]);
+                let t = [v[0] * cr - v[1] * ci, v[0] * ci + v[1] * cr];
+                a[start + k] = [u[0] + t[0], u[1] + t[1]];
+                a[start + k + len / 2] = [u[0] - t[0], u[1] - t[1]];
+                let nr = cr * wc - ci * ws;
+                ci = cr * ws + ci * wc;
+                cr = nr;
+            }
+        }
+        len <<= 1;
+    }
+}
+
+fn transpose_c(a: &[[f32; 2]], n: usize) -> Vec<[f32; 2]> {
+    let mut o = vec![[0.0; 2]; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            o[x * n + y] = a[y * n + x];
+        }
+    }
+    o
+}
+
+fn fft2(a: &mut Vec<[f32; 2]>, n: usize, inverse: bool) {
+    for r in a.chunks_mut(n) {
+        fft(r, inverse);
+    }
+    let mut t = transpose_c(a, n);
+    for r in t.chunks_mut(n) {
+        fft(r, inverse);
+    }
+    *a = transpose_c(&t, n);
+}
+
+/// Integrate a tangent-space normal map back into a height map (periodic Poisson solve in the Fourier domain).
+fn normal_to_height(nm: &Tex, directx: bool) -> Tex {
+    let n = nm.w.next_power_of_two().min(4096).max(2);
+    let src = if nm.w == n && nm.h == n { nm.clone() } else { ops::resize(nm, n) };
+    let mut gx = vec![[0.0f32; 2]; n * n];
+    let mut gy = vec![[0.0f32; 2]; n * n];
+    for i in 0..n * n {
+        let p = src.px[i];
+        let (x, y, z) = ((p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, ((p[2] - 0.5) * 2.0).max(0.05));
+        gx[i][0] = -x / z;
+        gy[i][0] = (if directx { -y } else { y }) / z;
+    }
+    fft2(&mut gx, n, false);
+    fft2(&mut gy, n, false);
+    let mut h = vec![[0.0f32; 2]; n * n];
+    for ky in 0..n {
+        let sy = (TAU * ky as f32 / n as f32).sin();
+        for kx in 0..n {
+            let sx = (TAU * kx as f32 / n as f32).sin();
+            let d = sx * sx + sy * sy;
+            if d < 1e-9 {
+                continue;
+            }
+            let i = ky * n + kx;
+            // h = -i (sx gx + sy gy) / (sx^2 + sy^2)
+            let (re, im) = (sx * gx[i][0] + sy * gy[i][0], sx * gx[i][1] + sy * gy[i][1]);
+            h[i] = [im / d, -re / d];
+        }
+    }
+    fft2(&mut h, n, true);
+    let vals: Vec<f32> = h.iter().map(|c| c[0] / (n * n) as f32).collect();
+    let (mn, mx) = vals.iter().fold((f32::MAX, f32::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
+    let k = if mx - mn > 1e-9 { 1.0 / (mx - mn) } else { 0.0 };
+    let out = Tex { w: n, h: n, px: vals.iter().map(|v| { let g = if k > 0.0 { (v - mn) * k } else { 0.5 }; [g, g, g, 1.0] }).collect() };
+    if nm.w == n && nm.h == n {
+        out
+    } else {
+        ops::resize(&out, nm.w)
+    }
+}
+
+/// Run a node of this module. Ok(None) = not one of ours.
+pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s: usize, seed: u32) -> Result<Option<Tex>, Error> {
+    let f = |k: &str, d: f32| n.nums.get(k).copied().unwrap_or(d);
+    let need = |slot: &str| -> Result<&Tex, Error> { ins.get(slot).map(|r| r.as_ref()).ok_or_else(|| Error::MissingInput(id, slot.to_string())) };
+    let opt = |slot: &str| -> Option<&Tex> { ins.get(slot).map(|r| r.as_ref()) };
+    let rs = s as f32 / 512.0;
+    let per = |k: &str, d: f32| f(k, d).round().clamp(1.0, 256.0) as i32;
+    let (con, inv) = (f("contrast", 1.0), f("invert", 0.0) > 0.5);
+    let fin = |t: Tex| -> Tex {
+        if (con - 1.0).abs() > 1e-4 || inv {
+            ops::contrast_invert(&t, con, inv)
+        } else {
+            t
+        }
+    };
+    let out = match kind {
+        // ------------------------------------------------ blurs and warps
+        "non_uniform_blur" => {
+            let (t, m) = (need("in")?, need("mask")?);
+            let max = f("intensity", 8.0).clamp(0.0, 64.0) * rs;
+            let lv: Vec<Tex> = (0..=4).map(|i| if i == 0 { t.clone() } else { ops::blur(t, max * i as f32 / 4.0) }).collect();
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let k = lum(m.sample(u, v)).clamp(0.0, 1.0) * 4.0;
+                let i = (k.floor() as usize).min(3);
+                let fr = k - i as f32;
+                let (a, b) = (lv[i].sample(u, v), lv[i + 1].sample(u, v));
+                [lerp(a[0], b[0], fr), lerp(a[1], b[1], fr), lerp(a[2], b[2], fr), lerp(a[3], b[3], fr)]
+            })
+        }
+        "radial_blur" => {
+            let t = need("in")?;
+            let (cx, cy) = (0.5 + f("x", 0.0), 0.5 + f("y", 0.0));
+            let (amount, rad) = (f("amount", 0.1).clamp(0.0, 1.0), f("radius", 0.5).clamp(0.01, 0.5));
+            let taps = 24;
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
+                let r = (dx * dx + dy * dy).sqrt();
+                let amt = amount * smooth(0.0, 1.0, 1.0 - r / rad);
+                let mut a = [0.0f32; 4];
+                for k in 0..taps {
+                    let sc = 1.0 - amt * (k as f32 / (taps - 1) as f32);
+                    let p = t.sample(cx + dx * sc, cy + dy * sc);
+                    for c in 0..4 {
+                        a[c] += p[c] / taps as f32;
+                    }
+                }
+                a
+            })
+        }
+        "anisotropic_blur" => {
+            let t = need("in")?;
+            let (inten, an) = (f("intensity", 8.0).clamp(0.0, 64.0), f("anisotropy", 0.8).clamp(0.0, 1.0));
+            let a = ops::blur(t, inten * (1.0 - an) * rs);
+            ops::directional_blur(&a, f("angle", 0.0), inten * an * 4.0 / 512.0)
+        }
+        // ------------------------------------------------ transforms
+        "symmetry" => {
+            let t = need("in")?;
+            let (axis, c) = (f("axis", 0.0) as u32, f("offset", 0.0));
+            let sg = if f("flip", 0.0) > 0.5 { -1.0 } else { 1.0 };
+            let fold = move |p: f32| 0.5 + c + sg * ops::wrapd(p - 0.5 - c).abs();
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let (a, b) = match axis {
+                    0 => (fold(u), v),
+                    1 => (u, fold(v)),
+                    2 => (fold(u), fold(v)),
+                    _ => {
+                        // diagonal: mirror across the line u = v
+                        let (x, y) = (ops::wrapd(u - v), u + v);
+                        let x = x.abs() * sg;
+                        ((y + x) * 0.5, (y - x) * 0.5)
+                    }
+                };
+                t.sample(a, b)
+            })
+        }
+        "skew" => {
+            let t = need("in")?;
+            // whole numbers keep the lattice periodic: the skewed texture still tiles
+            let (kx, ky) = (f("skew_x", 1.0).round().clamp(-32.0, 32.0), f("skew_y", 0.0).round().clamp(-32.0, 32.0));
+            Tex::from_fn(t.w, t.h, |u, v| t.sample_cubic(u + kx * v, v + ky * u))
+        }
+        // ------------------------------------------------ adjustments
+        "auto_levels" => {
+            let t = need("in")?;
+            let per_ch = f("per_channel", 0.0) > 0.5;
+            let mut lo = [f32::MAX; 3];
+            let mut hi = [f32::MIN; 3];
+            for p in &t.px {
+                for c in 0..3 {
+                    lo[c] = lo[c].min(p[c]);
+                    hi[c] = hi[c].max(p[c]);
+                }
+            }
+            if !per_ch {
+                let (l, h) = (lo[0].min(lo[1]).min(lo[2]), hi[0].max(hi[1]).max(hi[2]));
+                lo = [l; 3];
+                hi = [h; 3];
+            }
+            t.map(|p| {
+                let mut o = p;
+                for c in 0..3 {
+                    o[c] = if hi[c] - lo[c] > 1e-6 { (p[c] - lo[c]) / (hi[c] - lo[c]) } else { p[c] };
+                }
+                o
+            })
+        }
+        "channel_mixer" => {
+            let t = need("in")?;
+            let m = [[f("rr", 1.0), f("rg", 0.0), f("rb", 0.0)], [f("gr", 0.0), f("gg", 1.0), f("gb", 0.0)], [f("br", 0.0), f("bg", 0.0), f("bb", 1.0)]];
+            let mono = f("mono", 0.0) > 0.5;
+            t.map(|p| {
+                let mut o = p;
+                for c in 0..3 {
+                    o[c] = (m[c][0] * p[0] + m[c][1] * p[1] + m[c][2] * p[2]).clamp(-8.0, 8.0);
+                }
+                if mono {
+                    let g = lum(o);
+                    o = [g, g, g, p[3]];
+                }
+                o
+            })
+        }
+        "alpha_merge" => {
+            let rgb = need("rgb")?;
+            match opt("alpha") {
+                Some(a) => Tex::from_fn(rgb.w, rgb.h, |u, v| {
+                    let p = rgb.sample(u, v);
+                    [p[0], p[1], p[2], lum(a.sample(u, v))]
+                }),
+                None => rgb.clone(),
+            }
+        }
+        "color_to_mask" => {
+            let t = need("in")?;
+            let (cr, cg, cb) = (f("r", 1.0), f("g", 0.0), f("b", 0.0));
+            let (range, soft) = (f("range", 0.2).max(0.0), f("softness", 0.1).max(0.0));
+            t.map(|p| {
+                let d = (((p[0] - cr).powi(2) + (p[1] - cg).powi(2) + (p[2] - cb).powi(2)) / 3.0).sqrt();
+                let m = 1.0 - smooth(range, range + soft.max(1e-4), d);
+                [m, m, m, 1.0]
+            })
+        }
+        "replace_color" => {
+            let t = need("in")?;
+            let src = [f("src_r", 1.0), f("src_g", 0.0), f("src_b", 0.0)];
+            let dst = [f("dst_r", 0.0), f("dst_g", 0.0), f("dst_b", 1.0)];
+            let (range, soft) = (f("range", 0.25).max(0.0), f("softness", 0.15).max(0.0));
+            t.map(|p| {
+                let d = (((p[0] - src[0]).powi(2) + (p[1] - src[1]).powi(2) + (p[2] - src[2]).powi(2)) / 3.0).sqrt();
+                let m = 1.0 - smooth(range, range + soft.max(1e-4), d);
+                [p[0] + (dst[0] - src[0]) * m, p[1] + (dst[1] - src[1]) * m, p[2] + (dst[2] - src[2]) * m, p[3]]
+            })
+        }
+        "pow" => {
+            let t = need("in")?;
+            let e = f("exponent", 2.0).clamp(0.0, 32.0);
+            t.map(|p| [p[0].max(0.0).powf(e), p[1].max(0.0).powf(e), p[2].max(0.0).powf(e), p[3]])
+        }
+        "histogram_shift" => {
+            let t = need("in")?;
+            let d = (f("position", 0.5) - 0.5) * 2.0;
+            t.map(|p| [(p[0] + d).clamp(0.0, 1.0), (p[1] + d).clamp(0.0, 1.0), (p[2] + d).clamp(0.0, 1.0), p[3]])
+        }
+        "grayscale_conversion" => {
+            let t = need("in")?;
+            let (wr, wg, wb) = (f("r", 0.3), f("g", 0.59), f("b", 0.11));
+            t.map(|p| {
+                let g = p[0] * wr + p[1] * wg + p[2] * wb;
+                [g, g, g, p[3]]
+            })
+        }
+        // ------------------------------------------------ generators
+        "cells" => {
+            let (var, p) = (f("variant", 0.0) as u32, per("scale", 8.0));
+            let jitter = f("jitter", 1.0).clamp(0.0, 1.0);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let vr = noise::voronoi_ext(u, v, p, p, seed, jitter);
+                match var {
+                    0 => 1.0 - vr.f1,
+                    1 => vr.id1,
+                    2 => smooth(0.0, 0.25, vr.f2 - vr.f1),
+                    _ => vr.id1 * (1.0 - vr.f1 * vr.f1),
+                }
+            }))
+        }
+        "fractal_sum" => {
+            let (p, lo, hi) = (per("scale", 2.0), f("min_level", 0.0).clamp(0.0, 10.0) as u32, f("max_level", 6.0).clamp(0.0, 10.0) as u32);
+            let rough = f("roughness", 0.5).clamp(0.0, 1.5);
+            let mode = f("mode", 0.0) as u32;
+            let hi = hi.max(lo);
+            let grids: Vec<(noise::GradGrid, f32)> = (lo..=hi)
+                .map(|o| {
+                    let q = (p as i64 * (1i64 << o)).clamp(1, 1024) as i32;
+                    (noise::GradGrid::new(q, q, seed.wrapping_add(o * 31)), rough.powi((o - lo) as i32))
+                })
+                .collect();
+            let norm: f32 = grids.iter().map(|g| g.1).sum::<f32>().max(1e-6);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let mut acc = 0.0;
+                for (g, a) in &grids {
+                    let x = g.sample(u, v);
+                    acc += a * match mode {
+                        1 => (x * 2.0 - 1.0).abs(),
+                        2 => 1.0 - (x * 2.0 - 1.0).abs(),
+                        _ => x,
+                    };
+                }
+                (acc / norm).clamp(0.0, 1.0)
+            }))
+        }
+        "waveform" => {
+            let (a, b) = ops::tileable_wave(f("count", 8.0), f("angle", 0.0));
+            let (warp, w) = (f("warp", 0.3).clamp(0.0, 4.0), per("warp_scale", 4.0));
+            let shape = f("shape", 0.0) as u32;
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let ph = (a as f32 * u + b as f32 * v) + (noise::perlin(u, v, w, w, seed) - 0.5) * warp;
+                let x = ph - ph.floor();
+                match shape {
+                    1 => 1.0 - (x * 2.0 - 1.0).abs(),
+                    2 => x,
+                    3 => if x < 0.5 { 1.0 } else { 0.0 },
+                    _ => 0.5 + 0.5 * (x * TAU).sin(),
+                }
+            }))
+        }
+        "gaussian_spots" => {
+            let p = per("scale", 8.0);
+            let (size, var) = (f("size", 0.5).clamp(0.05, 1.0), f("size_variation", 0.5).clamp(0.0, 1.0));
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                // spots() blends smoothly from 1 to 0 between the inner and outer radius, i.e. a gaussian-like bump
+                noise::spots(u, v, p, p, seed, |id| {
+                    let r = size * 0.55 * (1.0 - var + var * id);
+                    (0.0, r.max(0.02))
+                }, 0.0)
+            }))
+        }
+        // ------------------------------------------------ normals and surface
+        "normal_invert" => {
+            let t = need("in")?;
+            let (ix, iy) = (f("invert_x", 0.0) > 0.5, f("invert_y", 1.0) > 0.5);
+            t.map(|p| [if ix { 1.0 - p[0] } else { p[0] }, if iy { 1.0 - p[1] } else { p[1] }, p[2], p[3]])
+        }
+        "normal_normalize" => need("in")?.map(|p| {
+            let (x, y, z) = ((p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0);
+            let l = (x * x + y * y + z * z).sqrt().max(1e-6);
+            [x / l * 0.5 + 0.5, y / l * 0.5 + 0.5, z / l * 0.5 + 0.5, p[3]]
+        }),
+        "normal_vector_rotation" => {
+            let t = need("in")?;
+            let (sn, cs) = (f("angle", 0.0) * TAU).sin_cos();
+            t.map(|p| {
+                let (x, y) = ((p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0);
+                [(cs * x - sn * y) * 0.5 + 0.5, (sn * x + cs * y) * 0.5 + 0.5, p[2], p[3]]
+            })
+        }
+        "normal_to_height" => normal_to_height(need("in")?, f("directx", 0.0) > 0.5),
+        "sobel" => {
+            let t = need("in")?;
+            let k = f("intensity", 1.0).clamp(0.0, 64.0) * (t.w as f32 / 512.0).max(0.25);
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let (x, y) = ((u * t.w as f32) as i64, (v * t.h as f32) as i64);
+                let g = |i: i64, j: i64| t.gray_at(x + i, y + j);
+                let gx = g(1, -1) + 2.0 * g(1, 0) + g(1, 1) - g(-1, -1) - 2.0 * g(-1, 0) - g(-1, 1);
+                let gy = g(-1, 1) + 2.0 * g(0, 1) + g(1, 1) - g(-1, -1) - 2.0 * g(0, -1) - g(1, -1);
+                let m = ((gx * gx + gy * gy).sqrt() * k * 0.25).clamp(0.0, 1.0);
+                [m, m, m, 1.0]
+            })
+        }
+        // ------------------------------------------------ effects
+        "glow" => {
+            let t = need("in")?;
+            let (w, inten) = (f("width", 8.0).clamp(0.0, 128.0) * rs, f("intensity", 1.0).clamp(0.0, 8.0));
+            let b = ops::blur(t, w);
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let (p, q) = (t.sample(u, v), b.sample(u, v));
+                [(p[0] + q[0] * inten).clamp(0.0, 1.0), (p[1] + q[1] * inten).clamp(0.0, 1.0), (p[2] + q[2] * inten).clamp(0.0, 1.0), p[3]]
+            })
+        }
+        "mosaic" => {
+            let t = need("in")?;
+            let c = per("count", 16.0) as f32;
+            Tex::from_fn(t.w, t.h, |u, v| t.sample(((u * c).floor() + 0.5) / c, ((v * c).floor() + 0.5) / c))
+        }
+        "shape_drop_shadow" => {
+            let t = need("in")?;
+            let (ang, dist) = (f("angle", 0.125) * TAU, f("distance", 0.03).clamp(0.0, 0.5));
+            let (sn, cs) = ang.sin_cos();
+            let shifted = Tex::from_fn(t.w, t.h, |u, v| t.sample(u - cs * dist, v - sn * dist));
+            let sh = ops::blur(&shifted, f("blur", 6.0).clamp(0.0, 128.0) * rs);
+            let op = f("opacity", 0.8).clamp(0.0, 1.0);
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let m = lum(t.sample(u, v)).max(lum(sh.sample(u, v)) * op).clamp(0.0, 1.0);
+                [m, m, m, 1.0]
+            })
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(out))
+}

@@ -143,6 +143,31 @@ pub const SPECS: &[Spec] = &[
     s!("curvature", ["in"], [], "radius intensity"),
     s!("edge_detect", ["in"], [], "intensity"),
     s!("emboss", ["in"], [], "angle intensity"),
+    s!("non_uniform_blur", ["in", "mask"], [], "blur by a mask: intensity"),
+    s!("radial_blur", ["in"], [], "zoom blur around a centre: amount radius x y"),
+    s!("anisotropic_blur", ["in"], [], "blur stretched in one direction: intensity anisotropy angle"),
+    s!("symmetry", ["in"], [], "mirror the image around a line: axis(0 x,1 y,2 both,3 diagonal) offset flip"),
+    s!("skew", ["in"], [], "shear that keeps tiling: skew_x skew_y (whole numbers)"),
+    s!("auto_levels", ["in"], [], "stretch values to the full range: per_channel"),
+    s!("channel_mixer", ["in"], [], "mix colour channels: rr rg rb gr gg gb br bg bb mono"),
+    s!("alpha_merge", ["rgb"], ["alpha"], "put a grayscale image into the alpha channel"),
+    s!("color_to_mask", ["in"], [], "mask of pixels close to a colour: r g b range softness"),
+    s!("replace_color", ["in"], [], "replace one colour with another: src_r src_g src_b dst_r dst_g dst_b range softness"),
+    s!("pow", ["in"], [], "raise values to a power: exponent"),
+    s!("histogram_shift", ["in"], [], "shift all values: position"),
+    s!("grayscale_conversion", ["in"], [], "weighted grayscale: r g b"),
+    s!("cells", [], [], "cellular noise: scale jitter seed variant(0 cells1,1 cells2,2 cells3,3 cells4) contrast invert"),
+    s!("fractal_sum", [], [], "sum of noise octaves: scale min_level max_level roughness seed mode(0 base,1 turbulence,2 creased) contrast invert"),
+    s!("waveform", [], [], "tileable wave pattern: count angle warp warp_scale seed shape(0 sine,1 triangle,2 saw,3 square) contrast invert"),
+    s!("gaussian_spots", [], [], "soft gaussian spots: scale size size_variation seed contrast invert"),
+    s!("normal_invert", ["in"], [], "flip normal map channels: invert_x invert_y"),
+    s!("normal_normalize", ["in"], [], "renormalise a normal map"),
+    s!("normal_vector_rotation", ["in"], [], "rotate normal vectors: angle"),
+    s!("normal_to_height", ["in"], [], "integrate a normal map into a height map: directx"),
+    s!("sobel", ["in"], [], "sobel edge magnitude: intensity"),
+    s!("glow", ["in"], [], "glow around bright areas: width intensity"),
+    s!("mosaic", ["in"], [], "pixelate: count"),
+    s!("shape_drop_shadow", ["in"], [], "drop shadow of a mask: angle distance blur opacity"),
 ];
 
 pub fn spec(kind: &str) -> Option<&'static Spec> {
@@ -153,10 +178,10 @@ pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
         "bitmap" | "input" | "subgraph" | "output" | "dot" => "Utility",
-        "normal" | "normal_blend" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
+        "normal" | "normal_blend" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
         _ => "Filters",
     }
 }
@@ -183,6 +208,9 @@ pub fn label(kind: &str) -> String {
         "pixel_processor" => "Pixel Processor",
         "normal" => "Normal From Height",
         "normal_blend" => "Normal Blend",
+        "rgba_split" => "RGBA Split",
+        "pow" => "Pow",
+        "sobel" => "Sobel",
         _ => "",
     };
     if !named.is_empty() {
@@ -238,7 +266,7 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
         "sdf_op" | "sdf_mask" => (102, 103),
         "flood_fill" => (105, 105),
         k if k.starts_with("flood_fill_") => (106, 106),
-        "dust" | "curvature_smooth" => (107, 107),
+        "dust" | "curvature_smooth" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" => (107, 107),
         "vector_warp" => (100, 107),
         _ => (100, 101),
     };
@@ -247,6 +275,9 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
         "pixel_processor" => line += " expr=\"sin(u*18.849556)*0.5+0.5\"",
         "colorize" => line += " p0=0 r0=0.1 g0=0.1 b0=0.35 p1=1 r1=1 g1=0.8 b1=0.3",
         "merge" => line += " r=@100 g=@101 b=@100",
+        "alpha_merge" => line += " alpha=@101",
+        "color_to_mask" => line += " r=0.5 g=0.5 b=0.5 range=0.12 softness=0.2",
+        "replace_color" => line += " src_r=0.5 src_g=0.5 src_b=0.5 range=0.2",
         "switch" => line += " a=@100 b=@101 index=1",
         _ => {}
     }
@@ -1700,7 +1731,10 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "curvature" => ops::curvature(tex("in")?, f("radius", 3.0) * rs, f("intensity", 4.0)),
         "edge_detect" => ops::edge_detect(tex("in")?, f("intensity", 2.0)),
         "emboss" => ops::emboss(tex("in")?, f("angle", 0.125), f("intensity", 4.0)),
-        other => return Err(Error::UnknownNode(id, other.to_string())),
+        other => match crate::nodes2::compute(other, id, n, ins, s, seed)? {
+            Some(t) => t,
+            None => return Err(Error::UnknownNode(id, other.to_string())),
+        },
     };
     if out.w != s || out.h != s {
         return Ok(Tex::from_fn(s, s, |u, v| out.sample(u, v)));

@@ -607,3 +607,55 @@ fn nodes_can_have_their_own_output_size() {
     let t = &g.evaluate(Some(128)).unwrap()["o"];
     assert!(t.px.iter().all(|p| p.iter().all(|v| v.is_finite())));
 }
+
+#[test]
+fn normal_to_height_inverts_normal_from_height() {
+    // height -> normal -> height must give back (a normalised copy of) the original height
+    let t = "size 128\nnode 1 fbm scale=3 octaves=3 seed=4\nnode 2 normal in=@1 strength=2\nnode 3 normal_to_height in=@2\nnode 4 auto_levels in=@1\noutput a 3\noutput b 4\n";
+    let o = Graph::parse(t).unwrap().evaluate(None).unwrap();
+    let (a, b) = (&o["a"], &o["b"]);
+    let n = a.px.len() as f64;
+    let (ma, mb) = (a.px.iter().map(|p| p[0] as f64).sum::<f64>() / n, b.px.iter().map(|p| p[0] as f64).sum::<f64>() / n);
+    let (mut cov, mut va, mut vb) = (0.0, 0.0, 0.0);
+    for (p, q) in a.px.iter().zip(&b.px) {
+        let (x, y) = (p[0] as f64 - ma, q[0] as f64 - mb);
+        cov += x * y;
+        va += x * x;
+        vb += y * y;
+    }
+    let corr = cov / (va * vb).sqrt();
+    assert!(corr > 0.9, "recovered height correlates only {corr:.3} with the original");
+}
+
+#[test]
+fn batch1_nodes_behave() {
+    let run = |body: &str| Graph::parse(&format!("size 64\n{body}")).unwrap().evaluate(None).unwrap();
+    // symmetry: left and right halves are mirror images
+    let o = run("node 1 fbm scale=3 seed=2\nnode 2 symmetry in=@1 axis=0\noutput a 2\n");
+    let t = &o["a"];
+    for y in 0..64 {
+        for x in 0..32 {
+            let (l, r) = (t.at(x, y)[0], t.at(63 - x, y)[0]);
+            assert!((l - r).abs() < 0.02, "symmetry broken at ({x},{y}): {l} vs {r}");
+        }
+    }
+    // auto levels reaches 0 and 1
+    let o = run("node 1 fbm scale=3 seed=2\nnode 2 auto_levels in=@1\noutput a 2\n");
+    let (mn, mx) = o["a"].px.iter().fold((9.0f32, -9.0f32), |a, p| (a.0.min(p[0]), a.1.max(p[0])));
+    assert!(mn < 0.001 && mx > 0.999, "range {mn}..{mx}");
+    // pow with exponent 2 squares a constant
+    let o = run("node 1 color r=0.5 g=0.5 b=0.5\nnode 2 pow in=@1 exponent=2\noutput a 2\n");
+    assert!((o["a"].px[0][0] - 0.25).abs() < 1e-4);
+    // channel mixer swaps red and blue
+    let o = run("node 1 color r=1 g=0.2 b=0\nnode 2 channel_mixer in=@1 rr=0 rb=1 br=1 bb=0\noutput a 2\n");
+    let p = o["a"].px[0];
+    assert!(p[0] < 0.01 && p[2] > 0.99 && (p[1] - 0.2).abs() < 1e-4, "{p:?}");
+    // color to mask: exact colour -> 1, other colour -> 0
+    let o = run("node 1 color r=1 g=0 b=0\nnode 2 color_to_mask in=@1 r=1 g=0 b=0\nnode 3 color_to_mask in=@1 r=0 g=0 b=1\noutput a 2\noutput b 3\n");
+    assert!(o["a"].px[0][0] > 0.99 && o["b"].px[0][0] < 0.01);
+    // new blend modes stay in range
+    for m in 0..17 {
+        let o = run(&format!("node 1 fbm seed=1\nnode 2 fbm seed=2 scale=7\nnode 3 blend fg=@1 bg=@2 mode={m}\noutput a 3\n"));
+        assert!(o["a"].px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])), "blend mode {m}");
+    }
+}

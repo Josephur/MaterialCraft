@@ -8,6 +8,7 @@ pub mod graph;
 pub mod gpu3d;
 pub mod jpeg;
 pub mod noise;
+pub mod nodes2;
 pub mod ops;
 pub mod png;
 pub mod render3d;

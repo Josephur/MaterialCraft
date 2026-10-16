@@ -368,11 +368,18 @@ fn bm(mode: u32, f: f32, b: f32) -> f32 {
         7 => f.min(b),
         8 => (f - b).abs(),
         9 => (1.0 - 2.0 * f) * b * b + 2.0 * f * b,
+        10 => if f >= 0.999 { 1.0 } else { b / (1.0 - f) },
+        11 => if f <= 0.001 { 0.0 } else { 1.0 - (1.0 - b) / f },
+        12 => f + b - 1.0,
+        13 => if f < 0.5 { 2.0 * f * b } else { 1.0 - 2.0 * (1.0 - f) * (1.0 - b) },
+        14 => f + b - 2.0 * f * b,
+        15 => if f <= 0.001 { b } else { b / f },
+        16 => b + 2.0 * f - 1.0,
         _ => f,
     }
 }
 
-/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light.
+/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light.
 pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) -> Tex {
     let mut out = bg.clone();
     for i in 0..out.px.len() {

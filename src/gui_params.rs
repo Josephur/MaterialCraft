@@ -28,7 +28,7 @@ fn pb(name: &'static str, label: &'static str, def: bool) -> PD {
     PD { name, label, k: PK::B { def } }
 }
 
-const BLEND_MODES: &[&str] = &["Copy", "Add", "Subtract", "Multiply", "Screen", "Overlay", "Max", "Min", "Difference", "Soft light"];
+const BLEND_MODES: &[&str] = &["Copy", "Add", "Subtract", "Multiply", "Screen", "Overlay", "Max", "Min", "Difference", "Soft light", "Color dodge", "Color burn", "Linear burn", "Hard light", "Exclusion", "Divide", "Linear light"];
 const SHAPES: &[&str] = &["Square", "Disc", "Paraboloid", "Gaussian", "Diamond", "Pyramid", "Half sphere", "Cone"];
 
 fn p_seed() -> PD {
@@ -218,6 +218,44 @@ fn pdefs(kind: &str) -> Vec<PD> {
         "make_it_tile_patch" => vec![pi("patches", "Patches", 6, 2, 32), pf("softness", "Softness", 0.5, 0.0, 1.0), p_seed()],
         "edge_wear" => vec![pf("amount", "Amount", 0.5, 0.0, 1.0), pf("width", "Edge width", 2.0, 0.0, 16.0), pf("contrast", "Contrast", 1.0, 0.1, 4.0)],
         "dirt" | "dust" => vec![pf("amount", "Amount", 0.5, 0.0, 1.0), pf("contrast", "Contrast", 1.0, 0.1, 4.0)],
+        "non_uniform_blur" => vec![pf("intensity", "Intensity", 8.0, 0.0, 64.0)],
+        "radial_blur" => vec![pf("amount", "Amount", 0.1, 0.0, 1.0), pf("radius", "Radius", 0.5, 0.01, 0.5), pf("x", "Center X", 0.0, -0.5, 0.5), pf("y", "Center Y", 0.0, -0.5, 0.5)],
+        "anisotropic_blur" => vec![pf("intensity", "Intensity", 8.0, 0.0, 64.0), pf("anisotropy", "Anisotropy", 0.8, 0.0, 1.0), pf("angle", "Angle", 0.0, 0.0, 1.0)],
+        "symmetry" => vec![pe("axis", "Axis", 0, &["Horizontal", "Vertical", "Both", "Diagonal"]), pf("offset", "Offset", 0.0, -0.5, 0.5), pb("flip", "Flip side", false)],
+        "skew" => vec![pi("skew_x", "Skew X", 1, -8, 8), pi("skew_y", "Skew Y", 0, -8, 8)],
+        "auto_levels" => vec![pb("per_channel", "Per channel", false)],
+        "channel_mixer" => vec![
+            pf("rr", "Red from red", 1.0, -2.0, 2.0), pf("rg", "Red from green", 0.0, -2.0, 2.0), pf("rb", "Red from blue", 0.0, -2.0, 2.0),
+            pf("gr", "Green from red", 0.0, -2.0, 2.0), pf("gg", "Green from green", 1.0, -2.0, 2.0), pf("gb", "Green from blue", 0.0, -2.0, 2.0),
+            pf("br", "Blue from red", 0.0, -2.0, 2.0), pf("bg", "Blue from green", 0.0, -2.0, 2.0), pf("bb", "Blue from blue", 1.0, -2.0, 2.0),
+            pb("mono", "Monochrome", false),
+        ],
+        "color_to_mask" => vec![pf("r", "Red", 1.0, 0.0, 1.0), pf("g", "Green", 0.0, 0.0, 1.0), pf("b", "Blue", 0.0, 0.0, 1.0), pf("range", "Range", 0.2, 0.0, 1.0), pf("softness", "Softness", 0.1, 0.0, 1.0)],
+        "replace_color" => vec![
+            pf("src_r", "Source red", 1.0, 0.0, 1.0), pf("src_g", "Source green", 0.0, 0.0, 1.0), pf("src_b", "Source blue", 0.0, 0.0, 1.0),
+            pf("dst_r", "Target red", 0.0, 0.0, 1.0), pf("dst_g", "Target green", 0.0, 0.0, 1.0), pf("dst_b", "Target blue", 1.0, 0.0, 1.0),
+            pf("range", "Range", 0.25, 0.0, 1.0), pf("softness", "Softness", 0.15, 0.0, 1.0),
+        ],
+        "pow" => vec![pf("exponent", "Exponent", 2.0, 0.0, 8.0)],
+        "histogram_shift" => vec![pf("position", "Position", 0.5, 0.0, 1.0)],
+        "grayscale_conversion" => vec![pf("r", "Red weight", 0.3, 0.0, 1.0), pf("g", "Green weight", 0.59, 0.0, 1.0), pf("b", "Blue weight", 0.11, 0.0, 1.0)],
+        "cells" => vec![pe("variant", "Type", 0, &["Cells 1", "Cells 2", "Cells 3", "Cells 4"]), pi("scale", "Scale", 8, 1, 64), pf("jitter", "Randomness", 1.0, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "fractal_sum" => vec![
+            pe("mode", "Type", 0, &["Base", "Turbulence", "Creased"]), pi("scale", "Scale", 2, 1, 32), pi("min_level", "Min level", 0, 0, 8), pi("max_level", "Max level", 6, 0, 8),
+            pf("roughness", "Roughness", 0.5, 0.0, 1.5), p_seed(), p_con(), p_inv(),
+        ],
+        "waveform" => vec![
+            pe("shape", "Waveform", 0, &["Sine", "Triangle", "Saw", "Square"]), pi("count", "Count", 8, 1, 64), pf("angle", "Angle", 0.0, 0.0, 1.0),
+            pf("warp", "Warp", 0.3, 0.0, 4.0), pi("warp_scale", "Warp scale", 4, 1, 32), p_seed(), p_con(), p_inv(),
+        ],
+        "gaussian_spots" => vec![pi("scale", "Scale", 8, 1, 64), pf("size", "Size", 0.5, 0.05, 1.0), pf("size_variation", "Size variation", 0.5, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "normal_invert" => vec![pb("invert_x", "Invert red (X)", false), pb("invert_y", "Invert green (Y)", true)],
+        "normal_vector_rotation" => vec![pf("angle", "Angle", 0.0, 0.0, 1.0)],
+        "normal_to_height" => vec![pb("directx", "DirectX format", false)],
+        "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
+        "glow" => vec![pf("width", "Width", 8.0, 0.0, 128.0), pf("intensity", "Intensity", 1.0, 0.0, 8.0)],
+        "mosaic" => vec![pi("count", "Cells per side", 16, 1, 128)],
+        "shape_drop_shadow" => vec![pf("angle", "Angle", 0.125, 0.0, 1.0), pf("distance", "Distance", 0.03, 0.0, 0.5), pf("blur", "Blur", 6.0, 0.0, 128.0), pf("opacity", "Opacity", 0.8, 0.0, 1.0)],
         _ => vec![],
     }
 }
