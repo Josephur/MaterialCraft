@@ -23,6 +23,11 @@ name = "materialcraft-gui"
 path = "src/gui.rs"
 required-features = ["gui"]
 
+[[example]]
+name = "gpu_shot"
+path = "examples/gpu_shot.rs"
+required-features = ["gui"]
+
 [profile.release]
 opt-level = 3
 lto = true

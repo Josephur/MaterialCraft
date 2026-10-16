@@ -85,6 +85,8 @@ pub struct Mesh {
     /// object-space length of one uv unit along u and v (used by bump and parallax)
     pub su: Vec<f32>,
     pub sv: Vec<f32>,
+    /// 0..1 displacement fade per vertex (0 at sphere poles, ramps to 0 at cube edges) so displaced meshes stay closed
+    pub fade: Vec<f32>,
     pub tris: Vec<[u32; 3]>,
 }
 
@@ -172,7 +174,7 @@ fn raw_sphere(n: u32, tiling: f32) -> Raw {
                 2 + j * nu + (i % nu)
             };
             let sin_t = st.max(0.05);
-            r.push(p, p, [cl, 0.0, -sl], [(i as f32 / nu as f32) * tiling * 2.0, theta / PI * tiling], TAU * sin_t / (tiling * 2.0), PI / tiling, weld, 1.0);
+            r.push(p, p, [cl, 0.0, -sl], [(i as f32 / nu as f32) * tiling * 2.0, theta / PI * tiling], TAU * sin_t / (tiling * 2.0), PI / tiling, weld, smoothstep01(st / 0.05));
         }
     }
     r.grid_tris(0, nu, nv);
@@ -254,7 +256,7 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
         let t = sub(r.tan[i], mul(nrm[i], dot(r.tan[i], nrm[i])));
         tan[i] = if dot(t, t) > 1e-12 { norm(t) } else { r.tan[i] };
     }
-    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, tris: r.tris }
+    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, fade: r.fade, tris: r.tris }
 }
 
 // ------------------------------------------------------------------------------------------------ rasteriser

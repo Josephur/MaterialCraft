@@ -8,6 +8,7 @@ use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed,
 use materialcraft::render3d::{self, Maps, View};
 use materialcraft::tex::Tex;
 use materialcraft::export::{self, Format};
+use materialcraft::gpu3d::{self, MapInputs};
 use materialcraft::{ops, png};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -162,6 +163,9 @@ struct App {
     view3d: View,
     tex3d: Option<egui::TextureHandle>,
     r3d_size: usize,
+    gpu: gpu3d::Shared,
+    gpu_on: bool,
+    gpu_maps_dirty: bool,
     dirty: bool,
     dirty3d: bool,
     gen: u64,
@@ -239,9 +243,12 @@ impl App {
             tex2d: None,
             tex2d_size: (0, 0),
             maps: BTreeMap::new(),
-            view3d: View::default(),
+            view3d: View { tess: 512, ..View::default() },
             tex3d: None,
             r3d_size: 420,
+            gpu: gpu3d::new_shared(),
+            gpu_on: true,
+            gpu_maps_dirty: true,
             dirty: true,
             dirty3d: true,
             gen: 0,
@@ -832,6 +839,7 @@ impl App {
                     }
                 }
                 self.dirty3d = true;
+                self.gpu_maps_dirty = true;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -841,8 +849,38 @@ impl App {
         }
     }
 
+    /// Hand the current graph outputs to the GPU viewer (uploaded on its next paint).
+    fn upload_gpu_maps(&mut self) {
+        self.gpu_maps_dirty = false;
+        let inv_gloss = self.maps.get("glossiness").map(ops::invert);
+        let m = MapInputs {
+            base: self.maps.get("basecolor").or_else(|| self.maps.get("diffuse")),
+            normal: self.maps.get("normal"),
+            rough: self.maps.get("roughness").or(inv_gloss.as_ref()),
+            metal: self.maps.get("metallic"),
+            ao: self.maps.get("ambient_occlusion"),
+            emissive: self.maps.get("emissive"),
+            height: self.maps.get("height"),
+        };
+        let prepared = gpu3d::prepare(&m);
+        if let Ok(mut g) = self.gpu.lock() {
+            g.set_maps(prepared);
+        }
+    }
+
+    fn gpu_ready(&self) -> bool {
+        self.gpu_on && self.gpu.lock().map(|g| g.ready()).unwrap_or(false)
+    }
+
     fn render_3d(&mut self, ctx: &egui::Context) {
         self.dirty3d = false;
+        if self.gpu_maps_dirty {
+            self.upload_gpu_maps();
+        }
+        if self.gpu_ready() {
+            ctx.request_repaint();
+            return;
+        }
         let (flat, half, zero, one) = (Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 0.5, 1.0]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
         let inv_gloss = self.maps.get("glossiness").map(ops::invert);
         let m = Maps {
@@ -854,7 +892,9 @@ impl App {
             emissive: self.maps.get("emissive"),
             height: self.maps.get("height"),
         };
-        let img = render3d::render(&m, &self.view3d, self.r3d_size, self.r3d_size);
+        let mut cpu_view = self.view3d.clone();
+        cpu_view.tess = cpu_view.tess.min(256);
+        let img = render3d::render(&m, &cpu_view, self.r3d_size, self.r3d_size);
         self.tex3d = Some(ctx.load_texture("view3d", qimg(&img), egui::TextureOptions::LINEAR));
     }
 }

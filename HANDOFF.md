@@ -58,5 +58,10 @@ C. Visually review the ~35 new nodes (only smoke-tested for NaN/errors): tile sa
 D. Not built yet: function nodes + FxMap, spline/path tools, Pin node, Input Value, non-square graphs, true displacement
    (only parallax), HDRI/environment maps, loading custom meshes into the 3D view, SVG/font import, OCIO/ACE color management,
    scripting API, PBR material packs, mesh-baker GUI polish. Home "Learn" page is minimal.
+F. GPU viewport (src/gpu3d.rs, feature "gui"): OpenGL 3.3 core via egui_glow paint callback; vertex-shader displacement, parallax
+   relief, height contact shadows, GGX PBR, ACES, mipmaps + anisotropic, 4x MSAA (falls back to none). Verified only on Mesa llvmpipe
+   (headless: `cargo run --release --features gui --example gpu_shot -- out.png [shape] [relief] [w h] [nomsaa] [wire]`).
+   TODO: test on real GPUs (NVIDIA/AMD/Intel/Apple), HDRI/IBL loader, async map preparation, wireframe at tess>=256 is a solid blob.
+   CPU renderer remains as fallback (Renderer menu, or automatic when GL init fails).
 E. Known rough edges: library thumbnails are 64px and generated once at startup; 'Frame'/'Comment' use the same frame data;
    Directional noise/Stripes only tile at 0/90 degrees; blur-type radii are in 512px units (resolution independent).

@@ -1045,7 +1045,8 @@ impl App {
     fn view3d_panel(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
         let shape = ["Sphere", "Cube", "Plane"][self.view3d.shape.min(2) as usize];
-        if panel_header(ui, &format!("{shape} - CPU - 3D VIEW"), true) {
+        let engine = if self.gpu_ready() { "GPU" } else { "CPU" };
+        if panel_header(ui, &format!("{shape} - {engine} - 3D VIEW"), true) {
             self.show[2] = false;
         }
         let mut ch = false;
@@ -1062,7 +1063,8 @@ impl App {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.tiling, 0.25..=16.0).text("UV tiling").logarithmic(true)).changed();
                 ui.separator();
                 ui.label("Mesh resolution (triangles per side)");
-                for t in [64u32, 128, 256, 384, 512] {
+                let tess_list: &[u32] = if self.gpu_ready() { &[64, 128, 256, 384, 512, 768] } else { &[64, 128, 256] };
+                for &t in tess_list {
                     if ui.selectable_label(self.view3d.tess == t, format!("{t} x {t}")).clicked() {
                         self.view3d.tess = t;
                         ch = true;
@@ -1124,17 +1126,39 @@ impl App {
                 ch |= ui.add(egui::Slider::new(&mut self.view3d.ambient, 0.0..=3.0).text("Ambient light")).changed();
             });
             ui.menu_button("Display", |ui| {
-                ui.label("Tone mapping: filmic (Reinhard)");
+                ui.label(if self.gpu_ready() { "Tone mapping: ACES filmic" } else { "Tone mapping: filmic (Reinhard)" });
                 ui.label("Color space: sRGB");
             });
             ui.menu_button("Renderer", |ui| {
-                ui.label("CPU software PBR (GGX, normal mapping)");
-                let b = self.r3d_size;
-                for s in [256usize, 420, 640] {
-                    ui.selectable_value(&mut self.r3d_size, s, format!("{s} px"));
-                }
-                if b != self.r3d_size {
+                if ui.checkbox(&mut self.gpu_on, "GPU rendering (OpenGL)").changed() {
+                    self.gpu_maps_dirty = true;
                     ch = true;
+                }
+                let (err, name) = self.gpu.lock().map(|g| (g.error.clone(), g.renderer.clone())).unwrap_or((None, String::new()));
+                if let Some(e) = err {
+                    ui.colored_label(Color32::from_rgb(255, 170, 120), format!("GPU renderer unavailable: {e}"));
+                    ui.label("Using the CPU software renderer.");
+                } else if self.gpu_on {
+                    if !name.is_empty() {
+                        ui.small(format!("GPU: {name}"));
+                    }
+                    ui.small("Real displacement, parallax relief, GGX PBR, mipmaps + anisotropic filtering, MSAA");
+                    if let Ok(mut g) = self.gpu.lock() {
+                        if ui.checkbox(&mut g.opts.self_shadow, "Height self-shadowing").changed() {
+                            ch = true;
+                        }
+                    }
+                }
+                if !self.gpu_on {
+                    ui.separator();
+                    ui.label("CPU software PBR (GGX, normal mapping)");
+                    let b = self.r3d_size;
+                    for s in [256usize, 420, 640] {
+                        ui.selectable_value(&mut self.r3d_size, s, format!("{s} px"));
+                    }
+                    if b != self.r3d_size {
+                        ch = true;
+                    }
                 }
             });
         });
@@ -1172,7 +1196,13 @@ impl App {
                 self.dirty3d = true;
             }
         }
-        if let Some(t) = &self.tex3d {
+        if self.gpu_ready() {
+            let (g, v) = (self.gpu.clone(), self.view3d.clone());
+            ui.painter().add(egui::PaintCallback {
+                rect,
+                callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(move |info, painter| gpu3d::paint(&g, &info, painter, &v))),
+            });
+        } else if let Some(t) = &self.tex3d {
             ui.painter().image(t.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
         ui.painter().text(rect.left_bottom() + vec2(6.0, -5.0), Align2::LEFT_BOTTOM, "drag: orbit   Alt+drag / middle: move   Shift+drag: light   wheel: zoom", FontId::proportional(10.0), Color32::from_gray(110));
@@ -1839,9 +1869,15 @@ fn window_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
+    // 4x MSAA + depth buffer for the GPU viewport; fall back to no MSAA on drivers that cannot provide it.
+    let make = |msaa: u16| eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 920.0]).with_title("MaterialCraft").with_icon(window_icon()),
+        multisampling: msaa,
+        depth_buffer: 24,
         ..Default::default()
     };
-    eframe::run_native("MaterialCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    match eframe::run_native("MaterialCraft", make(4), Box::new(|cc| Ok(Box::new(App::new(cc))))) {
+        Err(eframe::Error::NoGlutinConfigs(..)) => eframe::run_native("MaterialCraft", make(0), Box::new(|cc| Ok(Box::new(App::new(cc))))),
+        other => other,
+    }
 }

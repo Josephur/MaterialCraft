@@ -4,6 +4,8 @@ pub mod bake;
 pub mod export;
 pub mod expr;
 pub mod graph;
+#[cfg(feature = "gui")]
+pub mod gpu3d;
 pub mod jpeg;
 pub mod noise;
 pub mod ops;
