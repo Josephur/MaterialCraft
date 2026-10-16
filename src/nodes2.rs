@@ -7,7 +7,7 @@ use crate::ops;
 use crate::tex::{lum, Tex};
 use std::collections::BTreeMap;
 use std::f32::consts::TAU;
-use std::rc::Rc;
+use std::sync::Arc as Rc;
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let d = b - a;
@@ -412,6 +412,113 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                 [m, m, m, 1.0]
             })
         }
+        // ------------------------------------------------ batch 1b: warps, patterns, strokes
+        "non_uniform_directional_warp" => {
+            let (t, m) = (need("in")?, need("intensity")?);
+            let (k, base) = (f("intensity", 0.1).clamp(-2.0, 2.0), f("angle", 0.0) * TAU);
+            let am = opt("angle");
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let a = base + am.map(|a| (lum(a.sample(u, v)) - 0.5) * TAU).unwrap_or(0.0);
+                let d = (lum(m.sample(u, v)) - 0.5) * 2.0 * k;
+                t.sample_cubic(u + a.cos() * d, v + a.sin() * d)
+            })
+        }
+        "multi_directional_warp" => {
+            let (t, m) = (need("in")?, need("warp")?);
+            let (k, n, a0) = (f("intensity", 0.1).clamp(-2.0, 2.0), f("directions", 8.0).round().clamp(1.0, 16.0) as usize, f("angle", 0.0));
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let d = (lum(m.sample(u, v)) - 0.5) * 2.0 * k;
+                let mut acc = [0.0f32; 4];
+                for i in 0..n {
+                    let a = (a0 + i as f32 / n as f32) * TAU;
+                    let p = t.sample(u + a.cos() * d, v + a.sin() * d);
+                    for c in 0..4 {
+                        acc[c] += p[c] / n as f32;
+                    }
+                }
+                acc
+            })
+        }
+        "normal_combine" => {
+            // reoriented normal mapping: the detail normal is rotated into the surface of the base normal
+            let (b, d) = (need("base")?, need("detail")?);
+            Tex::from_fn(b.w, b.h, |u, v| {
+                let (pb, pd) = (b.sample(u, v), d.sample(u, v));
+                let tt = [(pb[0] - 0.5) * 2.0, (pb[1] - 0.5) * 2.0, (pb[2] - 0.5) * 2.0 + 1.0];
+                let uu = [-(pd[0] - 0.5) * 2.0, -(pd[1] - 0.5) * 2.0, (pd[2] - 0.5) * 2.0];
+                let dot = tt[0] * uu[0] + tt[1] * uu[1] + tt[2] * uu[2];
+                let tz = if tt[2].abs() < 1e-4 { 1e-4 } else { tt[2] };
+                let r = [tt[0] * dot / tz - uu[0], tt[1] * dot / tz - uu[1], tt[2] * dot / tz - uu[2]];
+                let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt().max(1e-6);
+                [r[0] / l * 0.5 + 0.5, r[1] / l * 0.5 + 0.5, r[2] / l * 0.5 + 0.5, 1.0]
+            })
+        }
+        "triangle_grid" => {
+            let (c, bw) = (per("count", 8.0), f("border", 0.06).clamp(0.0, 0.5));
+            let var = f("variation", 1.0).clamp(0.0, 1.0);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (u * c as f32, v * c as f32);
+                let (ix, iy) = (x.floor(), y.floor());
+                let (fx, fy) = (x - ix, y - iy);
+                let tri = (fx + fy >= 1.0) as u32;
+                let d = fx.min(fy).min(1.0 - fx).min(1.0 - fy).min((fx + fy - 1.0).abs() * 0.7071);
+                let id = noise::rnd((ix as i32).rem_euclid(c), (iy as i32).rem_euclid(c), seed.wrapping_add(tri * 131));
+                (1.0 - var + var * id) * smooth(0.0, bw.max(1e-4), d)
+            }))
+        }
+        "starburst" => {
+            let (c, rays) = (per("count", 3.0), f("rays", 8.0).round().clamp(2.0, 64.0));
+            let (sharp, size, rot) = (f("sharpness", 2.0).clamp(0.1, 16.0), f("size", 1.0).clamp(0.05, 2.0), f("rotation", 0.0));
+            let rr = f("rotation_random", 0.0).clamp(0.0, 1.0);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let (x, y) = (u * c as f32, v * c as f32);
+                let (ix, iy) = (x.floor(), y.floor());
+                let (dx, dy) = (x - ix - 0.5, y - iy - 0.5);
+                let r = (dx * dx + dy * dy).sqrt();
+                let off = rot + rr * noise::rnd((ix as i32).rem_euclid(c), (iy as i32).rem_euclid(c), seed);
+                let a = (dy.atan2(dx) / TAU + off) * rays;
+                let ray = 1.0 - (2.0 * (a - a.floor()) - 1.0).abs();
+                ray.powf(sharp) * (1.0 - r * 2.0 / size).clamp(0.0, 1.0)
+            }))
+        }
+        "gradient_reflected" => {
+            let (a, b) = ops::tileable_wave(f("count", 1.0), f("angle", 0.0));
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                let ph = a as f32 * u + b as f32 * v;
+                1.0 - (2.0 * (ph - ph.floor()) - 1.0).abs()
+            }))
+        }
+        "shape_stroke" | "shape_glow" => {
+            let t = need("in")?;
+            let w = (f("width", 8.0).clamp(0.5, 256.0) * rs).max(2.0);
+            let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > f("threshold", 0.5)).collect();
+            let inside = ops::distance_field(&mask, t.w, t.h);
+            let inv: Vec<bool> = mask.iter().map(|m| !m).collect();
+            let outside = ops::distance_field(&inv, t.w, t.h);
+            let stroke = kind == "shape_stroke";
+            let (off, soft, inten) = (f("offset", 0.0).clamp(-1.0, 1.0), f("softness", 0.5).clamp(0.0, 1.0), f("intensity", 1.0).clamp(0.0, 4.0));
+            let px = (0..mask.len())
+                .map(|i| {
+                    // signed distance in pixels: positive outside the shape
+                    let sd = if mask[i] { -(inside[i].min(1e8) - 0.5) } else { outside[i].min(1e8) - 0.5 };
+                    let g = if stroke {
+                        let c = off * w * 0.5;
+                        1.0 - smooth(w * 0.5 * (1.0 - soft), w * 0.5 + 0.5, (sd - c).abs())
+                    } else if mask[i] {
+                        1.0
+                    } else {
+                        (1.0 - (sd / w).clamp(0.0, 1.0)).powf(1.0 + soft * 3.0) * inten
+                    };
+                    let g = g.clamp(0.0, 1.0);
+                    [g, g, g, 1.0]
+                })
+                .collect();
+            Tex { w: t.w, h: t.h, px }
+        }
+        "chrominance_extract" => need("in")?.map(|p| {
+            let l = lum(p).max(1e-3);
+            [(p[0] / l * 0.5).clamp(0.0, 1.0), (p[1] / l * 0.5).clamp(0.0, 1.0), (p[2] / l * 0.5).clamp(0.0, 1.0), p[3]]
+        }),
         _ => return Ok(None),
     };
     Ok(Some(out))

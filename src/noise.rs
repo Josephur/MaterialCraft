@@ -109,6 +109,61 @@ pub fn fbm(u: f32, v: f32, px: i32, py: i32, octaves: u32, gain: f32, seed: u32,
     }
 }
 
+/// Fractal noise with the gradient lattices of all octaves built once (no hashing per pixel). Gives exactly the same
+/// values as `fbm`; use it when many pixels share the same parameters.
+pub struct Fbm {
+    grids: Vec<GradGrid>,
+    px: i32,
+    py: i32,
+    octaves: u32,
+    gain: f32,
+    seed: u32,
+    mode: u32,
+}
+
+impl Fbm {
+    pub fn new(px: i32, py: i32, octaves: u32, gain: f32, seed: u32, mode: u32) -> Fbm {
+        let (cx, cy) = (px.max(1), py.max(1));
+        let octaves = octaves.clamp(1, 12);
+        // very coarse lattices would need huge tables: those fall back to hashing in `sample`
+        let grids = if (cx as i64) * (cy as i64) <= (1 << 20) {
+            (0..octaves).map(|o| GradGrid::new(cx, cy, seed.wrapping_add(o.wrapping_mul(131)))).collect()
+        } else {
+            Vec::new()
+        };
+        Fbm { grids, px: cx, py: cy, octaves, gain, seed, mode }
+    }
+
+    pub fn sample(&self, u: f32, v: f32) -> f32 {
+        if self.grids.is_empty() {
+            return fbm(u, v, self.px, self.py, self.octaves, self.gain, self.seed, self.mode);
+        }
+        let (mut amp, mut sum, mut norm) = (1.0f32, 0.0f32, 0.0f32);
+        let (mut a, mut b) = (u, v);
+        for g in &self.grids {
+            let n = g.sample(a, b);
+            let n = match self.mode {
+                1 => 1.0 - (2.0 * n - 1.0).abs(),
+                2 => (2.0 * n - 1.0).abs(),
+                _ => n,
+            };
+            sum += n * amp;
+            norm += amp;
+            amp *= self.gain;
+            let (na, nb) = (2.0 * a - b, a + 2.0 * b);
+            a = na - na.floor();
+            b = nb - nb.floor();
+        }
+        if norm > 0.0 {
+            let m = sum / norm;
+            let k = if self.mode == 0 { 1.7 } else { 1.35 };
+            (0.5 + (m - 0.5) * k).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Tileable Voronoi. Returns (f1, f2, cell_id) with distances normalised to ~0..1.
 pub fn voronoi(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> (f32, f32, f32) {
     let px = px.max(1);
@@ -232,23 +287,27 @@ impl GradGrid {
     }
 
     /// Periodic in u and v with period 1, for any (also negative or > 1) coordinates.
+    #[inline]
     pub fn sample(&self, u: f32, v: f32) -> f32 {
         let x = u * self.px as f32;
         let y = v * self.py as f32;
         let (fxl, fyl) = (x.floor(), y.floor());
-        let (ix, iy) = (fxl as i64, fyl as i64);
         let (fx, fy) = (x - fxl, y - fyl);
-        let (px, py) = (self.px as i64, self.py as i64);
-        let g = |cx: i64, cy: i64, dx: f32, dy: f32| {
-            let c = self.g[(cy.rem_euclid(py) * px + cx.rem_euclid(px)) as usize];
-            c[0] * dx + c[1] * dy
-        };
-        let n00 = g(ix, iy, fx, fy);
-        let n10 = g(ix + 1, iy, fx - 1.0, fy);
-        let n01 = g(ix, iy + 1, fx, fy - 1.0);
-        let n11 = g(ix + 1, iy + 1, fx - 1.0, fy - 1.0);
+        // wrap the two lattice columns / rows once instead of once per corner
+        let x0 = (fxl as i64).rem_euclid(self.px as i64) as usize;
+        let y0 = (fyl as i64).rem_euclid(self.py as i64) as usize;
+        let x1 = if x0 + 1 == self.px as usize { 0 } else { x0 + 1 };
+        let y1 = if y0 + 1 == self.py as usize { 0 } else { y0 + 1 };
+        let row0 = y0 * self.px as usize;
+        let row1 = y1 * self.px as usize;
+        let (c00, c10, c01, c11) = (self.g[row0 + x0], self.g[row0 + x1], self.g[row1 + x0], self.g[row1 + x1]);
+        let n00 = c00[0] * fx + c00[1] * fy;
+        let n10 = c10[0] * (fx - 1.0) + c10[1] * fy;
+        let n01 = c01[0] * fx + c01[1] * (fy - 1.0);
+        let n11 = c11[0] * (fx - 1.0) + c11[1] * (fy - 1.0);
         let (sx, sy) = (fade(fx), fade(fy));
         let n = lerp(lerp(n00, n10, sx), lerp(n01, n11, sx), sy);
         (n * std::f32::consts::FRAC_1_SQRT_2 + 0.5).clamp(0.0, 1.0)
     }
 }
+

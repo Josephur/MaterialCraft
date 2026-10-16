@@ -6,7 +6,8 @@ use crate::png;
 use crate::tex::{lum, Tex};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use std::sync::Arc as Rc;
 
 #[derive(Debug)]
 pub enum Error {
@@ -167,6 +168,15 @@ pub const SPECS: &[Spec] = &[
     s!("sobel", ["in"], [], "sobel edge magnitude: intensity"),
     s!("glow", ["in"], [], "glow around bright areas: width intensity"),
     s!("mosaic", ["in"], [], "pixelate: count"),
+    s!("non_uniform_directional_warp", ["in", "intensity"], ["angle"], "warp along a direction chosen per pixel: intensity angle"),
+    s!("multi_directional_warp", ["in", "warp"], [], "warp in several directions at once: intensity directions angle"),
+    s!("normal_combine", ["base", "detail"], [], "combine two normal maps (reoriented)"),
+    s!("triangle_grid", [], [], "grid of triangles: count border variation seed contrast invert"),
+    s!("starburst", [], [], "star-like rays: count rays sharpness size rotation rotation_random seed contrast invert"),
+    s!("gradient_reflected", [], [], "gradient that goes 0-1-0: count angle contrast invert"),
+    s!("shape_stroke", ["in"], [], "outline of a shape: width offset softness threshold"),
+    s!("shape_glow", ["in"], [], "glow around a shape: width softness intensity threshold"),
+    s!("chrominance_extract", ["in"], [], "colour without brightness"),
     s!("shape_drop_shadow", ["in"], [], "drop shadow of a mask: angle distance blur opacity"),
 ];
 
@@ -178,10 +188,10 @@ pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
         "bitmap" | "input" | "subgraph" | "output" | "dot" => "Utility",
-        "normal" | "normal_blend" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
+        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
         _ => "Filters",
     }
 }
@@ -259,15 +269,16 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
     }
     let sp = spec(kind)?;
     let mut t = String::from(
-        "size 64\nnode 100 fbm scale=4 octaves=4 seed=2\nnode 101 gradient angle=0.1\nnode 102 sdf_shape shape=0 size=0.3\nnode 103 sdf_shape shape=1 size=0.25 x=0.15\nnode 104 voronoi scale=5 mode=2 seed=3\nnode 105 threshold in=@104 threshold=0.2\nnode 106 flood_fill in=@105\nnode 107 normal in=@100 strength=3\n",
+        "size 64\nnode 100 fbm scale=4 octaves=4 seed=2\nnode 101 gradient angle=0.1\nnode 102 sdf_shape shape=0 size=0.3\nnode 103 sdf_shape shape=1 size=0.25 x=0.15\nnode 104 voronoi scale=5 mode=2 seed=3\nnode 105 threshold in=@104 threshold=0.2\nnode 106 flood_fill in=@105\nnode 107 normal in=@100 strength=3\nnode 108 colorize in=@100 p0=0 r0=1 g0=0.2 b0=0.1 p1=1 r1=0.1 g1=0.4 b1=1\n",
     )
     .replace("\\n", "\n");
     let (a, b) = match kind {
         "sdf_op" | "sdf_mask" => (102, 103),
         "flood_fill" => (105, 105),
         k if k.starts_with("flood_fill_") => (106, 106),
-        "dust" | "curvature_smooth" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" => (107, 107),
+        "dust" | "curvature_smooth" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" => (107, 107),
         "vector_warp" => (100, 107),
+        "chrominance_extract" => (108, 108),
         _ => (100, 101),
     };
     let mut line = format!("node 1 {kind}");
@@ -986,7 +997,20 @@ impl Graph {
         r
     }
 
+    /// Editor evaluation: reuses every node result whose settings and inputs are unchanged (`cache` outlives the call),
+    /// evaluates `first` (the node shown in the 2D view) before anything else and hands it to `on_first` at once.
+    pub fn evaluate_all_cached(&self, size: usize, keep: &[u32], job: u64, cache: &Arc<NodeCache>, first: Option<u32>, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
+        crate::tex::set_job(job);
+        let r = self.evaluate_all_impl(size, keep, Some(cache.clone()), first, on_first);
+        crate::tex::set_job(0);
+        r
+    }
+
     pub fn evaluate_all(&self, size: usize, keep: &[u32]) -> EvalAll {
+        self.evaluate_all_impl(size, keep, None, None, &mut |_| {})
+    }
+
+    fn evaluate_all_impl(&self, size: usize, keep: &[u32], persist: Option<Arc<NodeCache>>, first: Option<u32>, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
         let mut r = EvalAll { thumbs: HashMap::new(), errors: HashMap::new(), kept: HashMap::new(), sizes: HashMap::new() };
         if size == 0 || size > 8192 {
             r.errors.insert(0, Error::BadSize(size).to_string());
@@ -1000,23 +1024,280 @@ impl Graph {
         // thumbnails are taken the moment a node finishes, so intermediate textures can be freed as soon as every
         // node that reads them is done (a big graph at 4K would not fit in memory otherwise)
         let mut cache = Cache::for_graph(self, keep, true);
-        for id in self.nodes.keys() {
-            match eval_node(self, *id, &ctx, &[], &mut cache) {
+        if let Some(p) = persist {
+            cache.hashes = hash_graph(self, &ctx);
+            cache.persist = Some(p);
+        }
+        // the 2D-view node first, then the outputs (3D view), then everything else (thumbnails)
+        let mut order: Vec<u32> = Vec::new();
+        order.extend(first.filter(|f| self.nodes.contains_key(f)));
+        order.extend(keep.iter().copied().filter(|k| self.nodes.contains_key(k)));
+        order.extend(self.nodes.keys().copied());
+        let mut seen = HashSet::new();
+        order.retain(|i| seen.insert(*i));
+        for id in order {
+            match eval_node(self, id, &ctx, &[], &mut cache) {
                 Ok(t) => {
-                    if keep.contains(id) {
-                        r.kept.insert(*id, (*t).clone());
+                    if Some(id) == first {
+                        on_first(&t);
+                    }
+                    if keep.contains(&id) {
+                        r.kept.insert(id, (*t).clone());
                     }
                 }
                 Err(Error::Cancelled) => break,
                 Err(e) => {
-                    r.errors.insert(*id, e.to_string());
+                    r.errors.insert(id, e.to_string());
                 }
             }
         }
         r.thumbs = cache.thumbs.take().unwrap_or_default();
         r.sizes = std::mem::take(&mut cache.sizes);
+        if let Some(p) = &cache.persist {
+            p.trim();
+        }
         r
     }
+}
+
+/// Node results kept between editor evaluations, found by a hash of everything a result depends on.
+/// Least recently used entries are dropped when the memory budget is exceeded.
+pub struct NodeCache {
+    inner: Mutex<NcInner>,
+    budget: usize,
+    hits: std::sync::atomic::AtomicUsize,
+    misses: std::sync::atomic::AtomicUsize,
+}
+
+struct NcInner {
+    map: HashMap<u64, NcEntry>,
+    bytes: usize,
+    tick: u64,
+}
+
+struct NcEntry {
+    data: NcData,
+    thumb: Vec<u8>,
+    size: usize,
+    stamp: u64,
+}
+
+/// Grayscale textures (most of a typical graph) are stored with one channel: a quarter of the memory.
+enum NcData {
+    Gray(usize, usize, Vec<f32>),
+    Rgba(Arc<Tex>),
+}
+
+impl NcData {
+    fn pack(t: &Arc<Tex>) -> NcData {
+        if t.px.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0) {
+            NcData::Gray(t.w, t.h, t.px.iter().map(|p| p[0]).collect())
+        } else {
+            NcData::Rgba(t.clone())
+        }
+    }
+    fn unpack(&self) -> Arc<Tex> {
+        match self {
+            NcData::Gray(w, h, v) => {
+                let mut px = vec![[0.0f32, 0.0, 0.0, 1.0]; v.len()];
+                let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+                let per = (v.len() / n).max(1 << 16);
+                std::thread::scope(|sc| {
+                    for (dst, src) in px.chunks_mut(per).zip(v.chunks(per)) {
+                        sc.spawn(move || {
+                            for (d, s) in dst.iter_mut().zip(src) {
+                                *d = [*s, *s, *s, 1.0];
+                            }
+                        });
+                    }
+                });
+                Arc::new(Tex { w: *w, h: *h, px })
+            }
+            NcData::Rgba(t) => t.clone(),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            NcData::Gray(_, _, v) => v.len() * 4,
+            NcData::Rgba(t) => t.px.len() * 16,
+        }
+    }
+}
+
+impl NodeCache {
+    pub fn new(budget_mb: usize) -> NodeCache {
+        NodeCache { inner: Mutex::new(NcInner { map: HashMap::new(), bytes: 0, tick: 0 }), budget: budget_mb.max(16) << 20, hits: Default::default(), misses: Default::default() }
+    }
+
+    /// Budget from the MC_CACHE_MB environment variable (default 3 GB).
+    pub fn with_default_budget() -> NodeCache {
+        let mb = std::env::var("MC_CACHE_MB").ok().and_then(|s| s.parse().ok()).unwrap_or(3072);
+        NodeCache::new(mb)
+    }
+
+    fn get(&self, h: u64) -> Option<(Arc<Tex>, Vec<u8>, usize)> {
+        let mut g = self.inner.lock().ok()?;
+        g.tick += 1;
+        let tick = g.tick;
+        use std::sync::atomic::Ordering::Relaxed;
+        match g.map.get_mut(&h) {
+            Some(e) => {
+                e.stamp = tick;
+                self.hits.fetch_add(1, Relaxed);
+                Some((e.data.unpack(), e.thumb.clone(), e.size))
+            }
+            None => {
+                self.misses.fetch_add(1, Relaxed);
+                None
+            }
+        }
+    }
+
+    fn put(&self, h: u64, tex: Arc<Tex>, thumb: Vec<u8>, size: usize) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.tick += 1;
+            let tick = g.tick;
+            let data = NcData::pack(&tex);
+            let bytes = data.bytes();
+            if let Some(old) = g.map.insert(h, NcEntry { data, thumb, size, stamp: tick }) {
+                g.bytes -= old.data.bytes();
+            }
+            g.bytes += bytes;
+        }
+    }
+
+    fn trim(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            while g.bytes > self.budget && g.map.len() > 1 {
+                let oldest = g.map.iter().min_by_key(|(_, e)| e.stamp).map(|(k, _)| *k);
+                match oldest {
+                    Some(k) => {
+                        if let Some(e) = g.map.remove(&k) {
+                            g.bytes -= e.data.bytes();
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    /// (reused, recomputed) node counts since the cache was created.
+    pub fn stats(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.hits.load(Relaxed), self.misses.load(Relaxed))
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.map.clear();
+            g.bytes = 0;
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().map(|g| g.map.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.inner.lock().map(|g| g.bytes).unwrap_or(0)
+    }
+}
+
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Fnv {
+        Fnv(0xcbf29ce484222325)
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        for x in b {
+            self.0 = (self.0 ^ *x as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    fn u64(&mut self, v: u64) {
+        self.bytes(&v.to_le_bytes());
+    }
+    fn str(&mut self, s: &str) {
+        self.u64(s.len() as u64);
+        self.bytes(s.as_bytes());
+    }
+}
+
+/// Hash of every node (and named subgraph output) of the graph: kind, settings, evaluation context and the hashes of
+/// its inputs. Two nodes with the same hash always produce the same texture.
+fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
+    let mut env = Fnv::new();
+    for (k, sub) in ctx.lib {
+        env.str(k);
+        env.str(&sub.to_text());
+    }
+    for (k, v) in ctx.res {
+        env.str(k);
+        env.u64(v.len() as u64);
+        let mut f = Fnv::new();
+        f.bytes(v);
+        env.u64(f.0);
+    }
+    let mut memo: HashMap<u32, u64> = HashMap::new();
+    fn go(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, env: u64, memo: &mut HashMap<u32, u64>, depth: u32) -> u64 {
+        let key = cache_key(g, id, out);
+        if let Some(h) = memo.get(&key) {
+            return *h;
+        }
+        let Some(n) = g.nodes.get(&id) else { return 0 };
+        let mut h = Fnv::new();
+        h.u64(env);
+        h.u64(ctx.size as u64);
+        h.u64(ctx.nominal as u64);
+        h.u64(ctx.so as u64);
+        h.str(&n.kind);
+        if key != id {
+            h.str(out.unwrap_or(""));
+        }
+        for (k, v) in &n.nums {
+            h.str(k);
+            h.u64(v.to_bits() as u64);
+        }
+        for (k, v) in &n.strs {
+            h.str(k);
+            h.str(v);
+        }
+        if n.kind == "bitmap" {
+            // a file on disk can change under us: its size and modification time are part of the identity
+            if let Some(f) = n.strs.get("file") {
+                if !ctx.res.contains_key(f) {
+                    if let Ok(m) = std::fs::metadata(f).or_else(|_| std::fs::metadata(f.replace('\\', "/"))) {
+                        h.u64(m.len());
+                        h.u64(m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64).unwrap_or(0));
+                    }
+                }
+            }
+        }
+        if depth < 512 {
+            for (slot, rid) in &n.ins {
+                let want = n.in_out.get(slot).map(|s| s.as_str());
+                h.str(slot);
+                h.str(want.unwrap_or(""));
+                h.u64(go(g, *rid, want, ctx, env, memo, depth + 1));
+            }
+        }
+        memo.insert(key, h.0);
+        h.0
+    }
+    for (id, n) in &g.nodes {
+        go(g, *id, None, ctx, env.0, &mut memo, 0);
+        for (slot, rid) in &n.ins {
+            if let Some(w) = n.in_out.get(slot) {
+                go(g, *rid, Some(w), ctx, env.0, &mut memo, 0);
+            }
+        }
+    }
+    memo
 }
 
 fn eval_node(g: &Graph, id: u32, ctx: &Ctx, ext: &[Option<Rc<Tex>>], cache: &mut Cache) -> Result<Rc<Tex>, Error> {
@@ -1068,6 +1349,19 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
     if cancelled() {
         return Err(Error::Cancelled);
     }
+    let phash = cache.hashes.get(&key).copied();
+    if let (Some(p), Some(h)) = (&cache.persist, phash) {
+        if let Some((t, th, sz)) = p.get(h) {
+            cache.map.insert(key, t.clone());
+            if key == id {
+                cache.sizes.insert(id, sz);
+                if let Some(tm) = cache.thumbs.as_mut() {
+                    tm.insert(id, th);
+                }
+            }
+            return Ok(t);
+        }
+    }
     let n = g.nodes.get(&id).ok_or(Error::MissingNode(0, id))?;
     let mut ins: BTreeMap<String, Rc<Tex>> = BTreeMap::new();
     for (slot, rid) in &n.ins {
@@ -1109,15 +1403,23 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
             r
         }
     };
+    // a superseded evaluation can leave a half-finished texture behind: never keep or show it
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
     let t = if t.w != sz || t.h != sz { ops::resize(&t, sz) } else { t };
     let rc = Rc::new(t);
     cache.map.insert(key, rc.clone());
     if key == id {
         cache.sizes.insert(id, sz);
     }
+    let thumb = if key == id && (cache.thumbs.is_some() || cache.persist.is_some()) { thumbnail(&rc) } else { Vec::new() };
+    if let (Some(p), Some(h)) = (&cache.persist, phash) {
+        p.put(h, rc.clone(), thumb.clone(), sz);
+    }
     if key == id {
         if let Some(th) = cache.thumbs.as_mut() {
-            th.insert(id, thumbnail(&rc));
+            th.insert(id, thumb);
         }
     }
     // free inputs nobody else is waiting for
@@ -1142,11 +1444,14 @@ struct Cache {
     /// thumbnails taken while evaluating (editor preview)
     thumbs: Option<HashMap<u32, Vec<u8>>>,
     sizes: HashMap<u32, usize>,
+    /// results that outlive one evaluation (editor): a node whose settings and inputs did not change is not recomputed
+    persist: Option<Arc<NodeCache>>,
+    hashes: HashMap<u32, u64>,
 }
 
 impl Cache {
     fn plain() -> Cache {
-        Cache { map: HashMap::new(), left: HashMap::new(), keep: HashSet::new(), thumbs: None, sizes: HashMap::new() }
+        Cache { map: HashMap::new(), left: HashMap::new(), keep: HashSet::new(), thumbs: None, sizes: HashMap::new(), persist: None, hashes: HashMap::new() }
     }
 
     fn for_graph(g: &Graph, keep: &[u32], thumbs: bool) -> Cache {
@@ -1283,9 +1588,10 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let cl = n.kind == "clouds";
             let (px, py) = (per("scale_x", f("scale", if cl { 3.0 } else { 4.0 })), per("scale_y", f("scale", if cl { 3.0 } else { 4.0 })));
             let (oct, gain, mode) = (f("octaves", if cl { 6.0 } else { 5.0 }).max(1.0) as u32, f("gain", if cl { 0.6 } else { 0.5 }), f("mode", 0.0).max(0.0) as u32);
+            let kernel = noise::Fbm::new(px, py, oct, gain, seed, mode);
             fin(Tex::gray_fn(s, s, move |u, v| {
                 let (a, b) = warp(u, v);
-                noise::fbm(a, b, px, py, oct, gain, seed, mode)
+                kernel.sample(a, b)
             }))
         }
         "bnw_spots" => {

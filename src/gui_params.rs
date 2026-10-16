@@ -28,7 +28,7 @@ fn pb(name: &'static str, label: &'static str, def: bool) -> PD {
     PD { name, label, k: PK::B { def } }
 }
 
-const BLEND_MODES: &[&str] = &["Copy", "Add", "Subtract", "Multiply", "Screen", "Overlay", "Max", "Min", "Difference", "Soft light", "Color dodge", "Color burn", "Linear burn", "Hard light", "Exclusion", "Divide", "Linear light"];
+const BLEND_MODES: &[&str] = &["Copy", "Add", "Subtract", "Multiply", "Screen", "Overlay", "Max", "Min", "Difference", "Soft light", "Color dodge", "Color burn", "Linear burn", "Hard light", "Exclusion", "Divide", "Linear light", "Color", "Luminosity", "Dissolve"];
 const SHAPES: &[&str] = &["Square", "Disc", "Paraboloid", "Gaussian", "Diamond", "Pyramid", "Half sphere", "Cone"];
 
 fn p_seed() -> PD {
@@ -252,6 +252,16 @@ fn pdefs(kind: &str) -> Vec<PD> {
         "normal_invert" => vec![pb("invert_x", "Invert red (X)", false), pb("invert_y", "Invert green (Y)", true)],
         "normal_vector_rotation" => vec![pf("angle", "Angle", 0.0, 0.0, 1.0)],
         "normal_to_height" => vec![pb("directx", "DirectX format", false)],
+        "non_uniform_directional_warp" => vec![pf("intensity", "Intensity", 0.1, -1.0, 1.0), pf("angle", "Angle", 0.0, 0.0, 1.0)],
+        "multi_directional_warp" => vec![pf("intensity", "Intensity", 0.1, -1.0, 1.0), pi("directions", "Directions", 8, 1, 16), pf("angle", "Angle", 0.0, 0.0, 1.0)],
+        "triangle_grid" => vec![pi("count", "Count", 8, 1, 64), pf("border", "Border", 0.06, 0.0, 0.5), pf("variation", "Variation", 1.0, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "starburst" => vec![
+            pi("count", "Count", 3, 1, 32), pi("rays", "Rays", 8, 2, 64), pf("sharpness", "Sharpness", 2.0, 0.1, 16.0), pf("size", "Size", 1.0, 0.05, 2.0),
+            pf("rotation", "Rotation", 0.0, 0.0, 1.0), pf("rotation_random", "Rotation random", 0.0, 0.0, 1.0), p_seed(), p_con(), p_inv(),
+        ],
+        "gradient_reflected" => vec![pi("count", "Count", 1, 1, 16), pf("angle", "Angle", 0.0, 0.0, 1.0), p_con(), p_inv()],
+        "shape_stroke" => vec![pf("width", "Width", 8.0, 0.5, 256.0), pf("offset", "Offset", 0.0, -1.0, 1.0), pf("softness", "Softness", 0.5, 0.0, 1.0), pf("threshold", "Shape threshold", 0.5, 0.0, 1.0)],
+        "shape_glow" => vec![pf("width", "Width", 16.0, 0.5, 256.0), pf("softness", "Softness", 0.5, 0.0, 1.0), pf("intensity", "Intensity", 1.0, 0.0, 4.0), pf("threshold", "Shape threshold", 0.5, 0.0, 1.0)],
         "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
         "glow" => vec![pf("width", "Width", 8.0, 0.0, 128.0), pf("intensity", "Intensity", 1.0, 0.0, 8.0)],
         "mosaic" => vec![pi("count", "Cells per side", 16, 1, 128)],

@@ -97,13 +97,80 @@ fn box_rows(src: &[[f32; 4]], w: usize, h: usize, r: i64) -> Vec<[f32; 4]> {
                             acc[c] += p[c];
                         }
                     }
-                    for x in 0..wi {
-                        out[x as usize] = [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv];
-                        let add = row[(x + r + 1).rem_euclid(wi) as usize];
-                        let sub = row[(x - r).rem_euclid(wi) as usize];
+                    let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
+                    for x in 0..w {
+                        out[x] = [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv];
+                        let (add, sub) = (row[ia as usize], row[is as usize]);
                         for c in 0..4 {
                             acc[c] += add[c] - sub[c];
                         }
+                        ia += 1;
+                        if ia == wi {
+                            ia = 0;
+                        }
+                        is += 1;
+                        if is == wi {
+                            is = 0;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    dst
+}
+
+/// Single-channel version of `box_rows` (grayscale images need a quarter of the memory traffic).
+fn box_rows1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
+    let mut dst = vec![0.0f32; w * h];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let rows_per = (h + n - 1) / n;
+    let inv = 1.0 / (2 * r + 1) as f32;
+    let my = crate::tex::my_job();
+    std::thread::scope(|sc| {
+        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * w).enumerate() {
+            sc.spawn(move || {
+                for (ri, out) in chunk.chunks_mut(w).enumerate() {
+                    if crate::tex::stale(my) {
+                        return;
+                    }
+                    let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
+                    let wi = w as i64;
+                    let mut acc = 0.0f32;
+                    for k in -r..=r {
+                        acc += row[k.rem_euclid(wi) as usize];
+                    }
+                    let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
+                    for x in 0..w {
+                        out[x] = acc * inv;
+                        acc += row[ia as usize] - row[is as usize];
+                        ia += 1;
+                        if ia == wi {
+                            ia = 0;
+                        }
+                        is += 1;
+                        if is == wi {
+                            is = 0;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    dst
+}
+
+fn transpose1(src: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut dst = vec![0.0f32; w * h];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let rows_per = (w + n - 1) / n;
+    std::thread::scope(|sc| {
+        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * h).enumerate() {
+            sc.spawn(move || {
+                for (ri, out) in chunk.chunks_mut(h).enumerate() {
+                    let x = ci * rows_per + ri;
+                    for (y, o) in out.iter_mut().enumerate() {
+                        *o = src[y * w + x];
                     }
                 }
             });
@@ -138,6 +205,18 @@ pub fn blur(t: &Tex, sigma: f32) -> Tex {
         return t.clone();
     }
     let (w, h) = (t.w, t.h);
+    if sigma >= 2.5 && t.px.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0) {
+        // grayscale: blur one channel
+        let mut cur: Vec<f32> = t.px.iter().map(|p| p[0]).collect();
+        for bw in gauss_boxes(sigma) {
+            let r = (bw / 2).max(0);
+            cur = box_rows1(&cur, w, h, r.min((w as i64 - 1) / 2));
+            cur = transpose1(&cur, w, h);
+            cur = box_rows1(&cur, h, w, r.min((h as i64 - 1) / 2));
+            cur = transpose1(&cur, h, w);
+        }
+        return Tex { w, h, px: cur.into_iter().map(|v| [v, v, v, 1.0]).collect() };
+    }
     if sigma >= 2.5 {
         let mut cur = t.px.clone();
         for bw in gauss_boxes(sigma) {
@@ -379,13 +458,33 @@ fn bm(mode: u32, f: f32, b: f32) -> f32 {
     }
 }
 
-/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light.
+/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light,17 color,18 luminosity,19 dissolve.
 pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) -> Tex {
     let mut out = bg.clone();
     for i in 0..out.px.len() {
         let f = fg.px.get(i).copied().unwrap_or([0.0; 4]);
         let b = bg.px[i];
         let m = mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0) * opacity;
+        if mode >= 17 {
+            // 17 color (hue+saturation of the foreground, brightness of the background), 18 luminosity, 19 dissolve
+            let set_lum = |c: [f32; 4], l: f32| {
+                let d = l - lum(c);
+                [(c[0] + d).clamp(0.0, 1.0), (c[1] + d).clamp(0.0, 1.0), (c[2] + d).clamp(0.0, 1.0)]
+            };
+            let r = match mode {
+                17 => set_lum(f, lum(b)),
+                18 => set_lum(b, lum(f)),
+                _ => {
+                    let keep = crate::noise::rnd((i % out.w) as i32, (i / out.w) as i32, 4242) < m;
+                    if keep { [f[0], f[1], f[2]] } else { [b[0], b[1], b[2]] }
+                }
+            };
+            let m2 = if mode == 19 { 1.0 } else { m };
+            for c in 0..3 {
+                out.px[i][c] = (b[c] + (r[c] - b[c]) * m2).clamp(0.0, 1.0);
+            }
+            continue;
+        }
         for c in 0..3 {
             out.px[i][c] = (b[c] + (bm(mode, f[c], b[c]).clamp(0.0, 1.0) - b[c]) * m).clamp(0.0, 1.0);
         }

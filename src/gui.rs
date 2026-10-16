@@ -5,7 +5,7 @@ use eframe::egui::{
     Rounding, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
 use materialcraft::bake::{self, BakeSettings};
-use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, EXAMPLE, SPECS, THUMB};
+use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, NodeCache, EXAMPLE, SPECS, THUMB};
 use materialcraft::render3d::{self, Maps, View};
 use materialcraft::tex::{self, Tex};
 use materialcraft::export::{self, Format};
@@ -151,6 +151,13 @@ struct EvalResult {
     size: usize,
 }
 
+/// The 2D view image of the selected node, sent as soon as that node is done (before the rest of the graph).
+struct Partial {
+    gen: u64,
+    img2d: ColorImage,
+    img_for: u32,
+}
+
 struct ExportUi {
     open: bool,
     dir: Option<PathBuf>,
@@ -229,6 +236,8 @@ struct App {
     dirty3d: bool,
     gen: u64,
     job: Option<Receiver<EvalResult>>,
+    part: Option<Receiver<Partial>>,
+    node_cache: std::sync::Arc<NodeCache>,
     lib_search: String,
     text_focus: bool,
     export: ExportUi,
@@ -324,6 +333,8 @@ impl App {
             dirty3d: true,
             gen: 0,
             job: None,
+            part: None,
+            node_cache: std::sync::Arc::new(NodeCache::with_default_budget()),
             lib_search: String::new(),
             text_focus: false,
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
@@ -1163,8 +1174,18 @@ impl App {
         tex::CURRENT_JOB.store(gen, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = channel();
         self.job = Some(rx);
+        let (ptx, prx) = channel();
+        self.part = Some(prx);
+        let cache = self.node_cache.clone();
         std::thread::spawn(move || {
-            let r = g.evaluate_all_cancellable(size, &keep, gen);
+            let mut on_first = |t: &Tex| {
+                if let Some(a) = active {
+                    if !tex::stale(gen) {
+                        let _ = ptx.send(Partial { gen, img2d: qimg(t), img_for: a });
+                    }
+                }
+            };
+            let r = g.evaluate_all_cached(size, &keep, gen, &cache, active, &mut on_first);
             if tex::stale(gen) {
                 return; // superseded: nobody waits for this result
             }
@@ -1211,6 +1232,26 @@ impl App {
     }
 
     fn poll_eval(&mut self, ctx: &egui::Context) {
+        // the selected node usually finishes long before the whole graph: show it right away
+        if let Some(prx) = &self.part {
+            let mut latest = None;
+            while let Ok(p) = prx.try_recv() {
+                latest = Some(p);
+            }
+            if let Some(p) = latest {
+                if p.gen == self.gen && self.active == Some(p.img_for) {
+                    let opts = egui::TextureOptions {
+                        magnification: egui::TextureFilter::Nearest,
+                        minification: egui::TextureFilter::Linear,
+                        wrap_mode: egui::TextureWrapMode::Repeat,
+                        mipmap_mode: Some(egui::TextureFilter::Linear),
+                    };
+                    self.tex2d_size = (p.img2d.size[0], p.img2d.size[1]);
+                    self.tex2d = Some(ctx.load_texture("view2d", p.img2d, opts));
+                    ctx.request_repaint();
+                }
+            }
+        }
         let Some(rx) = &self.job else { return };
         match rx.try_recv() {
             Ok(r) => {

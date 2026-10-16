@@ -690,3 +690,67 @@ fn batch1b_nodes_behave() {
     let p = o["a"].px[0];
     assert!(p[0] > p[2], "hue lost: {p:?}");
 }
+
+#[test]
+fn node_cache_reuses_unchanged_nodes_and_matches_a_fresh_run() {
+    use materialcraft::graph::NodeCache;
+    use std::sync::Arc;
+    let mut g = Graph::parse(EXAMPLE).unwrap();
+    g.size = 128;
+    let keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
+    let cache = Arc::new(NodeCache::new(512));
+    let mut first_seen = 0;
+    let r1 = g.evaluate_all_cached(128, &keep, 0, &cache, Some(9), &mut |_| first_seen += 1);
+    assert_eq!(first_seen, 1, "the selected node must be reported once");
+    let (h0, m0) = cache.stats();
+    let _ = h0;
+    assert!(m0 >= 11, "every node computed on the first run ({m0})");
+    // nothing changed: everything is reused and the pixels are identical
+    let r2 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let (h1, m1) = cache.stats();
+    assert_eq!(m1, m0, "no node may be recomputed");
+    assert!(h1 >= 11 + h0);
+    for id in &keep {
+        assert_eq!(r1.kept[id].px, r2.kept[id].px);
+    }
+    assert_eq!(r1.thumbs.len(), r2.thumbs.len(), "thumbnails come back from the cache");
+    // change the normal node (6): only that node is recomputed, and the result equals an uncached evaluation
+    g.nodes.get_mut(&6).unwrap().nums.insert("strength".into(), 7.0);
+    let r3 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let (_, m2) = cache.stats();
+    assert_eq!(m2 - m1, 1, "only the edited node should be recomputed, got {}", m2 - m1);
+    let fresh = g.evaluate_all(128, &keep);
+    for id in &keep {
+        assert_eq!(r3.kept[id].px, fresh.kept[id].px, "cached result differs for node {id}");
+    }
+    // change a node near the start (2): everything downstream of it is recomputed, the rest is reused
+    g.nodes.get_mut(&2).unwrap().nums.insert("scale".into(), 5.0);
+    let before = cache.stats().1;
+    let r4 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let redone = cache.stats().1 - before;
+    assert!((5..=9).contains(&redone), "recomputed {redone} nodes");
+    let fresh = g.evaluate_all(128, &keep);
+    for id in &keep {
+        assert_eq!(r4.kept[id].px, fresh.kept[id].px, "cached result differs for node {id}");
+    }
+    // a different size is a different result
+    let m = cache.stats().1;
+    g.evaluate_all_cached(64, &keep, 0, &cache, None, &mut |_| {});
+    assert!(cache.stats().1 > m);
+    // a tiny budget evicts old entries instead of growing without bound
+    let small = Arc::new(NodeCache::new(16));
+    g.evaluate_all_cached(512, &keep, 0, &small, None, &mut |_| {});
+    assert!(small.bytes() <= (16 << 20) + 512 * 512 * 16, "cache holds {} bytes", small.bytes());
+}
+
+#[test]
+fn fbm_kernel_matches_the_reference_function() {
+    for (px, py, oct, mode) in [(4, 4, 5, 0u32), (8, 3, 6, 1), (1, 1, 3, 2), (32, 32, 12, 0)] {
+        let k = noise::Fbm::new(px, py, oct, 0.55, 7, mode);
+        for i in 0..400 {
+            let (u, v) = ((i as f32 * 0.6180339) % 1.0, (i as f32 * 0.4142136) % 1.0);
+            let (a, b) = (k.sample(u, v), noise::fbm(u, v, px, py, oct, 0.55, 7, mode));
+            assert!((a - b).abs() < 1e-5, "{px}x{py} oct {oct} mode {mode}: {a} vs {b}");
+        }
+    }
+}
