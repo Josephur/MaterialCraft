@@ -425,7 +425,7 @@ pub const THUMB: usize = 96;
 pub struct EvalAll {
     pub thumbs: HashMap<u32, Vec<u8>>,
     pub errors: HashMap<u32, String>,
-    pub kept: HashMap<u32, Tex>,
+    pub kept: HashMap<u32, Arc<Tex>>,
     /// output size of every evaluated node (differs from the graph size when a node has its own Output Size)
     pub sizes: HashMap<u32, usize>,
 }
@@ -1042,7 +1042,7 @@ impl Graph {
                         on_first(&t);
                     }
                     if keep.contains(&id) {
-                        r.kept.insert(id, (*t).clone());
+                        r.kept.insert(id, t.clone());
                     }
                 }
                 Err(Error::Cancelled) => break,
@@ -1628,7 +1628,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
             // a streak never needs to be longer than one tile (longer would wrap and average the noise away)
             let len1 = (st / p1 as f32).min(1.0);
-            let k = ((st * 5.0).ceil() as usize).clamp(8, 160) | 1;
+            let k = ((st * 2.5).ceil() as usize).clamp(8, 96) | 1;
             let taps: Vec<(f32, f32)> = (0..k)
                 .map(|i| {
                     let t = ((i as f32 + 0.5) / k as f32) * 2.0 - 1.0;

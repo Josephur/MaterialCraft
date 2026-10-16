@@ -140,7 +140,7 @@ struct EvalResult {
     gen: u64,
     thumbs: HashMap<u32, Vec<u8>>,
     errors: HashMap<u32, String>,
-    kept: HashMap<u32, Tex>,
+    kept: HashMap<u32, std::sync::Arc<Tex>>,
     outputs: Vec<(String, u32)>,
     sizes: HashMap<u32, usize>,
     /// the 2D view image and the GPU textures are converted on the worker thread so the editor never stalls on them
@@ -218,7 +218,7 @@ struct App {
     node_err: HashMap<u32, String>,
     tex2d: Option<egui::TextureHandle>,
     tex2d_size: (usize, usize),
-    maps: BTreeMap<String, Tex>,
+    maps: BTreeMap<String, std::sync::Arc<Tex>>,
     view3d: View,
     tex3d: Option<egui::TextureHandle>,
     r3d_size: usize,
@@ -1191,7 +1191,7 @@ impl App {
             }
             tex::set_job(gen);
             let outputs: Vec<(String, u32)> = g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect();
-            let named = |n: &str| outputs.iter().find(|o| o.0 == n).and_then(|o| r.kept.get(&o.1));
+            let named = |n: &str| outputs.iter().find(|o| o.0 == n).and_then(|o| r.kept.get(&o.1)).map(|a| a.as_ref());
             let inv_gloss = named("glossiness").map(ops::invert);
             let gpu = gpu3d::prepare(&MapInputs {
                 base: named("basecolor").or_else(|| named("out")).or_else(|| named("diffuse")),
@@ -1202,7 +1202,7 @@ impl App {
                 emissive: named("emissive"),
                 height: named("height"),
             });
-            let img2d = active.and_then(|a| r.kept.get(&a)).map(qimg);
+            let img2d = active.and_then(|a| r.kept.get(&a)).map(|a| qimg(a));
             tex::set_job(0);
             if tex::stale(gen) {
                 return;
@@ -1330,15 +1330,16 @@ impl App {
     /// Hand the current graph outputs to the GPU viewer (uploaded on its next paint).
     fn upload_gpu_maps(&mut self) {
         self.gpu_maps_dirty = false;
-        let inv_gloss = self.maps.get("glossiness").map(ops::invert);
+        let get = |k: &str| self.maps.get(k).map(|a| a.as_ref());
+        let inv_gloss = get("glossiness").map(ops::invert);
         let m = MapInputs {
-            base: self.maps.get("basecolor").or_else(|| self.maps.get("diffuse")),
-            normal: self.maps.get("normal"),
-            rough: self.maps.get("roughness").or(inv_gloss.as_ref()),
-            metal: self.maps.get("metallic"),
-            ao: self.maps.get("ambient_occlusion"),
-            emissive: self.maps.get("emissive"),
-            height: self.maps.get("height"),
+            base: get("basecolor").or_else(|| get("diffuse")),
+            normal: get("normal"),
+            rough: get("roughness").or(inv_gloss.as_ref()),
+            metal: get("metallic"),
+            ao: get("ambient_occlusion"),
+            emissive: get("emissive"),
+            height: get("height"),
         };
         let prepared = gpu3d::prepare(&m);
         if let Ok(mut g) = self.gpu.lock() {
@@ -1360,15 +1361,16 @@ impl App {
             return;
         }
         let (flat, half, zero, one) = (Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 0.5, 1.0]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
-        let inv_gloss = self.maps.get("glossiness").map(ops::invert);
+        let get = |k: &str| self.maps.get(k).map(|a| a.as_ref());
+        let inv_gloss = get("glossiness").map(ops::invert);
         let m = Maps {
-            base: self.maps.get("basecolor").or_else(|| self.maps.get("diffuse")).unwrap_or(&half),
-            normal: self.maps.get("normal").unwrap_or(&flat),
-            rough: self.maps.get("roughness").or(inv_gloss.as_ref()).unwrap_or(&half),
-            metal: self.maps.get("metallic").unwrap_or(&zero),
-            ao: self.maps.get("ambient_occlusion").unwrap_or(&one),
-            emissive: self.maps.get("emissive"),
-            height: self.maps.get("height"),
+            base: get("basecolor").or_else(|| get("diffuse")).unwrap_or(&half),
+            normal: get("normal").unwrap_or(&flat),
+            rough: get("roughness").or(inv_gloss.as_ref()).unwrap_or(&half),
+            metal: get("metallic").unwrap_or(&zero),
+            ao: get("ambient_occlusion").unwrap_or(&one),
+            emissive: get("emissive"),
+            height: get("height"),
         };
         let mut cpu_view = self.view3d.clone();
         cpu_view.tess = cpu_view.tess.min(256);

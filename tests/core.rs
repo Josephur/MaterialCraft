@@ -754,3 +754,93 @@ fn fbm_kernel_matches_the_reference_function() {
         }
     }
 }
+
+#[test]
+fn faster_kernels_match_straightforward_references() {
+    use materialcraft::ops;
+    use materialcraft::tex::{lum, Tex};
+    let img = Tex::gray_fn(96, 80, |u, v| noise::fbm(u, v, 4, 4, 3, 0.5, 5, 0));
+    // gray blur (single channel path) must equal the general four-channel path
+    let mut rgba = img.clone();
+    for p in rgba.px.iter_mut() {
+        p[3] = 0.5;
+    }
+    for sigma in [3.0f32, 7.5, 20.0] {
+        let (a, b) = (ops::blur(&img, sigma), ops::blur(&rgba, sigma));
+        let worst = a.px.iter().zip(&b.px).map(|(p, q)| (p[0] - q[0]).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "sigma {sigma}: gray and rgba blur differ by {worst}");
+    }
+    // normal map: compare with a direct per-pixel Scharr implementation
+    let n = ops::normal_from_height(&img, 3.0, false);
+    let k = 3.0 * img.w as f32 * 0.05;
+    for &(x, y) in &[(0i64, 0i64), (95, 79), (10, 20), (50, 0), (0, 40), (95, 40)] {
+        let g = |i: i64, j: i64| lum(img.at(x + i, y + j));
+        let dx = (3.0 * (g(1, -1) - g(-1, -1)) + 10.0 * (g(1, 0) - g(-1, 0)) + 3.0 * (g(1, 1) - g(-1, 1))) / 32.0 * k;
+        let dy = (3.0 * (g(-1, 1) - g(-1, -1)) + 10.0 * (g(0, 1) - g(0, -1)) + 3.0 * (g(1, 1) - g(1, -1))) / 32.0 * k;
+        let l = (dx * dx + dy * dy + 1.0).sqrt();
+        let want = [-dx / l * 0.5 + 0.5, dy / l * 0.5 + 0.5, 1.0 / l * 0.5 + 0.5];
+        let got = n.at(x, y);
+        for c in 0..3 {
+            assert!((got[c] - want[c]).abs() < 1e-4, "normal at ({x},{y}) channel {c}: {} vs {}", got[c], want[c]);
+        }
+    }
+    // levels: gamma 1 fast path equals the general formula; coloured pixels keep their channels
+    let t = Tex::from_fn(8, 8, |u, v| [u, v, 0.3, 1.0]);
+    let l = ops::levels(&t, 0.2, 0.8, 1.0, 0.1, 0.9);
+    let p = t.px[11];
+    for c in 0..3 {
+        let want = 0.1 + 0.8 * ((p[c] - 0.2) / 0.6).clamp(0.0, 1.0);
+        assert!((l.px[11][c] - want).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn directional_noise_with_fewer_taps_matches_the_dense_reference() {
+    // reference: the original sampling density of 5 taps per lattice cell
+    for (st, ang) in [(8.0f32, 0.13f32), (24.0, 0.4), (3.0, 0.0)] {
+        let size = 96usize;
+        let g = Graph::parse(&format!("size {size}\nnode 1 directional_noise scale=6 stretch={st} angle={ang} seed=3\noutput a 1\n")).unwrap();
+        let got = &g.evaluate(None).unwrap()["a"];
+        let p1 = 6i32;
+        let (sa, ca) = (ang * std::f32::consts::TAU).sin_cos();
+        let len1 = (st / p1 as f32).min(1.0);
+        let k = ((st * 5.0).ceil() as usize).clamp(8, 160) | 1;
+        let taps: Vec<(f32, f32)> = (0..k).map(|i| { let t = ((i as f32 + 0.5) / k as f32) * 2.0 - 1.0; (t, 1.0 - t.abs()) }).collect();
+        let wsum: f32 = taps.iter().map(|t| t.1).sum();
+        let gain = 1.6 * st.min(p1 as f32).powf(0.55);
+        let (g1, g2) = (noise::GradGrid::new(p1, p1, 3), noise::GradGrid::new(p1 * 2, p1 * 2, 3 + 7));
+        let mut diff = 0.0f64;
+        for y in 0..size {
+            for x in 0..size {
+                let (u, v) = ((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32);
+                let (mut a1, mut a2) = (0.0f32, 0.0f32);
+                for &(t, w) in &taps {
+                    let (o1, o2) = (t * len1 * 0.5, t * len1 * 0.25);
+                    a1 += w * g1.sample(u + o1 * ca, v + o1 * sa);
+                    a2 += w * g2.sample(u + o2 * ca, v + o2 * sa);
+                }
+                let m = (a1 * 0.65 + a2 * 0.35) / wsum;
+                let want = (0.5 + (m - 0.5) * gain).clamp(0.0, 1.0);
+                diff += (got.at(x as i64, y as i64)[0] - want).abs() as f64;
+            }
+        }
+        let mean = diff / (size * size) as f64;
+        assert!(mean < 0.01, "stretch {st}: mean difference {mean:.4}");
+    }
+}
+
+#[test]
+fn slope_blur_gray_path_matches_the_color_path() {
+    use materialcraft::{ops, tex::Tex};
+    let img = Tex::gray_fn(64, 64, |u, v| noise::fbm(u, v, 4, 4, 3, 0.5, 5, 0));
+    let slope = Tex::gray_fn(64, 64, |u, v| noise::fbm(u, v, 2, 2, 2, 0.5, 9, 0));
+    let mut tinted = img.clone();
+    for p in tinted.px.iter_mut() {
+        p[3] = 0.99; // not exactly opaque: forces the general four-channel path
+    }
+    for mode in 0..3 {
+        let (a, b) = (ops::slope_blur(&img, &slope, 12, 0.1, mode), ops::slope_blur(&tinted, &slope, 12, 0.1, mode));
+        let worst = a.px.iter().zip(&b.px).map(|(p, q)| (p[0] - q[0]).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "mode {mode}: paths differ by {worst}");
+    }
+}

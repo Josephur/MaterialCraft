@@ -151,8 +151,8 @@ impl Fbm {
             norm += amp;
             amp *= self.gain;
             let (na, nb) = (2.0 * a - b, a + 2.0 * b);
-            a = na - na.floor();
-            b = nb - nb.floor();
+            a = na - crate::tex::ffloor(na);
+            b = nb - crate::tex::ffloor(nb);
         }
         if norm > 0.0 {
             let m = sum / norm;
@@ -291,7 +291,7 @@ impl GradGrid {
     pub fn sample(&self, u: f32, v: f32) -> f32 {
         let x = u * self.px as f32;
         let y = v * self.py as f32;
-        let (fxl, fyl) = (x.floor(), y.floor());
+        let (fxl, fyl) = (crate::tex::ffloor(x), crate::tex::ffloor(y));
         let (fx, fy) = (x - fxl, y - fyl);
         // wrap the two lattice columns / rows once instead of once per corner
         let x0 = (fxl as i64).rem_euclid(self.px as i64) as usize;

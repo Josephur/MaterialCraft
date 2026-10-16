@@ -160,17 +160,44 @@ fn box_rows1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
     dst
 }
 
-fn transpose1(src: &[f32], w: usize, h: usize) -> Vec<f32> {
+/// Vertical wrapping box blur of a single-channel image without transposing it: every thread owns a band of columns and
+/// slides a running sum down the rows, reading whole row segments (cache friendly).
+fn box_cols1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
     let mut dst = vec![0.0f32; w * h];
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let rows_per = (w + n - 1) / n;
+    let band = ((w + n - 1) / n).max(1);
+    let inv = 1.0 / (2 * r + 1) as f32;
+    let my = crate::tex::my_job();
+    // each thread writes its own columns: split the destination into column bands through raw row pointers
+    struct Ptr(*mut f32);
+    unsafe impl Send for Ptr {}
+    unsafe impl Sync for Ptr {}
+    let base = Ptr(dst.as_mut_ptr());
+    let basep = &base;
     std::thread::scope(|sc| {
-        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * h).enumerate() {
+        for x0 in (0..w).step_by(band) {
+            let x1 = (x0 + band).min(w);
             sc.spawn(move || {
-                for (ri, out) in chunk.chunks_mut(h).enumerate() {
-                    let x = ci * rows_per + ri;
-                    for (y, o) in out.iter_mut().enumerate() {
-                        *o = src[y * w + x];
+                let hi = h as i64;
+                let mut acc = vec![0.0f32; x1 - x0];
+                for k in -r..=r {
+                    let row = &src[(k.rem_euclid(hi) as usize) * w + x0..(k.rem_euclid(hi) as usize) * w + x1];
+                    for (a, v) in acc.iter_mut().zip(row) {
+                        *a += *v;
+                    }
+                }
+                for y in 0..h {
+                    if y % 32 == 0 && crate::tex::stale(my) {
+                        return;
+                    }
+                    // SAFETY: the bands are disjoint column ranges, so no two threads write the same element
+                    let out = unsafe { std::slice::from_raw_parts_mut(basep.0.add(y * w + x0), x1 - x0) };
+                    let ia = ((y as i64 + r + 1).rem_euclid(hi)) as usize;
+                    let is = ((y as i64 - r).rem_euclid(hi)) as usize;
+                    let (add, sub) = (&src[ia * w + x0..ia * w + x1], &src[is * w + x0..is * w + x1]);
+                    for i in 0..acc.len() {
+                        out[i] = acc[i] * inv;
+                        acc[i] += add[i] - sub[i];
                     }
                 }
             });
@@ -211,9 +238,7 @@ pub fn blur(t: &Tex, sigma: f32) -> Tex {
         for bw in gauss_boxes(sigma) {
             let r = (bw / 2).max(0);
             cur = box_rows1(&cur, w, h, r.min((w as i64 - 1) / 2));
-            cur = transpose1(&cur, w, h);
-            cur = box_rows1(&cur, h, w, r.min((h as i64 - 1) / 2));
-            cur = transpose1(&cur, h, w);
+            cur = box_cols1(&cur, w, h, r.min((h as i64 - 1) / 2));
         }
         return Tex { w, h, px: cur.into_iter().map(|v| [v, v, v, 1.0]).collect() };
     }
@@ -293,13 +318,17 @@ pub fn sharpen(t: &Tex, radius: f32, amount: f32) -> Tex {
 pub fn levels(t: &Tex, in_lo: f32, in_hi: f32, gamma: f32, out_lo: f32, out_hi: f32) -> Tex {
     let d = if in_hi >= in_lo { (in_hi - in_lo).max(1e-6) } else { (in_hi - in_lo).min(-1e-6) };
     let g = 1.0 / gamma.max(1e-3);
+    let unit_gamma = (g - 1.0).abs() < 1e-6;
+    let lv = |x: f32| {
+        let v = ((x - in_lo) / d).clamp(0.0, 1.0);
+        out_lo + (out_hi - out_lo) * if unit_gamma { v } else { v.powf(g) }
+    };
     t.map(|p| {
-        let mut o = p;
-        for c in 0..3 {
-            let v = ((p[c] - in_lo) / d).clamp(0.0, 1.0).powf(g);
-            o[c] = out_lo + (out_hi - out_lo) * v;
+        if p[0] == p[1] && p[1] == p[2] {
+            let v = lv(p[0]);
+            return [v, v, v, p[3]];
         }
-        o
+        [lv(p[0]), lv(p[1]), lv(p[2]), p[3]]
     })
 }
 
@@ -461,7 +490,10 @@ fn bm(mode: u32, f: f32, b: f32) -> f32 {
 /// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light,17 color,18 luminosity,19 dissolve.
 pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) -> Tex {
     let mut out = bg.clone();
-    for i in 0..out.px.len() {
+    let ow = out.w;
+    crate::tex::par_rows(&mut out.px, ow, |start, chunk| {
+      for (j, dst) in chunk.iter_mut().enumerate() {
+        let i = start + j;
         let f = fg.px.get(i).copied().unwrap_or([0.0; 4]);
         let b = bg.px[i];
         let m = mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0) * opacity;
@@ -481,14 +513,15 @@ pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) ->
             };
             let m2 = if mode == 19 { 1.0 } else { m };
             for c in 0..3 {
-                out.px[i][c] = (b[c] + (r[c] - b[c]) * m2).clamp(0.0, 1.0);
+                dst[c] = (b[c] + (r[c] - b[c]) * m2).clamp(0.0, 1.0);
             }
             continue;
         }
         for c in 0..3 {
-            out.px[i][c] = (b[c] + (bm(mode, f[c], b[c]).clamp(0.0, 1.0) - b[c]) * m).clamp(0.0, 1.0);
+            dst[c] = (b[c] + (bm(mode, f[c], b[c]).clamp(0.0, 1.0) - b[c]) * m).clamp(0.0, 1.0);
         }
-    }
+      }
+    });
     out
 }
 
@@ -552,20 +585,29 @@ pub fn directional_warp(t: &Tex, w: &Tex, angle: f32, intensity: f32) -> Tex {
 // ---------- surface analysis ----------
 pub fn normal_from_height(h: &Tex, strength: f32, directx: bool) -> Tex {
     let k = strength * h.w as f32 * 0.05;
-    Tex::from_fn(h.w, h.h, |u, v| {
-        let x = (u * h.w as f32) as i64;
-        let y = (v * h.h as f32) as i64;
-        // 3x3 Scharr kernel: smoother and more rotation-invariant than a plain central difference
-        let g = |i: i64, j: i64| h.gray_at(x + i, y + j);
-        let dx = (3.0 * (g(1, -1) - g(-1, -1)) + 10.0 * (g(1, 0) - g(-1, 0)) + 3.0 * (g(1, 1) - g(-1, 1))) / 32.0 * k;
-        let mut dy = (3.0 * (g(-1, 1) - g(-1, -1)) + 10.0 * (g(0, 1) - g(0, -1)) + 3.0 * (g(1, 1) - g(1, -1))) / 32.0 * k;
-        if directx {
-            dy = -dy;
+    let (w, hh) = (h.w, h.h);
+    // luminance once per pixel instead of nine times
+    let gray: Vec<f32> = h.px.iter().map(|p| lum(*p)).collect();
+    let mut out = Tex { w, h: hh, px: vec![[0.0, 0.0, 1.0, 1.0]; w * hh] };
+    crate::tex::par_rows(&mut out.px, w, |start, chunk| {
+        for (j, dst) in chunk.iter_mut().enumerate() {
+            let i = start + j;
+            let (x, y) = (i % w, i / w);
+            let (xm, xp) = (if x == 0 { w - 1 } else { x - 1 }, if x + 1 == w { 0 } else { x + 1 });
+            let (ym, yp) = (if y == 0 { hh - 1 } else { y - 1 }, if y + 1 == hh { 0 } else { y + 1 });
+            // 3x3 Scharr kernel: smoother and more rotation-invariant than a plain central difference
+            let g = |xx: usize, yy: usize| gray[yy * w + xx];
+            let dx = (3.0 * (g(xp, ym) - g(xm, ym)) + 10.0 * (g(xp, y) - g(xm, y)) + 3.0 * (g(xp, yp) - g(xm, yp))) / 32.0 * k;
+            let mut dy = (3.0 * (g(xm, yp) - g(xm, ym)) + 10.0 * (g(x, yp) - g(x, ym)) + 3.0 * (g(xp, yp) - g(xp, ym))) / 32.0 * k;
+            if directx {
+                dy = -dy;
+            }
+            let (nx, ny, nz) = (-dx, dy, 1.0f32);
+            let l = (nx * nx + ny * ny + nz * nz).sqrt();
+            *dst = [nx / l * 0.5 + 0.5, ny / l * 0.5 + 0.5, nz / l * 0.5 + 0.5, 1.0];
         }
-        let (nx, ny, nz) = (-dx, dy, 1.0f32);
-        let l = (nx * nx + ny * ny + nz * nz).sqrt();
-        [nx / l * 0.5 + 0.5, ny / l * 0.5 + 0.5, nz / l * 0.5 + 0.5, 1.0]
-    })
+    });
+    out
 }
 
 pub fn normal_blend(a: &Tex, b: &Tex) -> Tex {
@@ -1139,36 +1181,98 @@ pub fn vector_warp(t: &Tex, vecmap: &Tex, intensity: f32) -> Tex {
 
 /// mode: 0 blur (average), 1 min, 2 max.
 pub fn slope_blur(t: &Tex, slope: &Tex, samples: u32, intensity: f32, mode: u32) -> Tex {
-    let g = Tex::from_fn(slope.w, slope.h, |u, v| {
-        let x = (u * slope.w as f32) as i64;
-        let y = (v * slope.h as f32) as i64;
-        [slope.gray_at(x + 1, y) - slope.gray_at(x - 1, y), slope.gray_at(x, y + 1) - slope.gray_at(x, y - 1), 0.0, 1.0]
-    });
+    let (sw, sh) = (slope.w, slope.h);
+    let gray: Vec<f32> = slope.px.iter().map(|p| lum(*p)).collect();
+    // slope direction (central differences) as a two-channel plane
+    let mut gv = vec![[0.0f32; 2]; sw * sh];
+    {
+        let rows_per = ((sh + 7) / 8).max(1);
+        let gray = &gray;
+        let my = crate::tex::my_job();
+        std::thread::scope(|sc| {
+            for (ci, chunk) in gv.chunks_mut(rows_per * sw).enumerate() {
+                sc.spawn(move || {
+                    for (j, dst) in chunk.iter_mut().enumerate() {
+                        if j % sw == 0 && crate::tex::stale(my) {
+                            return;
+                        }
+                        let idx = ci * rows_per * sw + j;
+                        let (x, y) = (idx % sw, idx / sw);
+                        let (xm, xp) = (if x == 0 { sw - 1 } else { x - 1 }, if x + 1 == sw { 0 } else { x + 1 });
+                        let (ym, yp) = (if y == 0 { sh - 1 } else { y - 1 }, if y + 1 == sh { 0 } else { y + 1 });
+                        *dst = [gray[y * sw + xp] - gray[y * sw + xm], gray[yp * sw + x] - gray[ym * sw + x]];
+                    }
+                });
+            }
+        });
+    }
     let n = samples.clamp(1, 64);
     let step = intensity / n as f32;
     let gain = slope.w as f32 * 0.5;
-    Tex::from_fn(t.w, t.h, |u, v| {
+    let nf = n as f32;
+    // bilinear lookups on plain planes (wrapped)
+    #[inline]
+    fn bil<const C: usize>(d: &[[f32; C]], w: usize, h: usize, u: f32, v: f32) -> [f32; C] {
+        let u = if u.is_finite() { u } else { 0.0 };
+        let v = if v.is_finite() { v } else { 0.0 };
+        let (x, y) = (u * w as f32 - 0.5, v * h as f32 - 0.5);
+        let (x0, y0) = (crate::tex::ffloor(x), crate::tex::ffloor(y));
+        let (fx, fy) = (x - x0, y - y0);
+        let (wi, hi) = (w as i64, h as i64);
+        let wrap = |i: i64, n: i64| if i >= 0 && i < n { i } else { i.rem_euclid(n) };
+        let (xa, ya) = (wrap(x0 as i64, wi), wrap(y0 as i64, hi));
+        let xb = if xa + 1 == wi { 0 } else { xa + 1 };
+        let yb = if ya + 1 == hi { 0 } else { ya + 1 };
+        let (r0, r1) = ((ya * wi) as usize, (yb * wi) as usize);
+        let (a, b, c, e) = (d[r0 + xa as usize], d[r0 + xb as usize], d[r1 + xa as usize], d[r1 + xb as usize]);
+        let mut o = [0.0; C];
+        for i in 0..C {
+            let top = a[i] + (b[i] - a[i]) * fx;
+            let bot = c[i] + (e[i] - c[i]) * fx;
+            o[i] = top + (bot - top) * fy;
+        }
+        o
+    }
+    let walk = |u: f32, v: f32, mut visit: &mut dyn FnMut(f32, f32)| {
         let (mut pu, mut pv) = (u, v);
-        let mut acc = match mode {
-            1 => [1.0f32; 4],
-            2 => [0.0f32; 4],
-            _ => [0.0f32; 4],
-        };
         for _ in 0..n {
-            let p = t.sample(pu, pv);
+            visit(pu, pv);
+            let gvv = bil::<2>(&gv, sw, sh, pu, pv);
+            let l = (gvv[0] * gvv[0] + gvv[1] * gvv[1]).sqrt().max(1e-6);
+            let k = (l * gain).min(1.0) * step / l;
+            pu += gvv[0] * k;
+            pv += gvv[1] * k;
+        }
+        let _ = &mut visit;
+    };
+    let is_gray = t.px.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0);
+    if is_gray {
+        let plane: Vec<[f32; 1]> = t.px.iter().map(|p| [p[0]]).collect();
+        return Tex::from_fn(t.w, t.h, |u, v| {
+            let mut acc = if mode == 1 { 1.0f32 } else { 0.0 };
+            walk(u, v, &mut |pu, pv| {
+                let p = bil::<1>(&plane, t.w, t.h, pu, pv)[0];
+                acc = match mode {
+                    1 => acc.min(p),
+                    2 => acc.max(p),
+                    _ => acc + p / nf,
+                };
+            });
+            [acc, acc, acc, 1.0]
+        });
+    }
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let mut acc = if mode == 1 { [1.0f32; 4] } else { [0.0f32; 4] };
+        walk(u, v, &mut |pu, pv| {
+            let p = bil::<4>(&t.px, t.w, t.h, pu, pv);
             for c in 0..4 {
                 acc[c] = match mode {
                     1 => acc[c].min(p[c]),
                     2 => acc[c].max(p[c]),
-                    _ => acc[c] + p[c] / n as f32,
+                    _ => acc[c] + p[c] / nf,
                 };
             }
-            let gv = g.sample(pu, pv);
-            let l = (gv[0] * gv[0] + gv[1] * gv[1]).sqrt().max(1e-6);
-            let mag = (l * gain).min(1.0);
-            pu += gv[0] / l * mag * step;
-            pv += gv[1] / l * mag * step;
-        }
+        });
         acc
     })
 }
