@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Our own grunge map family (fifteen procedural looks: specks, drips, blotches, scratches, crazing, cracks).
+//! Our own grunge map family (twenty-four procedural looks: specks, drips, blotches, scratches, crazing, cracks, pits,
+//! stains, scuffs, peeling patches).
 //! Each recipe builds a tileable "dirt" field from our noise primitives; `GrungeP` then thresholds it with balance /
 //! contrast like a grunge map. The recipes are our own procedural designs.
 use crate::noise;
@@ -22,7 +23,7 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 
 /// Coverage threshold of each map (dirt where the field exceeds it); tuned so the default looks have a similar
 /// amount of dirt to the originals.
-pub const T0: [f32; 15] = [0.846, 0.733, 0.695, 0.214, 0.849, 0.775, 0.672, 0.504, 0.695, 0.405, 0.432, 0.797, 0.473, 0.701, 0.783];
+pub const T0: [f32; 24] = [0.846, 0.733, 0.695, 0.214, 0.849, 0.775, 0.672, 0.504, 0.695, 0.405, 0.432, 0.797, 0.473, 0.701, 0.783, 0.648, 0.816, 0.669, 0.693, 0.833, 0.695, 1.009, 0.337, 0.802];
 
 fn blot(a: f32, b: f32, px: i32, seed: u32) -> f32 {
     noise::fbm(a, b, px, px, 5, 0.55, seed, 0)
@@ -51,7 +52,7 @@ fn crack(a: f32, b: f32, px: i32, seed: u32, width: f32) -> f32 {
     (main.max(branch * 0.9)) * gap
 }
 
-/// Dirt field in 0..1 (higher = more dirt) for map 1..=15.
+/// Dirt field in 0..1 (higher = more dirt) for map 1..=24.
 pub fn dirt(p: &GrungeP, u: f32, v: f32) -> f32 {
     let s = p.seed;
     let (mut a, mut b) = (u, v);
@@ -84,7 +85,39 @@ pub fn dirt(p: &GrungeP, u: f32, v: f32) -> f32 {
         12 => noise::spots(a, b, 56, 56, s, |id| (0.03, 0.06 + id * 0.05), 0.0) * 0.7 + 0.45 * blot(a, b, 8, s + 12),
         13 => p.cracks * 0.9 * crack(a, b, 6, s, 0.04) * smooth(0.4, 0.6, blot(a, b, 4, s + 22)) + 0.45 * blot(a, b, 6, s + 11),
         14 => 0.6 * streak(a, b, 30, 2, s) + 0.4 * blot(a, b, 5, s + 13) * 1.2,
-        _ => streak(a, b, 120, 6, s) * (0.55 + 0.6 * vband(b, 0.0)),
+        15 => streak(a, b, 120, 6, s) * (0.55 + 0.6 * vband(b, 0.0)),
+        // rain streaks: long vertical runs that start from a few sources and fade towards the bottom
+        16 => (0.65 * streak(a, b, 72, 2, s + 16) + 0.35 * blot(a, b, 3, s + 17)) * (0.6 + 0.5 * vband(b, 0.0)),
+        // sponge: open pores of different sizes
+        17 => {
+            let (f1, _, id) = noise::voronoi(a, b, 14, 14, s + 18, 1.0);
+            0.65 * (1.0 - smooth(0.05, 0.3 + id * 0.25, f1)) + 0.4 * blot(a, b, 6, s + 19)
+        }
+        // chalky dust: fine grain with a broad uneven coat
+        18 => 0.55 * noise::fbm(a, b, 160, 160, 4, 0.6, s + 20, 0) + 0.45 * blot(a, b, 3, s + 21),
+        // corrosion pits: small deep pits inside patchy corroded areas
+        19 => noise::spots(a, b, 26, 26, s + 22, |id| (0.05, 0.12 + id * 0.2), 0.0) * smooth(0.3, 0.55, blot(a, b, 4, s + 23)) + 0.5 * blot(a, b, 7, s + 24) - 0.1,
+        // ring stains: dried rims of spills
+        20 => {
+            let (f1, _, id) = noise::voronoi(a, b, 5, 5, s + 25, 1.0);
+            let r = f1 / (0.45 + 0.4 * id);
+            smooth(0.55, 0.9, r) * (1.0 - smooth(0.9, 1.1, r)) * 0.9 + 0.35 * blot(a, b, 5, s + 26)
+        }
+        // scuffs: short diagonal scrapes
+        21 => {
+            let (da, db) = ((a + b).rem_euclid(1.0), (b - a).rem_euclid(1.0));
+            0.7 * streak(da, db, 56, 2, s + 27) + 0.3 * blot(a, b, 4, s + 28)
+        }
+        // peeling patches: irregular flakes with ragged borders
+        22 => {
+            let (_, _, id) = noise::voronoi(a, b, 6, 6, s + 29, 1.0);
+            let edge = noise::fbm(a, b, 30, 30, 4, 0.55, s + 30, 0) - 0.5;
+            smooth(0.4, 0.6, id + edge * 0.5) * 0.8 + 0.3 * blot(a, b, 7, s + 31)
+        }
+        // salt and speckle: tiny crisp dots under a loose coat
+        23 => noise::spots(a, b, 96, 96, s + 32, |id| (0.04, 0.09 + id * 0.1), 0.0) * smooth(0.3, 0.6, blot(a, b, 3, s + 33)) + 0.35 * blot(a, b, 5, s + 34),
+        // weathering: broad uneven staining, heavier along one band
+        _ => 0.55 * blot(a, b, 2, s + 35) + 0.45 * vband(b, 0.5) * (0.6 + 0.8 * blot(a, b, 4, s + 36)),
     };
     let d = if p.brush > 0.0 { d * (1.0 + p.brush * (streak(a, b, 60, 4, s + 31) - 0.5) * 1.5) } else { d };
     (d + grain).clamp(0.0, 1.5)

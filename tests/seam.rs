@@ -2,6 +2,9 @@
 use materialcraft::graph::{demo_graph_for, Graph, SPECS};
 use materialcraft::tex::Tex;
 
+/// Nodes whose result is a strip of swatches (data, not a surface), so it has no reason to tile.
+const DATA_STRIPS: &[&str] = &["palette_extract"];
+
 /// (seam jump, largest jump anywhere else): the mean difference across the wrap-around border, and the
 /// steepest mean difference between any two neighbouring columns/rows inside the texture. Hard-edged patterns whose
 /// cell border falls exactly on the seam still pass, because the same jump exists inside the texture.
@@ -19,6 +22,9 @@ fn seam(t: &Tex) -> (f32, f32) {
 fn every_node_is_seamless() {
     let mut bad = Vec::new();
     for sp in SPECS {
+        if DATA_STRIPS.contains(&sp.kind) {
+            continue;
+        }
         let Some(text) = demo_graph_for(sp.kind) else { continue };
         let g = Graph::parse(&text).unwrap();
         let out = match g.evaluate(Some(seam_size())) {
@@ -52,7 +58,7 @@ fn variants_are_seamless() {
         "directional_noise angle=0.13 scale=5 stretch=6", "directional_noise angle=0.25", "directional_noise angle=0.6 scale=3 stretch=12",
         "gradient mode=0 angle=0.1", "gradient mode=1", "gradient_axial angle=0.2", "gradient_circular offset=0.3",
         "circle radius=0.5", "circle radius=0.7 softness=0.1", "rect width=0.9 height=0.9", "polygon sides=3 radius=0.5", "polygon sides=8 radius=0.6 rotation=0.1",
-        "star points=7 size=0.5", "checker tiles=7", "checker tiles=3", "weave count=5", "grunge_map map=1", "grunge_map map=4", "grunge_map map=6 disorder=0.5", "grunge_map map=11 brush_pattern=0.6", "grunge_map map=15", "weave_generator tile_x=2 weave=3", "triangle_grid style=1 x_amount=8 y_amount=8", "triangle_grid style=1 triangulation=2 output=1", "triangle_grid style=1 output=2 thin_lines=1 quincunx_offset_x=0.5", "weave count=9 width=0.6",
+        "star points=7 size=0.5", "checker tiles=7", "checker tiles=3", "weave count=5", "grunge_map map=1", "grunge_map map=4", "grunge_map map=6 disorder=0.5", "grunge_map map=11 brush_pattern=0.6", "grunge_map map=15", "grunge_map map=16", "grunge_map map=17", "grunge_map map=18", "grunge_map map=19", "grunge_map map=20", "grunge_map map=21", "grunge_map map=22", "grunge_map map=23", "grunge_map map=24 disorder=0.4", "weave_generator tile_x=2 weave=3", "triangle_grid style=1 x_amount=8 y_amount=8", "triangle_grid style=1 triangulation=2 output=1", "triangle_grid style=1 output=2 thin_lines=1 quincunx_offset_x=0.5", "weave count=9 width=0.6",
         "bricks rows=7 cols=3 offset=0.3", "bricks rows=5 cols=5 offset=0.5", "bricks rows=9 cols=4 offset=0.25", "bricks rows=6 cols=3.5",
         "stripes count=7 angle=0.13", "stripes count=5 angle=0.37", "stripes count=9 angle=0.9",
         "shape shape=0", "shape shape=1", "shape shape=2", "shape shape=3", "shape shape=4", "shape shape=5", "shape shape=6", "shape shape=7",
@@ -205,6 +211,9 @@ fn every_node_is_seamless_when_not_square() {
     let mut bad = Vec::new();
     for (wide, name) in [(true, "2:1"), (false, "1:2")] {
         for sp in SPECS {
+            if DATA_STRIPS.contains(&sp.kind) {
+                continue;
+            }
             let Some(text) = demo_graph_for(sp.kind) else { continue };
             let mut g = Graph::parse(&text).unwrap();
             let s = g.size;

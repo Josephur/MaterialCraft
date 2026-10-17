@@ -185,8 +185,15 @@
   - Move it and the other selected nodes
 - Drag from an output socket
   - Start a link
+- `Shift+drag` from an output socket
+  - Takes every link of that output; drop on another node (its output socket or its card) to move all of them there
+  - The nodes below keep their place; links that would make a cycle or do not fit the type stay where they were
+  - Orange previews show the links being moved
 - Drag from an input socket
-  - Start a link from the input side
+  - Start a link from the input side (a connected input detaches its link and re-attaches it where dropped)
+- Wheel over the graph, also over a node
+  - Zoom around the pointer
+- Links are curves whose handles follow the distance: close nodes give a short tight wire, a wire that turns back gets a wider loop
 - Drag a link into empty space
   - Add a node and connect it
 - Double-click a subgraph
@@ -223,6 +230,21 @@
   - Pan
 - Double-click
   - Fit to view
+- While editing a spline
+  - Click
+    - Add or select a point
+  - Drag
+    - Move a point or handle
+  - `Alt` + drag, `Space` + drag or middle-drag
+    - Pan
+  - `Alt` + handle drag
+    - Move one handle only
+  - `Shift`
+    - Flip grid snapping
+  - `Delete` or `Backspace`
+    - Delete the selected point
+  - Double-click on a point
+    - Corner or smooth
 
 ### 2.7 Text boxes
 
@@ -255,6 +277,15 @@
     - `expose`
     - `comment`
     - `resource name base64`
+      - Embedded files, for example splines (`*.spl`)
+  - Spline resource text (`*.spl`)
+    - `spline 1`
+    - `path closed=0|1 smooth=0|1`
+    - `pt x y [hin=dx,dy] [hout=dx,dy] [w=factor]`
+    - Coordinates are 0..1, y down
+    - Handles are offsets from the point
+    - A point without handles gets automatic ones when the path is smooth
+    - `#` starts a comment
   - Function graph = subgraph with `meta kind "function"`
   - Pattern program = subgraph with `meta kind "fxmap"`
   - Version number is stored in the file
@@ -295,6 +326,9 @@
   - File > Save as...
 - `.mca`
   - File > Publish package
+- Spline resources
+  - Saved inside the `.mcg` as `resource name.spl base64`
+  - No separate file
 - `.png`
   - Export
   - 8-bit or 16-bit
@@ -386,10 +420,16 @@
   - Writes a demo low and high mesh
 - `materialcraft example <outdir>`
   - Writes the brick wall example
+- `materialcraft library [words...]`
+  - Lists the built-in ready-made graphs
+  - Words must all match name, tag, category or description
+  - `--kind material|generator|filter`
+  - `--export <id> <file.mcg>` writes one graph out to edit
 - `materialcraft nodes`
   - Prints every node with inputs and parameters
-- `materialcraft-gui`
+- `materialcraft-gui [file.mcg|file.mca]`
   - Starts the editor
+  - A file on the command line opens at once
 
 ## 5. Screens
 
@@ -409,6 +449,9 @@
 - Tab "Start"
   - Click to show the start page
   - Selected: accent colour, underline
+- Tab "Templates"
+  - Click to show the templates page
+  - Selected: accent colour, underline
 - Tab "Learn"
   - Click to show the learn page
   - Selected: accent colour, underline
@@ -420,17 +463,13 @@
 - Sub-title "Seamless materials, patterns and filters from nodes - every result tiles."
 - Action cards
   - Card "New graph"
-    - Sub-text "Start from a template"
+    - Sub-text "Start from an empty graph"
     - Icon: new
     - Click opens the New Material Graph dialog
   - Card "Open package"
     - Sub-text "Load a .mcg or .mca file"
     - Icon: open
     - Click opens a file picker
-  - Card "Brick wall example"
-    - Sub-text "Explore a finished material"
-    - Icon: layout
-    - Click opens the example in the Editor
   - Card "Mesh map baker"
     - Sub-text "Bake maps from OBJ meshes"
     - Icon: sphere
@@ -459,6 +498,18 @@
     - Missing file: dimmed, text "file not found", click does nothing
   - Empty text "Nothing here yet - create a graph or open a package and it will show up here."
   - No match text "No recent files match the search."
+
+### 6.2b Templates page
+
+- Title "Templates"
+  - Filter links "All", "Materials", "Generators", "Filters" and a search box "Search templates"
+  - Note "Click a template to open it as an example in its own tab. Examples are not part of your project - ..."
+  - Tile grid: brick wall example plus every built-in ready-made graph, each with a preview, name and "kind - category"
+  - Click opens the template as an example in its own tab (named "<name> (example)")
+    - Clicking the same template again switches to the open example tab instead of making another one
+    - The example is not part of any package: not saved, not in recent files, gone when its tab is closed
+    - Example tab shows a bar "Example - not part of your project" with "Add to project" and "Save as..."
+    - "Add to project" copies it as a new graph into the selected package (or a new unsaved package)
 
 ### 6.3 Learn page
 
@@ -750,6 +801,7 @@
     - "Patterns"
     - "Shapes"
     - "SDF"
+    - "Paths"
   - "Filters"
     - "Adjustments"
     - "Blur and warp"
@@ -759,15 +811,24 @@
   - "Material tools"
   - "Mesh-driven"
   - Click a folder to list it
+  - Under "Generators" and "Filters" a folder "Ready-made" lists finished generators or filters
 - Item grid (right)
   - One tile per node
   - Tile shows icon and name
   - Hover shows the description
-  - Click adds the node at the view centre
+  - Clicking does nothing; nodes are added only by dragging
   - Drag onto the canvas adds it there
   - Right-click > "Add to favorites"
   - Right-click > "Remove from favorites"
   - Star mark on favorites
+- Folders "Generators/Ready-made" and "Filters/Ready-made" list finished graphs instead of nodes (materials are not listed here, they are launcher templates)
+  - Tile shows a 64 px preview and the name
+  - Hover shows name, kind, category, description
+  - Drag onto the graph adds ONE node (clicking a tile adds nothing; an instance of an embedded copy of the template graph); more drops reuse the same copy
+  - Right-click tile > "Open as example" opens the template in its own example tab
+  - Right-click the node > "Edit template" opens its graph; changes apply to every instance in the package
+  - A search also lists matching ready-made generators and filters
+  - Search matches name, tags, category and description
 - Empty texts
   - "Right-click a node to add it to favorites."
   - "Nothing here."
@@ -981,6 +1042,48 @@
   - Warning "Values outside 0..1 (HDR). The view clips them; exports keep them in float formats (EXR, HDR, 32-bit TIFF)."
 - Wheel zooms
 - Drag pans
+- Spline editing
+  - Starts with Properties > "Edit spline" on a path node
+  - A node on a built-in shape gets a copy of it as a new embedded spline
+  - Tool row above the image
+    - Text "Spline <name>"
+    - Button "Done"
+    - Button "New path"
+    - Buttons "<" and ">" with text "path N of M"
+    - Checkbox "Closed"
+    - Checkbox "Smooth"
+      - Points without handles get automatic smooth handles
+    - Button "Delete path"
+    - Checkbox "Snap"
+      - 1/32 grid
+      - Shift flips it while dragging
+    - For the selected point
+      - Number "Width"
+      - Button "Corner"
+      - Button "Smooth point"
+      - Button "Delete point"
+  - Click on the curve adds a point there
+  - Click elsewhere adds a point at the end of the path
+  - Click on a point selects it
+  - Drag moves a point or a handle
+  - Handles mirror each other
+    - Alt while dragging breaks the mirror
+  - Double-click on a point
+    - Switches between corner and smooth
+  - Right-click on a point
+    - "Delete point"
+    - "Corner point"
+    - "Smooth point"
+  - Right-click elsewhere
+    - "Start a new path here"
+  - Delete key removes the selected point
+  - Alt, Space or middle button drags pan the view
+  - Every change is saved in the package at once
+  - Undo and redo work on spline edits
+  - Colours
+    - Current path green
+    - Other paths blue-gray
+    - First point has an orange outline
 
 ### 8.6 3D VIEW
 
@@ -1505,7 +1608,7 @@
   - `P` button
 - Counts below come from `materialcraft nodes`
 
-### Generators nodes (43)
+### Generators nodes (59)
 
 - Color (`color`)
   - Library: Generators > Patterns
@@ -3098,14 +3201,14 @@
       - Default: off
 - Grunge Map (`grunge_map`)
   - Library: Generators > Noises
-  - Tooltip: grunge map 1-15
+  - Tooltip: grunge map 1-24
   - Inputs: none
   - Outputs: output
   - Properties:
     - Grunge map
       - Control: int
       - Default: 1
-      - Range: 1..15
+      - Range: 1..24
     - Balance
       - Control: slider
       - Default: 0.5
@@ -3240,8 +3343,759 @@
     - Invert
       - Control: checkbox
       - Default: off
+- Blue Noise (`blue_noise`)
+  - Library: Generators > Noises
+  - Tooltip: evenly spread grain with little low-frequency content
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Cells across
+      - Control: int
+      - Default: 256
+      - Range: 8..2048
+    - Smoothing
+      - Control: slider
+      - Default: 1.5
+      - Range: 0.3..6
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Fibers (`fibers`)
+  - Library: Generators > Patterns
+  - Tooltip: random curved hair-like strands
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Count
+      - Control: int
+      - Default: 600
+      - Range: 0..5000
+    - Length (px at 512)
+      - Control: slider
+      - Default: 90
+      - Range: 1..1024
+    - Thickness (px at 512)
+      - Control: slider
+      - Default: 1.4
+      - Range: 0.1..32
+    - Direction
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Direction variation
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Curl
+      - Control: slider
+      - Default: 0.6
+      - Range: -8..8
+    - Tapered tips
+      - Control: slider
+      - Default: 0.4
+      - Range: 0..1
+    - Brightness variation
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Scratches (`scratches`)
+  - Library: Generators > Patterns
+  - Tooltip: random thin scratches
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Count
+      - Control: int
+      - Default: 80
+      - Range: 0..5000
+    - Length (px at 512)
+      - Control: slider
+      - Default: 220
+      - Range: 1..1024
+    - Thickness (px at 512)
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..32
+    - Direction
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Direction variation
+      - Control: slider
+      - Default: 0.2
+      - Range: 0..1
+    - Curl
+      - Control: slider
+      - Default: 0
+      - Range: -8..8
+    - Tapered tips
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Brightness variation
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Caustics (`caustics`)
+  - Library: Generators > Noises
+  - Tooltip: light patterns of water
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Scale
+      - Control: int
+      - Default: 4
+      - Range: 1..32
+    - Octaves
+      - Control: int
+      - Default: 3
+      - Range: 1..6
+    - Strength
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+    - Sharpness
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Liquid Noise (`liquid_noise`)
+  - Library: Generators > Noises
+  - Tooltip: swirling warped noise
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Scale
+      - Control: int
+      - Default: 3
+      - Range: 1..32
+    - Octaves
+      - Control: int
+      - Default: 4
+      - Range: 1..8
+    - Warp
+      - Control: slider
+      - Default: 0.35
+      - Range: 0..2
+    - Style
+      - Control: dropdown
+      - Default: Liquid
+      - Choices: Liquid / Marble
+    - Marble bands
+      - Control: slider
+      - Default: 6
+      - Range: 1..32
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Perlin Noise 3D (`perlin_3d`)
+  - Library: Generators > Noises
+  - Tooltip: slice of 3D noise that loops in depth
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Scale
+      - Control: int
+      - Default: 4
+      - Range: 1..64
+    - Depth (loops at 1)
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Octaves
+      - Control: int
+      - Default: 4
+      - Range: 1..8
+    - Gain
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Paving (`paving`)
+  - Library: Generators > Patterns
+  - Tooltip: irregular paving stones (outputs
+  - Inputs: none
+  - Outputs: height, cell_id, gaps
+    - height
+      - Right-edge socket
+    - cell_id
+      - Right-edge socket
+    - gaps
+      - Right-edge socket
+  - Properties:
+    - Stones across
+      - Control: int
+      - Default: 6
+      - Range: 1..64
+    - Irregularity
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Gap width
+      - Control: slider
+      - Default: 0.04
+      - Range: 0..0.4
+    - Bevel
+      - Control: slider
+      - Default: 0.08
+      - Range: 0.001..0.5
+    - Height variation
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Dome
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Wire Mesh (`wire_mesh`)
+  - Library: Generators > Patterns
+  - Tooltip: woven or chain-link wire
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Wires across
+      - Control: int
+      - Default: 8
+      - Range: 1..128
+    - Wires down
+      - Control: int
+      - Default: 8
+      - Range: 1..128
+    - Wire width
+      - Control: slider
+      - Default: 0.3
+      - Range: 0.02..0.95
+    - Weave depth
+      - Control: slider
+      - Default: 0.6
+      - Range: 0..1
+    - Layout
+      - Control: dropdown
+      - Default: Square weave
+      - Choices: Square weave / Diamond (chain-link)
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Stroke (`path_stroke`)
+  - Library: Generators > Paths
+  - Tooltip: line along a spline (dashes, taper, profile 0 flat,1 round,2 bevel)
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Width (px at 512)
+      - Control: slider
+      - Default: 12
+      - Range: 0.1..256
+    - Softness
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Profile
+      - Control: dropdown
+      - Default: Flat
+      - Choices: Flat / Round / Bevel
+    - Taper start
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Taper end
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Dash length (0 = solid)
+      - Control: slider
+      - Default: 0
+      - Range: 0..512
+    - Dash gap
+      - Control: slider
+      - Default: 8
+      - Range: 0..512
+    - Fit dashes to path length
+      - Control: checkbox
+      - Default: on
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Fill (`path_fill`)
+  - Library: Generators > Paths
+  - Tooltip: inside of closed splines
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Circle
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Even-odd fill
+      - Control: checkbox
+      - Default: off
+    - Softness
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Distance (`path_distance`)
+  - Library: Generators > Paths
+  - Tooltip: distance to a spline
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Mode
+      - Control: dropdown
+      - Default: Falloff from the line
+      - Choices: Falloff from the line / Signed / Inward gradient / Outward gradient
+    - Range (px at 512)
+      - Control: slider
+      - Default: 64
+      - Range: 1..1024
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Border (`path_border`)
+  - Library: Generators > Paths
+  - Tooltip: border or bevel along closed splines (outputs
+  - Inputs: none
+  - Outputs: height, mask
+    - height
+      - Right-edge socket
+    - mask
+      - Right-edge socket
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Circle
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Width (px at 512)
+      - Control: slider
+      - Default: 32
+      - Range: 0.5..512
+    - Side
+      - Control: dropdown
+      - Default: Inside
+      - Choices: Inside / Outside / Both
+    - Profile
+      - Control: dropdown
+      - Default: Linear
+      - Choices: Linear / Round / Smooth
+    - Flat part
+      - Control: slider
+      - Default: 0
+      - Range: 0..0.95
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Scatter (`path_scatter`)
+  - Library: Generators > Paths
+  - Tooltip: copies of a pattern along a spline
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Spacing (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: 1..512
+    - Size (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: 1..512
+    - Size variation
+      - Control: slider
+      - Default: 0.2
+      - Range: 0..1
+    - Jitter along
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Jitter across (px)
+      - Control: slider
+      - Default: 0
+      - Range: 0..256
+    - Rotation
+      - Control: dropdown
+      - Default: Follow the path
+      - Choices: Follow the path / Fixed / Random
+    - Angle
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Angle variation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Density
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Opacity variation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Blend
+      - Control: dropdown
+      - Default: Max
+      - Choices: Max / Add
+    - Start offset (px)
+      - Control: slider
+      - Default: 0
+      - Range: 0..512
+    - Fit spacing to path length
+      - Control: checkbox
+      - Default: on
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Track (`path_track`)
+  - Library: Generators > Paths
+  - Tooltip: railway track along a spline (outputs
+  - Inputs: none
+  - Outputs: height, rails, sleepers
+    - height
+      - Right-edge socket
+    - rails
+      - Right-edge socket
+    - sleepers
+      - Right-edge socket
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Rail distance (px at 512)
+      - Control: slider
+      - Default: 60
+      - Range: 2..256
+    - Rail width
+      - Control: slider
+      - Default: 8
+      - Range: 0.5..64
+    - Sleeper spacing
+      - Control: slider
+      - Default: 28
+      - Range: 2..256
+    - Sleeper length
+      - Control: slider
+      - Default: 110
+      - Range: 2..512
+    - Sleeper width
+      - Control: slider
+      - Default: 14
+      - Range: 1..128
+    - Rail height
+      - Control: slider
+      - Default: 0.9
+      - Range: 0..1
+    - Sleeper height
+      - Control: slider
+      - Default: 0.55
+      - Range: 0..1
+    - Fit sleepers to path length
+      - Control: checkbox
+      - Default: on
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Cable (`path_cable`)
+  - Library: Generators > Paths
+  - Tooltip: twisted cable along a spline (outputs
+  - Inputs: none
+  - Outputs: height, mask, strand
+    - height
+      - Right-edge socket
+    - mask
+      - Right-edge socket
+    - strand
+      - Right-edge socket
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Width (px at 512)
+      - Control: slider
+      - Default: 40
+      - Range: 1..256
+    - Strands
+      - Control: int
+      - Default: 3
+      - Range: 2..8
+    - Strand size
+      - Control: slider
+      - Default: 0.5
+      - Range: 0.15..0.95
+    - Twists per 512 px
+      - Control: slider
+      - Default: 3
+      - Range: 0..32
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Seam (`path_seam`)
+  - Library: Generators > Paths
+  - Tooltip: stitched seam along a spline (outputs
+  - Inputs: none
+  - Outputs: height, stitches
+    - height
+      - Right-edge socket
+    - stitches
+      - Right-edge socket
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Stitch length (px at 512)
+      - Control: slider
+      - Default: 18
+      - Range: 1..256
+    - Stitch gap
+      - Control: slider
+      - Default: 10
+      - Range: 0..256
+    - Stitch width
+      - Control: slider
+      - Default: 5
+      - Range: 0.5..64
+    - Groove width
+      - Control: slider
+      - Default: 12
+      - Range: 0..128
+    - Groove depth
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Stitch height
+      - Control: slider
+      - Default: 0.7
+      - Range: 0..1
+    - Fit stitches to path length
+      - Control: checkbox
+      - Default: on
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
 
-### Filters nodes (69)
+### Filters nodes (94)
 
 - Curve (`curve`)
   - Library: Filters > Adjustments
@@ -4772,8 +5626,493 @@
       - Control: slider
       - Default: 0
       - Range: 0..1
+- Contrast / Luminosity (`contrast_luminosity`)
+  - Library: Filters > Adjustments
+  - Tooltip: contrast around mid-gray and brightness shift
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: -4..4
+    - Luminosity
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+- sRGB To Linear (`srgb_to_linear`)
+  - Library: Filters > Adjustments
+  - Tooltip: decode the sRGB curve (colour channels only)
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+- Linear To sRGB (`linear_to_srgb`)
+  - Library: Filters > Adjustments
+  - Tooltip: encode the sRGB curve (colour channels only)
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+- Premultiply (`premultiply`)
+  - Library: Filters > Adjustments
+  - Tooltip: alpha premultiplication
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Direction
+      - Control: dropdown
+      - Default: Straight to premultiplied
+      - Choices: Straight to premultiplied / Premultiplied to straight
+- Histogram Equalize (`histogram_equalize`)
+  - Library: Filters > Adjustments
+  - Tooltip: spread values evenly over 0..1
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Amount
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Each colour channel separately
+      - Control: checkbox
+      - Default: off
+- Min Max (`min_max`)
+  - Library: Filters > Adjustments
+  - Tooltip: per-channel minimum or maximum of two images
+  - Inputs: a, b
+    - a
+      - Left-edge socket
+    - b
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Operation
+      - Control: dropdown
+      - Default: Maximum
+      - Choices: Minimum / Maximum
+- Morphology (`morphology`)
+  - Library: Filters > Adjustments
+  - Tooltip: grow or shrink bright areas
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Operation
+      - Control: dropdown
+      - Default: Dilate (grow bright)
+      - Choices: Dilate (grow bright) / Erode (shrink bright) / Open / Close
+    - Radius (px at 512)
+      - Control: slider
+      - Default: 4
+      - Range: 0..128
+- Multi Switch (`multi_switch`)
+  - Library: Filters > Adjustments
+  - Tooltip: pass one of up to eight inputs
+  - Inputs: a, b, c, d, e, f, g, h
+    - a
+      - Left-edge socket
+    - b
+      - Left-edge socket
+    - c
+      - Left-edge socket
+    - d
+      - Left-edge socket
+    - e
+      - Left-edge socket
+    - f
+      - Left-edge socket
+    - g
+      - Left-edge socket
+    - h
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Input (0 = a ... 7 = h)
+      - Control: int
+      - Default: 0
+      - Range: 0..7
+- Lookup Table (`lookup_table`)
+  - Library: Filters > Adjustments
+  - Tooltip: recolour through a lookup image
+  - Inputs: in, lut
+    - in
+      - Left-edge socket
+    - lut
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Lookup by
+      - Control: dropdown
+      - Default: Each channel
+      - Choices: Each channel / Luminance
+    - Row of the lookup image
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+- Frequency Split (`frequency_split`)
+  - Library: Filters > Adjustments
+  - Tooltip: split into a blurred low band and a high band centred on gray (outputs
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: low, high
+    - low
+      - Right-edge socket
+    - high
+      - Right-edge socket
+  - Properties:
+    - Split radius (px at 512)
+      - Control: slider
+      - Default: 8
+      - Range: 0..128
+- Frequency Merge (`frequency_merge`)
+  - Library: Filters > Adjustments
+  - Tooltip: recombine the bands of frequency_split
+  - Inputs: low, high
+    - low
+      - Left-edge socket
+    - high
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Detail gain
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+- Auto Crop (`auto_crop`)
+  - Library: Filters > Transform
+  - Tooltip: stretch the non-black area to fill the image
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Threshold
+      - Control: slider
+      - Default: 0.001
+      - Range: 0..1
+    - Margin
+      - Control: slider
+      - Default: 0
+      - Range: 0..0.4
+    - Keep aspect ratio
+      - Control: checkbox
+      - Default: off
+- Polar Convert (`polar_convert`)
+  - Library: Filters > Transform
+  - Tooltip: mode(0 cartesian to polar,1 polar to cartesian) radius rotation tile
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Direction
+      - Control: dropdown
+      - Default: Cartesian to polar
+      - Choices: Cartesian to polar / Polar to cartesian
+    - Radius
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..2
+    - Rotation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Make tileable
+      - Control: checkbox
+      - Default: on
+- Clone Patch (`clone_patch`)
+  - Library: Filters > Transform
+  - Tooltip: copy a patch from one place to another
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Source X
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Source Y
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Target X
+      - Control: slider
+      - Default: 0.75
+      - Range: 0..1
+    - Target Y
+      - Control: slider
+      - Default: 0.75
+      - Range: 0..1
+    - Width
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Height
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Feather
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Rotation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Opacity
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+- Noise Upscale (`noise_upscale`)
+  - Library: Filters > Transform
+  - Tooltip: smoothly enlarge a coarse image
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Cells across
+      - Control: int
+      - Default: 16
+      - Range: 2..512
+    - Filtering
+      - Control: dropdown
+      - Default: Bicubic
+      - Choices: Bicubic / Bilinear / Nearest
+- Symmetry Slice (`symmetry_slice`)
+  - Library: Filters > Transform
+  - Tooltip: kaleidoscope of one slice around the centre
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Slices
+      - Control: int
+      - Default: 6
+      - Range: 1..64
+    - Mirror alternate slices
+      - Control: checkbox
+      - Default: on
+    - Rotation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Make tileable
+      - Control: checkbox
+      - Default: on
+- Quad Transform (`quad_transform`)
+  - Library: Filters > Transform
+  - Tooltip: move the four corners
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Top-left X
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Top-left Y
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Top-right X
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Top-right Y
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Bottom-right X
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Bottom-right Y
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Bottom-left X
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Bottom-left Y
+      - Control: slider
+      - Default: 0
+      - Range: -0.45..0.45
+    - Make tileable
+      - Control: checkbox
+      - Default: on
+- Trapezoid Transform (`trapezoid_transform`)
+  - Library: Filters > Transform
+  - Tooltip: perspective taper
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Top width
+      - Control: slider
+      - Default: 0.6
+      - Range: 0.05..2
+    - Bottom width
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..2
+    - Skew
+      - Control: slider
+      - Default: 0
+      - Range: -0.5..0.5
+    - Make tileable
+      - Control: checkbox
+      - Default: on
+- Palette Extract (`palette_extract`)
+  - Library: Filters > Adjustments
+  - Tooltip: strip of the dominant colours of an image
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Colours
+      - Control: int
+      - Default: 5
+      - Range: 2..16
+- Palette Apply (`palette_apply`)
+  - Library: Filters > Adjustments
+  - Tooltip: snap colours to the nearest palette colour
+  - Inputs: in, palette
+    - in
+      - Left-edge socket
+    - palette
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Colours in palette
+      - Control: int
+      - Default: 5
+      - Range: 2..16
+    - Amount
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+- Make It Tile Mirror (`make_it_tile_mirror`)
+  - Library: Filters > Transform
+  - Tooltip: make an image tile by mirroring
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Mirror
+      - Control: dropdown
+      - Default: Both axes
+      - Choices: Both axes / Horizontal / Vertical
+- Halftone (`halftone`)
+  - Library: Filters > Effects
+  - Tooltip: dots whose size follows brightness
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Dots across
+      - Control: int
+      - Default: 16
+      - Range: 2..256
+    - Layout
+      - Control: dropdown
+      - Default: Grid
+      - Choices: Grid / Diagonal
+    - Softness
+      - Control: slider
+      - Default: 0.1
+      - Range: 0..1
+    - Brightness gain
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+- Reaction Diffusion (`reaction_diffusion`)
+  - Library: Filters > Effects
+  - Tooltip: growing spots and stripes seeded by the input
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Simulation size
+      - Control: int
+      - Default: 160
+      - Range: 32..512
+    - Iterations
+      - Control: int
+      - Default: 600
+      - Range: 1..6000
+    - Feed
+      - Control: slider
+      - Default: 0.037
+      - Range: 0..0.1
+    - Kill
+      - Control: slider
+      - Default: 0.06
+      - Range: 0..0.1
+    - Random seeds
+      - Control: slider
+      - Default: 0.01
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+- FXAA (`fxaa`)
+  - Library: Filters > Effects
+  - Tooltip: smooth jagged edges
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Strength
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Edge threshold
+      - Control: slider
+      - Default: 0.05
+      - Range: 0..1
+- Bilateral Blur (`bilateral_blur`)
+  - Library: Filters > Blur and warp
+  - Tooltip: blur that keeps edges
+  - Inputs: in, guide
+    - in
+      - Left-edge socket
+    - guide
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Radius (px at 512)
+      - Control: slider
+      - Default: 4
+      - Range: 0..32
+    - Colour tolerance
+      - Control: slider
+      - Default: 0.1
+      - Range: 0.005..2
 
-### Material nodes (14)
+### Material nodes (27)
 
 - Curvature Smooth (`curvature_smooth`)
   - Library: Material tools
@@ -5059,6 +6398,342 @@
       - Control: dropdown
       - Default: Detail oriented
       - Choices: Whiteout / Channel mixer / Detail oriented
+- Bent Normal (`bent_normal`)
+  - Library: Material tools
+  - Tooltip: bent normal of a height map (outputs
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: normal, ao
+    - normal
+      - Right-edge socket
+    - ao
+      - Right-edge socket
+  - Properties:
+    - Radius (px at 512)
+      - Control: slider
+      - Default: 16
+      - Range: 1..256
+    - Relief
+      - Control: slider
+      - Default: 0.1
+      - Range: 0..2
+    - Directions
+      - Control: int
+      - Default: 16
+      - Range: 4..32
+    - Steps
+      - Control: int
+      - Default: 8
+      - Range: 2..16
+    - DirectX normal (Y down)
+      - Control: checkbox
+      - Default: off
+- Normal Facing (`normal_facing`)
+  - Library: Material tools
+  - Tooltip: mask of surfaces that face a direction
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Direction
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Tilt from facing up
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Sharpness
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..16
+- Height Normal Blend (`height_normal_blend`)
+  - Library: Material tools
+  - Tooltip: add the relief of a height map to a normal map
+  - Inputs: normal, height
+    - normal
+      - Left-edge socket
+    - height
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Height strength
+      - Control: slider
+      - Default: 2
+      - Range: 0..16
+    - Blend method
+      - Control: dropdown
+      - Default: Reoriented
+      - Choices: Reoriented / Whiteout / Partial derivative
+    - Opacity
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - DirectX normal (Y down)
+      - Control: checkbox
+      - Default: off
+- Height To Normal World (`height_to_normal_world`)
+  - Library: Material tools
+  - Tooltip: normal map from real-world sizes
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Texture width (cm)
+      - Control: slider
+      - Default: 100
+      - Range: 0.1..10000
+    - Height of white (cm)
+      - Control: slider
+      - Default: 1
+      - Range: 0..1000
+    - DirectX normal (Y down)
+      - Control: checkbox
+      - Default: off
+- Normal Transform (`normal_transform`)
+  - Library: Material tools
+  - Tooltip: transform a normal map and turn its vectors with it
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Scale X
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..8
+    - Scale Y
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..8
+    - Rotation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Turn the normals with the image
+      - Control: checkbox
+      - Default: on
+    - DirectX normal (Y down)
+      - Control: checkbox
+      - Default: off
+- Normal Sobel (`normal_sobel`)
+  - Library: Material tools
+  - Tooltip: edges or curvature of a normal map
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Result
+      - Control: dropdown
+      - Default: Edges
+      - Choices: Edges / Curvature
+    - Intensity
+      - Control: slider
+      - Default: 4
+      - Range: 0..64
+    - DirectX normal (Y down)
+      - Control: checkbox
+      - Default: off
+- Metal/Rough To Spec/Gloss (`metal_rough_to_spec_gloss`)
+  - Library: Material tools
+  - Tooltip: convert a metal / roughness material (outputs
+  - Inputs: base_color, metallic, roughness
+    - base_color
+      - Left-edge socket
+    - metallic
+      - Left-edge socket
+    - roughness
+      - Left-edge socket
+  - Outputs: diffuse, specular, glossiness
+    - diffuse
+      - Right-edge socket
+    - specular
+      - Right-edge socket
+    - glossiness
+      - Right-edge socket
+  - Properties:
+- Spec/Gloss To Metal/Rough (`spec_gloss_to_metal_rough`)
+  - Library: Material tools
+  - Tooltip: convert a specular / glossiness material (outputs
+  - Inputs: diffuse, specular, glossiness
+    - diffuse
+      - Left-edge socket
+    - specular
+      - Left-edge socket
+    - glossiness
+      - Left-edge socket
+  - Outputs: base_color, metallic, roughness
+    - base_color
+      - Right-edge socket
+    - metallic
+      - Right-edge socket
+    - roughness
+      - Right-edge socket
+  - Properties:
+- Material Blend (`material_blend`)
+  - Library: Material tools
+  - Tooltip: blend two complete materials (outputs
+  - Inputs: bg_base, bg_normal, bg_height, bg_rough, bg_metal, bg_ao, fg_base, fg_normal, fg_height, fg_rough, fg_metal, fg_ao, mask
+    - bg_base
+      - Left-edge socket
+    - bg_normal
+      - Left-edge socket
+    - bg_height
+      - Left-edge socket
+    - bg_rough
+      - Left-edge socket
+    - bg_metal
+      - Left-edge socket
+    - bg_ao
+      - Left-edge socket
+    - fg_base
+      - Left-edge socket
+    - fg_normal
+      - Left-edge socket
+    - fg_height
+      - Left-edge socket
+    - fg_rough
+      - Left-edge socket
+    - fg_metal
+      - Left-edge socket
+    - fg_ao
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: base_color, normal, height, roughness, metallic, ao
+    - base_color
+      - Right-edge socket
+    - normal
+      - Right-edge socket
+    - height
+      - Right-edge socket
+    - roughness
+      - Right-edge socket
+    - metallic
+      - Right-edge socket
+    - ao
+      - Right-edge socket
+  - Properties:
+    - Opacity
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Height influence
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+    - Edge sharpness
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..32
+- Height Combine (`height_combine`)
+  - Library: Material tools
+  - Tooltip: combine two height maps
+  - Inputs: a, b, mask
+    - a
+      - Left-edge socket
+    - b
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Operation
+      - Control: dropdown
+      - Default: Maximum
+      - Choices: Maximum / Minimum / Add / Difference
+    - Amount (add)
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+- Convex Concave (`convex_concave`)
+  - Library: Material tools
+  - Tooltip: ridge and cavity masks of a height map (outputs
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: convex, concave
+    - convex
+      - Right-edge socket
+    - concave
+      - Right-edge socket
+  - Properties:
+    - Radius (px at 512)
+      - Control: slider
+      - Default: 4
+      - Range: 0..128
+    - Gain
+      - Control: slider
+      - Default: 4
+      - Range: 0..64
+- Leak Streaks (`leak_streaks`)
+  - Library: Material tools
+  - Tooltip: streaks that run on from a mask like drips
+  - Inputs: in, noise
+    - in
+      - Left-edge socket
+    - noise
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Length (px at 512)
+      - Control: slider
+      - Default: 120
+      - Range: 0..1024
+    - Direction
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Intensity
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+    - Breakup by noise
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+- Settled Dust (`settled_dust`)
+  - Library: Material tools
+  - Tooltip: dust that settles on flat upward surfaces and in cavities
+  - Inputs: in, noise
+    - in
+      - Left-edge socket
+    - noise
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Amount
+      - Control: slider
+      - Default: 0.6
+      - Range: 0..1
+    - Slope tolerance
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Cavity
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Relief
+      - Control: slider
+      - Default: 3
+      - Range: 0..32
+    - Cavity radius (px at 512)
+      - Control: slider
+      - Default: 8
+      - Range: 0..128
 
 ### SDF nodes (4)
 

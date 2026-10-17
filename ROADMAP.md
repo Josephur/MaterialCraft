@@ -6,7 +6,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
-## 1. Implemented (129 node types)
+## 1. Implemented (190 texture node types, 84 function nodes, 5 pattern-program nodes)
 
 ### Generators: noise
 - White Noise
@@ -121,6 +121,20 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
+### Milestone 2 additions (nodes, independent implementations)
+- Adjustments: Contrast Luminosity, sRGB to Linear, Linear to sRGB, Premultiply, Histogram Equalize, Min Max, Morphology, Multi Switch, Lookup Table, Frequency Split / Merge, Palette Extract / Apply
+- Transforms: Auto Crop, Polar Convert, Clone Patch, Noise Upscale, Symmetry Slice, Quad Transform, Trapezoid Transform, Make It Tile Mirror
+- Normal and material tools: Bent Normal, Normal Facing, Height Normal Blend, Height To Normal World, Normal Transform, Normal Sobel, Metal-Rough <-> Spec-Gloss converters, Material Blend, Height Combine, Convex Concave, Leak Streaks, Settled Dust
+- Generators: Blue Noise, Fibers, Scratches, Caustics, Liquid Noise, Perlin 3D, Paving, Wire Mesh
+- Effects: Halftone, Reaction Diffusion, FXAA, Bilateral Blur
+- Grunge maps 16-24
+
+### Milestone 3 additions (splines and paths)
+- Spline resources (`.spl` text, bezier points, handles, width factors, open or closed, several paths), built-in shapes, SVG outlines to spline
+- Path nodes: Path Stroke (dashes, taper, profiles), Path Fill, Path Distance (four modes), Path Border, Path Scatter (shapes along a path, orient to the curve, jitter, density, pattern input), Path Track, Path Cable, Path Seam
+- Spline editor in the 2D view (add, move, delete points, handles, corner / smooth, closed / open, width, snapping, undo)
+- Library: Rope, Railway Track, Beaded Chain, Bevel Border, Stitched Leather
+
 ## 2. Not implemented yet
 
 The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
@@ -139,7 +153,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Graph templates, parameter presets, randomized variations
 
 ### Nodes
-- [ ] Spline and path tools (shapes along curves, tracks, seams, borders)
+- [x] Spline and path tools: shapes along curves, tracks, cables, seams, borders, distance and fill (see Milestone 3 additions); still open: mask to path, path warp and deformation, spline-driven tile sampler / splatter, spline thickness and height sampling, several splines per node, path merge and transform nodes
 - [ ] Several hundred more nodes, for example:
   - more weaves and tile patterns
   - Non-Uniform Blur
@@ -150,7 +164,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
   - Gradient Dynamic
   - Auto Levels
   - Cube Map tools
-- [ ] Built-in libraries of ready-made materials, filters and generators
+- [x] Built-in library of ready-made graphs (14 materials, 6 generators, 5 filters) with thumbnails, tag search, categories, `materialcraft library` ; templates open as examples from the start screen (own tab, not part of the project, no duplicate tabs, "Add to project" / File > Package > Add template to copy), ready-made generators and filters drag in as one template node with right-click "Edit template" (more entries to come)
 
 ### 3D and rendering
 - Custom light rigs (several lights, HDR environment images), a true seamless-edge check in the 3D view
@@ -175,7 +189,8 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Texture atlases for the shape/splatter workflow
 
 ### Polish and verification
-- [ ] Library thumbnails are only 64 px and generated once at startup
+- [ ] A path node uses one spline at a time (an embedded resource); several splines per node need a merge node
+- [ ] Library thumbnails are only 64 px and generated once at startup (node and ready-made tiles alike)
 - [ ] `.ico` resource for the Windows exe file (the window and taskbar icon already work on all platforms; the release build hides the console window on Windows)
 - [ ] Visual check of the 2D/3D splitter and the export window
 - [ ] Run and verify on Windows and macOS
@@ -187,38 +202,37 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 
 ## 2b. Feature gaps by area
 
-We have 129 node types. Missing, by area (described by function; `NODES.md` lists what exists):
+We have 190 texture node types. Missing, by area (described by function; `NODES.md` lists what exists):
 
-**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 15 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes (including Voronoi, Cells, Splatter and the Flood Fill mappers), float export, graph-wide node precision, non-square graphs, typed pins and value pin types, per-node output format, live links, optional GPU compute. Still open: some node properties that need engine features (extra image inputs, function graphs, baked mesh inputs).
+**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 24 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes (including Voronoi, Cells, Splatter and the Flood Fill mappers), float export, graph-wide node precision, non-square graphs, typed pins and value pin types, per-node output format, live links, optional GPU compute. Still open: some node properties that need engine features (extra image inputs, function graphs, baked mesh inputs).
 
 ### Noises and generators
-- Fur-like, fibre-like, fluid-like, liquid, caustic, moisture, microscope-style, anisotropic and blue noise; more cloud and directional-noise variants; dirt gradients; more grunge recipes
-- 3D noises: perlin, fractal perlin, ridged, simplex, voronoi, worley
+- Fur-like, moisture, microscope-style and anisotropic noise; more cloud and directional-noise variants; dirt gradients; more grunge recipes
+- More 3D noises: fractal perlin, ridged, simplex, voronoi, worley (Perlin 3D exists)
 
 ### Patterns and shapes
-- Pavement and mesh patterns, more brick and checker variants, fibres, gaussian and gradient variants, scratch generators, extruded and mapped shapes, panorama shapes, random tile patterns
+- Herringbone and arc pavements, more brick and checker variants, gaussian and gradient variants, extruded and mapped shapes, panorama shapes, random tile patterns
 - Shape splatter with blending, data extraction and mask output
 - 3D gradients and volume masks
 
 ### Adjustments, blending, blurs, channels
-- Contrast / luminosity, linear and sRGB conversion, colour lookup tables, HDR range viewer, frequency mapping, non-uniform and selecting histogram tools, lighting-cancel filters, luminance highpass, min / max
-- A multi-way switch; pre-multiplied <-> straight alpha conversion
+- HDR range viewer, non-uniform and selecting histogram tools, lighting-cancel filters, luminance highpass
 
 ### Effects and warps
-- Cross sections, curvature via Sobel, diffusion (colour, grayscale, UV), gloss-aware embossing, extend shape, FXAA, reaction diffusion, summed area tables, vector morph
+- Cross sections, diffusion (colour, grayscale, UV), gloss-aware embossing, extend shape, summed area tables, vector morph
 - Nearest sampling in warps
 - Flood-fill mapping outputs (bounding box size, index, position)
-- Ray-traced nodes: AO, shadows, irradiance, bent normal; 3D texture nodes
+- Ray-traced nodes: AO, shadows, irradiance; 3D texture nodes (the height-based Bent Normal exists)
 
 ### Normal map tools
-- Bent and facing normals, height-normal blending, world-unit height to normal, normal sobel and transform
+- Done in Milestone 2 (Bent Normal, Normal Facing, Height Normal Blend, Height To Normal World, Normal Transform, Normal Sobel); nothing open here
 
 ### Transforms
-- Auto crop, polar conversion, clone, noise upscaling, safe transform, non-square transform, non-uniform rotation, symmetry slice, trapezoid and quad transforms
+- Safe transform, non-uniform rotation (the rest was done in Milestone 2)
 
 ### Material filters
-- Material blending (colour, adjustment, height, multi-material), snow / season / water effects
-- PBR utilities: workflow converters, validators, dielectric and metal reflectance, PBR preview
+- Colour and adjustment blend variants, snow / season / water effects
+- PBR utilities: validators, dielectric and metal reflectance, PBR preview
 - Scan processing: AO cancellation, atlas tools, patch cloning, colour equalising, cropping, multi-angle capture to albedo / normal, smart auto tiling
 - One-click bitmap to material
 
@@ -228,8 +242,8 @@ We have 129 node types. Missing, by area (described by function; `NODES.md` list
 - Our Dirt / Dust / Edge Wear nodes work from a height map only; baked maps are not yet usable as graph inputs
 
 ### Splines and paths
-- Create (cubic, quadratic, circle, point list, bridge), assemble (merge, append, select), modify (transform, warp, sample thickness / height)
-- Render (scatter on spline, fill, mappers, render), path tools (mask to paths, paths to splines, transform, warp, polygon, select, preview, vertex processing)
+- Done in Milestone 3: create (editor, built-in shapes, SVG import), render (stroke, fill, scatter along a path, track, cable, seam, border, distance)
+- Still open: create (quadratic and circle helpers, point list, bridge), assemble (merge, append, select), modify (transform, warp, sample thickness / height), path tools (mask to paths, paths to splines, polygon, preview, vertex processing)
 
 ### Graph system
 - Function graph extras: loops, sampler border modes, bitwise operators
@@ -244,7 +258,7 @@ We have 129 node types. Missing, by area (described by function; `NODES.md` list
 ### Import, export, colour, automation
 - JPEG, TIFF, EXR, HDR bitmap import; SVG gradients; OpenType (CFF) fonts
 - OCIO and ICC colour management
-- Scripting API and batch automation, engine output templates (Unreal / Unity packing), UDIM, texture atlases, a built-in asset library
+- Scripting API and batch automation, engine output templates (Unreal / Unity packing), UDIM, texture atlases, user asset folders
 - Editor extras: dependency / resource manager, user library folders, navigator minimap, customizable shortcuts, language packs
 
 ### Engine

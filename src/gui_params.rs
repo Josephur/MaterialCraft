@@ -238,7 +238,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "bnw_spots" => vec![pe("variant", "Type", 0, &["Spots 1", "Spots 2", "Spots 3"]), pi("scale", "Scale", 8, 1, 64), p_dis(), p_seed(), p_con(), p_inv()],
         "crystal" => vec![pe("variant", "Type", 0, &["Crystal 1", "Crystal 2"]), pi("scale", "Scale", 6, 1, 64), p_dis(), p_seed(), p_con(), p_inv()],
         "directional_noise" => vec![pf("scale", "Scale", 6.0, 1.0, 32.0), pf("stretch", "Stretch", 8.0, 1.0, 32.0), pf("angle", "Angle", 0.0, 0.0, 1.0), p_seed(), p_con(), p_inv()],
-        "grunge_map" => vec![pi("map", "Grunge map", 1, 1, 15), pf("balance", "Balance", 0.5, 0.0, 1.0), pf("contrast", "Contrast", 0.5, 0.0, 1.0), pf("brush_pattern", "Brush pattern", 0.0, 0.0, 1.0), pf("cracks", "Cracks (maps 11, 13)", 0.5, 0.0, 1.0), pf("disorder", "Disorder", 0.0, 0.0, 1.0), pb("invert", "Invert", false), p_seed()],
+        "grunge_map" => vec![pi("map", "Grunge map", 1, 1, 24), pf("balance", "Balance", 0.5, 0.0, 1.0), pf("contrast", "Contrast", 0.5, 0.0, 1.0), pf("brush_pattern", "Brush pattern", 0.0, 0.0, 1.0), pf("cracks", "Cracks (maps 11, 13)", 0.5, 0.0, 1.0), pf("disorder", "Disorder", 0.0, 0.0, 1.0), pb("invert", "Invert", false), p_seed()],
         "grunge" => vec![
             pe("variant", "Type", 0, &["Concrete", "Scratches", "Spots", "Smudges"]),
             pf("balance", "Balance", 0.5, 0.0, 1.0),
@@ -613,6 +613,72 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
         "glow" => vec![pf("width", "Glow size", 8.0, 0.0, 128.0), pf("intensity", "Glow amount", 1.0, 0.0, 8.0), pf("clear", "Clear amount", 0.0, 0.0, 1.0), pf("glow_r", "Glow color R", 1.0, 0.0, 1.0), pf("glow_g", "Glow color G", 1.0, 0.0, 1.0), pf("glow_b", "Glow color B", 1.0, 0.0, 1.0)],
         "mosaic" => vec![pf("intensity", "Intensity (with map)", 1.0, 0.0, 1.0), pi("count", "Cells per side (no map)", 16, 1, 128)],
+        "contrast_luminosity" => vec![pf("contrast", "Contrast", 1.0, -4.0, 4.0), pf("luminosity", "Luminosity", 0.0, -1.0, 1.0)],
+        "premultiply" => vec![pe("mode", "Direction", 0, &["Straight to premultiplied", "Premultiplied to straight"])],
+        "histogram_equalize" => vec![pf("amount", "Amount", 1.0, 0.0, 1.0), pb("per_channel", "Each colour channel separately", false)],
+        "min_max" => vec![pe("mode", "Operation", 1, &["Minimum", "Maximum"])],
+        "morphology" => vec![pe("mode", "Operation", 0, &["Dilate (grow bright)", "Erode (shrink bright)", "Open", "Close"]), pf("radius", "Radius (px at 512)", 4.0, 0.0, 128.0)],
+        "multi_switch" => vec![pi("index", "Input (0 = a ... 7 = h)", 0, 0, 7)],
+        "lookup_table" => vec![pe("mode", "Lookup by", 0, &["Each channel", "Luminance"]), pf("row", "Row of the lookup image", 0.5, 0.0, 1.0)],
+        "frequency_split" => vec![pf("radius", "Split radius (px at 512)", 8.0, 0.0, 128.0)],
+        "frequency_merge" => vec![pf("gain", "Detail gain", 1.0, 0.0, 8.0)],
+        "auto_crop" => vec![pf("threshold", "Threshold", 0.001, 0.0, 1.0), pf("margin", "Margin", 0.0, 0.0, 0.4), pb("keep_aspect", "Keep aspect ratio", false)],
+        "polar_convert" => vec![pe("mode", "Direction", 0, &["Cartesian to polar", "Polar to cartesian"]), pf("radius", "Radius", 1.0, 0.05, 2.0), pf("rotation", "Rotation", 0.0, 0.0, 1.0), pb("tile", "Make tileable", true)],
+        "clone_patch" => vec![
+            pf("src_x", "Source X", 0.25, 0.0, 1.0), pf("src_y", "Source Y", 0.25, 0.0, 1.0), pf("dst_x", "Target X", 0.75, 0.0, 1.0), pf("dst_y", "Target Y", 0.75, 0.0, 1.0),
+            pf("width", "Width", 0.3, 0.0, 1.0), pf("height", "Height", 0.3, 0.0, 1.0), pf("feather", "Feather", 0.25, 0.0, 1.0), pf("rotation", "Rotation", 0.0, 0.0, 1.0), pf("opacity", "Opacity", 1.0, 0.0, 1.0),
+        ],
+        "noise_upscale" => vec![pi("cells", "Cells across", 16, 2, 512), pe("mode", "Filtering", 0, &["Bicubic", "Bilinear", "Nearest"])],
+        "symmetry_slice" => vec![pi("slices", "Slices", 6, 1, 64), pb("mirror", "Mirror alternate slices", true), pf("rotation", "Rotation", 0.0, 0.0, 1.0), pb("tile", "Make tileable", true)],
+        "quad_transform" => vec![
+            pf("tl_x", "Top-left X", 0.0, -0.45, 0.45), pf("tl_y", "Top-left Y", 0.0, -0.45, 0.45), pf("tr_x", "Top-right X", 0.0, -0.45, 0.45), pf("tr_y", "Top-right Y", 0.0, -0.45, 0.45),
+            pf("br_x", "Bottom-right X", 0.0, -0.45, 0.45), pf("br_y", "Bottom-right Y", 0.0, -0.45, 0.45), pf("bl_x", "Bottom-left X", 0.0, -0.45, 0.45), pf("bl_y", "Bottom-left Y", 0.0, -0.45, 0.45),
+            pb("tile", "Make tileable", true),
+        ],
+        "trapezoid_transform" => vec![pf("top", "Top width", 0.6, 0.05, 2.0), pf("bottom", "Bottom width", 1.0, 0.05, 2.0), pf("skew", "Skew", 0.0, -0.5, 0.5), pb("tile", "Make tileable", true)],
+        "bent_normal" => vec![pf("radius", "Radius (px at 512)", 16.0, 1.0, 256.0), pf("relief", "Relief", 0.1, 0.0, 2.0), pi("directions", "Directions", 16, 4, 32), pi("steps", "Steps", 8, 2, 16), pb("directx", "DirectX normal (Y down)", false)],
+        "normal_facing" => vec![pf("angle", "Direction", 0.0, 0.0, 1.0), pf("tilt", "Tilt from facing up", 0.0, 0.0, 1.0), pf("sharpness", "Sharpness", 1.0, 0.05, 16.0)],
+        "height_normal_blend" => vec![pf("strength", "Height strength", 2.0, 0.0, 16.0), pe("mode", "Blend method", 0, &["Reoriented", "Whiteout", "Partial derivative"]), pf("opacity", "Opacity", 1.0, 0.0, 1.0), pb("directx", "DirectX normal (Y down)", false)],
+        "height_to_normal_world" => vec![pf("size", "Texture width (cm)", 100.0, 0.1, 10000.0), pf("height", "Height of white (cm)", 1.0, 0.0, 1000.0), pb("directx", "DirectX normal (Y down)", false)],
+        "normal_transform" => vec![
+            pf("offset_x", "Offset X", 0.0, -1.0, 1.0), pf("offset_y", "Offset Y", 0.0, -1.0, 1.0), pf("scale_x", "Scale X", 1.0, 0.1, 8.0), pf("scale_y", "Scale Y", 1.0, 0.1, 8.0),
+            pf("rotation", "Rotation", 0.0, 0.0, 1.0), pb("rotate_vectors", "Turn the normals with the image", true), pb("directx", "DirectX normal (Y down)", false),
+        ],
+        "normal_sobel" => vec![pe("mode", "Result", 0, &["Edges", "Curvature"]), pf("intensity", "Intensity", 4.0, 0.0, 64.0), pb("directx", "DirectX normal (Y down)", false)],
+        "material_blend" => vec![pf("opacity", "Opacity", 1.0, 0.0, 1.0), pf("height_influence", "Height influence", 1.0, 0.0, 8.0), pf("sharpness", "Edge sharpness", 1.0, 0.1, 32.0)],
+        "height_combine" => vec![pe("mode", "Operation", 0, &["Maximum", "Minimum", "Add", "Difference"]), pf("amount", "Amount (add)", 1.0, 0.0, 8.0)],
+        "convex_concave" => vec![pf("radius", "Radius (px at 512)", 4.0, 0.0, 128.0), pf("gain", "Gain", 4.0, 0.0, 64.0)],
+        "leak_streaks" => vec![pf("length", "Length (px at 512)", 120.0, 0.0, 1024.0), pf("angle", "Direction", 0.25, 0.0, 1.0), pf("intensity", "Intensity", 1.0, 0.0, 8.0), pf("breakup", "Breakup by noise", 0.5, 0.0, 1.0)],
+        "settled_dust" => vec![pf("amount", "Amount", 0.6, 0.0, 1.0), pf("slope", "Slope tolerance", 0.3, 0.0, 1.0), pf("cavity", "Cavity", 0.5, 0.0, 1.0), pf("relief", "Relief", 3.0, 0.0, 32.0), pf("radius", "Cavity radius (px at 512)", 8.0, 0.0, 128.0)],
+        "palette_extract" => vec![pi("count", "Colours", 5, 2, 16)],
+        "palette_apply" => vec![pi("count", "Colours in palette", 5, 2, 16), pf("amount", "Amount", 1.0, 0.0, 1.0)],
+        "make_it_tile_mirror" => vec![pe("mode", "Mirror", 0, &["Both axes", "Horizontal", "Vertical"])],
+        "blue_noise" => vec![pi("scale", "Cells across", 256, 8, 2048), pf("tightness", "Smoothing", 1.5, 0.3, 6.0), p_seed(), p_con(), p_inv()],
+        "fibers" | "scratches" => {
+            let fib = kind == "fibers";
+            vec![
+                pi("count", "Count", if fib { 600 } else { 80 }, 0, 5000), pf("length", "Length (px at 512)", if fib { 90.0 } else { 220.0 }, 1.0, 1024.0), pf("thickness", "Thickness (px at 512)", if fib { 1.4 } else { 1.0 }, 0.1, 32.0),
+                pf("angle", "Direction", 0.0, 0.0, 1.0), pf("angle_variation", "Direction variation", if fib { 0.5 } else { 0.2 }, 0.0, 1.0), pf("curl", "Curl", if fib { 0.6 } else { 0.0 }, -8.0, 8.0),
+                pf("taper", "Tapered tips", if fib { 0.4 } else { 1.0 }, 0.0, 1.0), pf("brightness_variation", "Brightness variation", 0.5, 0.0, 1.0), p_seed(), p_con(), p_inv(),
+            ]
+        }
+        "caustics" => vec![pi("scale", "Scale", 4, 1, 32), pi("octaves", "Octaves", 3, 1, 6), pf("strength", "Strength", 1.0, 0.0, 8.0), pf("sharpness", "Sharpness", 1.0, 0.05, 8.0), p_seed(), p_con(), p_inv()],
+        "liquid_noise" => vec![pi("scale", "Scale", 3, 1, 32), pi("octaves", "Octaves", 4, 1, 8), pf("warp", "Warp", 0.35, 0.0, 2.0), pe("mode", "Style", 0, &["Liquid", "Marble"]), pf("bands", "Marble bands", 6.0, 1.0, 32.0), p_seed(), p_con(), p_inv()],
+        "perlin_3d" => vec![pi("scale", "Scale", 4, 1, 64), pf("depth", "Depth (loops at 1)", 0.0, 0.0, 1.0), pi("octaves", "Octaves", 4, 1, 8), pf("gain", "Gain", 0.5, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "paving" => vec![pi("scale", "Stones across", 6, 1, 64), pf("jitter", "Irregularity", 0.5, 0.0, 1.0), pf("gap", "Gap width", 0.04, 0.0, 0.4), pf("bevel", "Bevel", 0.08, 0.001, 0.5), pf("height_variation", "Height variation", 0.3, 0.0, 1.0), pf("dome", "Dome", 0.3, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "path_stroke" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("width", "Width (px at 512)", 12.0, 0.1, 256.0), pf("softness", "Softness", 0.0, 0.0, 1.0), pe("profile", "Profile", 0, &["Flat", "Round", "Bevel"]), pf("taper_start", "Taper start", 0.0, 0.0, 1.0), pf("taper_end", "Taper end", 0.0, 0.0, 1.0), pf("dash_length", "Dash length (0 = solid)", 0.0, 0.0, 512.0), pf("dash_gap", "Dash gap", 8.0, 0.0, 512.0), pb("fit", "Fit dashes to path length", true), p_con(), p_inv()],
+        "path_fill" => vec![pe("preset", "Built-in shape", 3, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pb("even_odd", "Even-odd fill", false), pf("softness", "Softness", 0.0, 0.0, 1.0), p_con(), p_inv()],
+        "path_distance" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pe("mode", "Mode", 0, &["Falloff from the line", "Signed", "Inward gradient", "Outward gradient"]), pf("range", "Range (px at 512)", 64.0, 1.0, 1024.0), p_con(), p_inv()],
+        "path_border" => vec![pe("preset", "Built-in shape", 3, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("width", "Width (px at 512)", 32.0, 0.5, 512.0), pe("side", "Side", 0, &["Inside", "Outside", "Both"]), pe("profile", "Profile", 0, &["Linear", "Round", "Smooth"]), pf("flat", "Flat part", 0.0, 0.0, 0.95), p_con(), p_inv()],
+        "path_scatter" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("spacing", "Spacing (px at 512)", 24.0, 1.0, 512.0), pf("scale", "Size (px at 512)", 24.0, 1.0, 512.0), pf("scale_variation", "Size variation", 0.2, 0.0, 1.0), pf("jitter_along", "Jitter along", 0.0, 0.0, 1.0), pf("jitter_across", "Jitter across (px)", 0.0, 0.0, 256.0), pe("rotation", "Rotation", 0, &["Follow the path", "Fixed", "Random"]), pf("angle", "Angle", 0.0, 0.0, 1.0), pf("angle_variation", "Angle variation", 0.0, 0.0, 1.0), pf("density", "Density", 1.0, 0.0, 1.0), pf("opacity_variation", "Opacity variation", 0.0, 0.0, 1.0), pe("blend", "Blend", 0, &["Max", "Add"]), pf("offset", "Start offset (px)", 0.0, 0.0, 512.0), pb("fit", "Fit spacing to path length", true), p_seed(), p_con(), p_inv()],
+        "path_track" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("gauge", "Rail distance (px at 512)", 60.0, 2.0, 256.0), pf("rail_width", "Rail width", 8.0, 0.5, 64.0), pf("sleeper_spacing", "Sleeper spacing", 28.0, 2.0, 256.0), pf("sleeper_length", "Sleeper length", 110.0, 2.0, 512.0), pf("sleeper_width", "Sleeper width", 14.0, 1.0, 128.0), pf("rail_height", "Rail height", 0.9, 0.0, 1.0), pf("sleeper_height", "Sleeper height", 0.55, 0.0, 1.0), pb("fit", "Fit sleepers to path length", true), p_con(), p_inv()],
+        "path_cable" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("width", "Width (px at 512)", 40.0, 1.0, 256.0), pi("strands", "Strands", 3, 2, 8), pf("strand_size", "Strand size", 0.5, 0.15, 0.95), pf("twist", "Twists per 512 px", 3.0, 0.0, 32.0), p_con(), p_inv()],
+        "path_seam" => vec![pe("preset", "Built-in shape", 2, &["Horizontal line", "Diagonal line", "Wave", "Circle", "Spiral", "Zigzag", "Figure eight"]), pf("amplitude", "Wave height", 0.12, 0.0, 0.5), pf("frequency", "Wave count", 2.0, 0.25, 32.0), pi("path", "Path (-1 = all)", -1, -1, 63), pf("stitch_length", "Stitch length (px at 512)", 18.0, 1.0, 256.0), pf("stitch_gap", "Stitch gap", 10.0, 0.0, 256.0), pf("stitch_width", "Stitch width", 5.0, 0.5, 64.0), pf("groove_width", "Groove width", 12.0, 0.0, 128.0), pf("groove_depth", "Groove depth", 0.5, 0.0, 1.0), pf("stitch_height", "Stitch height", 0.7, 0.0, 1.0), pb("fit", "Fit stitches to path length", true), p_con(), p_inv()],
+        "wire_mesh" => vec![pi("count_x", "Wires across", 8, 1, 128), pi("count_y", "Wires down", 8, 1, 128), pf("wire_width", "Wire width", 0.3, 0.02, 0.95), pf("weave_depth", "Weave depth", 0.6, 0.0, 1.0), pe("mode", "Layout", 0, &["Square weave", "Diamond (chain-link)"]), p_con(), p_inv()],
+        "halftone" => vec![pi("cells", "Dots across", 16, 2, 256), pe("mode", "Layout", 0, &["Grid", "Diagonal"]), pf("softness", "Softness", 0.1, 0.0, 1.0), pf("gain", "Brightness gain", 1.0, 0.0, 4.0)],
+        "reaction_diffusion" => vec![pi("resolution", "Simulation size", 160, 32, 512), pi("iterations", "Iterations", 600, 1, 6000), pf("feed", "Feed", 0.037, 0.0, 0.1), pf("kill", "Kill", 0.06, 0.0, 0.1), pf("spots", "Random seeds", 0.01, 0.0, 1.0), p_seed()],
+        "fxaa" => vec![pf("strength", "Strength", 1.0, 0.0, 1.0), pf("threshold", "Edge threshold", 0.05, 0.0, 1.0)],
+        "bilateral_blur" => vec![pf("radius", "Radius (px at 512)", 4.0, 0.0, 32.0), pf("range", "Colour tolerance", 0.1, 0.005, 2.0)],
         "shape_drop_shadow" => vec![pf("angle", "Angle", 0.125, 0.0, 1.0), pf("distance", "Distance", 0.03, 0.0, 0.5), pf("blur", "Blur", 6.0, 0.0, 128.0), pf("opacity", "Opacity", 0.8, 0.0, 1.0), pf("spread", "Spread", 0.0, 0.0, 1.0)],
         _ => vec![],
     }
@@ -1334,6 +1400,21 @@ impl App {
                             self.acts.push(Act::EnterSub(p.clone()));
                         }
                     }
+                }
+                k if is_path_node(k) => {
+                    let files: Vec<String> = self.g.resources.keys().filter(|f| f.ends_with(".spl")).cloned().collect();
+                    name_combo(ui, id, &node, "file", "Spline", &files, &mut strs);
+                    if node.strs.get("file").map(|f| f.is_empty()).unwrap_or(true) {
+                        ui.small("No spline chosen: the built-in shape below is used.");
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Edit spline").on_hover_text("Draw and change the spline in the 2D view").clicked() {
+                            self.acts.push(Act::SplineEdit(id));
+                        }
+                        if ui.button("Import SVG paths...").clicked() {
+                            self.acts.push(Act::SplineImportSvg(id));
+                        }
+                    });
                 }
                 "svg" => {
                     let file = node.strs.get("file").cloned().unwrap_or_default();

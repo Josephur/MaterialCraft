@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+use materialcraft::graph::Graph;
+use materialcraft::spline::{SPath, SPoint, Spline};
+
+fn render(text: &str, size: usize) -> materialcraft::tex::Tex {
+    let g = Graph::parse(text).unwrap_or_else(|e| panic!("{e}"));
+    g.evaluate(Some(size)).unwrap_or_else(|e| panic!("{e}")).remove("o").unwrap()
+}
+
+fn sum(t: &materialcraft::tex::Tex) -> f32 {
+    t.px.iter().map(|p| p[0]).sum::<f32>() / t.px.len() as f32
+}
+
+#[test]
+fn spline_text_roundtrip_and_errors() {
+    let mut sp = Spline::default();
+    sp.paths.push(SPath { closed: true, smooth: false, pts: vec![SPoint::new(0.1, 0.2), SPoint { p: [0.5, 0.25], hin: Some([-0.1, 0.0]), hout: Some([0.1, 0.0]), w: 2.0 }, SPoint::new(0.3, 0.9)] });
+    sp.paths.push(SPath { pts: vec![SPoint::new(0.0, 0.0), SPoint::new(1.0, 1.0)], ..Default::default() });
+    let text = sp.to_text();
+    let back = Spline::parse(&text).unwrap();
+    assert_eq!(back.paths.len(), 2);
+    assert!(back.paths[0].closed && !back.paths[0].smooth);
+    assert_eq!(back.paths[0].pts[1].hout, Some([0.1, 0.0]));
+    assert!((back.paths[0].pts[1].w - 2.0).abs() < 1e-6);
+    assert_eq!(back.point_count(), 5);
+    for bad in ["pt 1 2", "spline 1\npath\npt a b", "spline 1\npath\npt 0 0 hin=1", "spline 1\npath\npt 0 0 bogus=1", "spline 1\nwhat", "hello", "spline 1\npath\npt nan 0"] {
+        assert!(Spline::parse(bad).is_err(), "should reject {bad:?}");
+    }
+    assert!(Spline::from_bytes(&[0xff, 0xfe, 0x00]).is_err());
+}
+
+#[test]
+fn flatten_resample_and_presets() {
+    for k in 1..=7 {
+        let sp = Spline::preset(k, 0.1, 3.0);
+        let polys = sp.flatten(256.0, 128.0);
+        assert!(!polys.is_empty() && polys[0].pts.len() >= 2, "preset {k}");
+        assert!(polys[0].pts.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+    }
+    // a straight line across a 200 x 100 texture is 200 px long
+    let line = Spline::preset(1, 0.0, 1.0).flatten(200.0, 100.0);
+    assert!((line[0].length() - 200.0).abs() < 0.01);
+    let s = line[0].resample(20.0, 0.0);
+    assert_eq!(s.len(), 11);
+    assert!((s[3].p[0] - 60.0).abs() < 0.01 && (s[3].t[0] - 1.0).abs() < 1e-5);
+    // a closed circle does not repeat its first point
+    let c = Spline::preset(4, 0.0, 1.0).flatten(256.0, 256.0);
+    assert!(c[0].closed);
+    let n = c[0].resample(10.0, 0.0).len() as f32;
+    assert!((n - c[0].length() / 10.0).abs() < 1.5);
+}
+
+#[test]
+fn svg_paths_become_a_spline() {
+    let svg = r##"<svg viewBox="0 0 10 10"><path d="M1 1 L9 1 L9 9 Z"/><circle cx="5" cy="5" r="2"/></svg>"##;
+    let sp = Spline::from_svg(svg).unwrap();
+    assert_eq!(sp.paths.len(), 2);
+    assert!(sp.paths[0].closed);
+    assert!(sp.paths[0].pts.len() == 3, "triangle keeps its corners, got {}", sp.paths[0].pts.len());
+    assert!(sp.paths.iter().all(|p| p.pts.iter().all(|q| (0.0..=1.0).contains(&q.p[0]) && (0.0..=1.0).contains(&q.p[1]))));
+    assert!(Spline::from_svg("<svg viewBox=\"0 0 1 1\"></svg>").is_err());
+    assert!(Spline::from_svg("not svg").is_err());
+}
+
+#[test]
+fn stroke_width_and_tiling() {
+    // horizontal line at y = 0.5, 20 px wide on a 256 px graph: about 20/256 of the image is covered
+    let t = render("size 512\nnode 1 path_stroke preset=0 width=20\noutput o 1\n", 512);
+    let cover = sum(&t);
+    assert!((cover - 20.0 / 512.0).abs() < 0.005, "cover {cover}");
+    assert!(t.at(10, 256)[0] > 0.9 && t.at(10, 10)[0] < 0.01);
+    // a diagonal line wraps: both corners are on the line
+    let d = render("size 512\nnode 1 path_stroke preset=1 width=10\noutput o 1\n", 512);
+    assert!(d.at(256, 256)[0] > 0.9 && d.at(511, 511)[0] > 0.5 && d.at(0, 0)[0] > 0.5 && d.at(100, 400)[0] < 0.01);
+    // taper makes the ends thinner than the middle (open wave, taper on both ends)
+    let tp = render("size 512\nnode 1 path_stroke preset=0 width=30 taper_start=0.3 taper_end=0.3\noutput o 1\n", 512);
+    let col = |x: usize| (0..512).map(|y| tp.at(x as i64, y as i64)[0]).sum::<f32>();
+    assert!(col(256) > col(12) * 3.0, "{} vs {}", col(256), col(12));
+}
+
+#[test]
+fn dashes_fit_the_path_and_repeat() {
+    let t = render("size 512\nnode 1 path_stroke preset=0 width=8 dash_length=20 dash_gap=12\noutput o 1\n", 512);
+    // along the line (y=256) count rising edges: 512 / 32 = 16 dashes
+    let mut n = 0;
+    let mut prev = t.at(511, 256)[0] > 0.5;
+    for x in 0..512 {
+        let on = t.at(x, 256)[0] > 0.5;
+        if on && !prev {
+            n += 1;
+        }
+        prev = on;
+    }
+    assert_eq!(n, 16, "dashes {n}");
+}
+
+#[test]
+fn fill_and_distance_modes() {
+    let fill = render("size 128\nnode 1 path_fill preset=3\noutput o 1\n", 128);
+    // circle of radius 0.3 around the centre: area about pi * 0.09
+    assert!((sum(&fill) - std::f32::consts::PI * 0.09).abs() < 0.03, "{}", sum(&fill));
+    assert!(fill.at(64, 64)[0] > 0.99 && fill.at(2, 2)[0] < 0.01);
+    let sd = render("size 128\nnode 1 path_distance preset=3 mode=1 range=40\noutput o 1\n", 128);
+    assert!(sd.at(64, 64)[0] > 0.9, "inside is above the middle");
+    assert!(sd.at(1, 1)[0] < 0.1, "far outside is below");
+    let line = (sd.at(64 + 38, 64)[0] - 0.5).abs();
+    assert!(line < 0.08, "on the path the value is about the middle: {line}");
+    let inward = render("size 128\nnode 1 path_distance preset=3 mode=2 range=30\noutput o 1\n", 128);
+    assert!(inward.at(64, 64)[0] > 0.99 && inward.at(1, 1)[0] < 0.01);
+}
+
+#[test]
+fn border_scatter_track_cable_seam_have_content() {
+    for (g, what) in [
+        ("node 1 path_border preset=3 width=24", "border"),
+        ("node 1 path_scatter preset=2 spacing=16 scale=10", "scatter"),
+        ("node 1 path_track preset=0", "track"),
+        ("node 1 path_cable preset=2", "cable"),
+        ("node 1 path_seam preset=0", "seam"),
+    ] {
+        let t = render(&format!("size 128\n{g}\noutput o 1\n"), 128);
+        let (lo, hi) = t.px.iter().fold((1.0f32, 0.0f32), |a, p| (a.0.min(p[0]), a.1.max(p[0])));
+        assert!(hi - lo > 0.2, "{what} is flat ({lo}..{hi})");
+    }
+    // secondary outputs
+    let g = Graph::parse("size 128\nnode 1 path_track preset=0\noutput rails 1.rails\noutput sleepers 1.sleepers\noutput height 1\n").unwrap();
+    let out = g.evaluate(Some(128)).unwrap();
+    assert!(sum(&out["rails"]) > 0.01 && sum(&out["sleepers"]) > 0.02);
+    assert!(sum(&out["height"]) >= sum(&out["rails"]) * 0.3);
+}
+
+#[test]
+fn scatter_uses_a_pattern_and_follows_the_path() {
+    // stamps of a pattern: a dark input leaves nothing, a white one leaves marks
+    let w = render("size 512\nnode 2 color r=1 g=1 b=1 a=1\nnode 1 path_scatter preset=0 spacing=20 scale=12 in=@2 scale_variation=0\noutput o 1\n", 512);
+    let b = render("size 512\nnode 2 color r=0 g=0 b=0 a=1\nnode 1 path_scatter preset=0 spacing=20 scale=12 in=@2 scale_variation=0\noutput o 1\n", 512);
+    assert!(sum(&w) > 0.01 && sum(&b) < 1e-6);
+    // the stamps are the same size every time without variation: equal columns at the stamp centres
+    let t = render("size 512\nnode 1 path_scatter preset=0 spacing=32 scale=16 scale_variation=0\noutput o 1\n", 512);
+    assert!(t.at(32, 256)[0] > 0.9 && t.at(96, 256)[0] > 0.9 && t.at(16, 256)[0] < 0.2, "{} {} {}", t.at(32, 256)[0], t.at(96, 256)[0], t.at(16, 256)[0]);
+}
+
+#[test]
+fn spline_resource_is_used_and_edits_show() {
+    let mut g = Graph::parse("size 512\nnode 1 path_stroke file=\"a.spl\" width=6\noutput o 1\n").unwrap();
+    g.resources.insert("a.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n".to_vec());
+    let a = g.evaluate(Some(512)).unwrap().remove("o").unwrap();
+    assert!(a.at(256, 102)[0] > 0.9 && a.at(256, 400)[0] < 0.01);
+    g.resources.insert("a.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec());
+    let b = g.evaluate(Some(512)).unwrap().remove("o").unwrap();
+    assert!(b.at(256, 102)[0] < 0.01 && b.at(256, 409)[0] > 0.9);
+    // a missing or broken spline is an error, not a panic
+    let mut bad = Graph::parse("size 64\nnode 1 path_stroke file=\"x.spl\"\noutput o 1\n").unwrap();
+    assert!(bad.evaluate(Some(64)).is_err());
+    bad.resources.insert("x.spl".into(), b"garbage".to_vec());
+    assert!(bad.evaluate(Some(64)).is_err());
+}
+
+#[test]
+fn non_square_and_size_independent() {
+    let g = Graph::parse("size 256 128\nnode 1 path_cable preset=2\nnode 2 path_stroke preset=3 width=10\noutput o 1\noutput p 2\n").unwrap();
+    let out = g.evaluate(Some(256)).unwrap();
+    assert_eq!((out["o"].w, out["o"].h), (256, 128));
+    // the same picture at half size (coverage is resolution independent)
+    let big = render("size 512\nnode 1 path_stroke preset=3 width=24\noutput o 1\n", 512);
+    let small = render("size 512\nnode 1 path_stroke preset=3 width=24\noutput o 1\n", 128);
+    assert!((sum(&big) - sum(&small)).abs() < 0.01, "{} vs {}", sum(&big), sum(&small));
+}
+
+#[test]
+fn splitting_a_segment_keeps_the_curve() {
+    let mut p = Spline::preset(3, 0.2, 2.0).paths.remove(0);
+    let before = p.flatten(512.0, 512.0);
+    let (seg, t, d) = p.nearest([0.31, 0.5 + 0.2 * (0.31f32 * 2.0 * std::f32::consts::TAU).sin()], 512.0, 512.0).unwrap();
+    assert!(d < 3.0, "nearest is on the curve ({d} px)");
+    let n0 = p.pts.len();
+    let idx = p.split(seg, t);
+    assert_eq!(p.pts.len(), n0 + 1);
+    assert_eq!(idx, seg + 1);
+    let after = p.flatten(512.0, 512.0);
+    // every flattened point of the old curve is still on the new one
+    let worst = before.pts.iter().map(|a| after.pts.windows(2).map(|w| {
+        let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+        let l2 = (dx * dx + dy * dy).max(1e-9);
+        let t = (((a[0] - w[0][0]) * dx + (a[1] - w[0][1]) * dy) / l2).clamp(0.0, 1.0);
+        ((a[0] - w[0][0] - dx * t).powi(2) + (a[1] - w[0][1] - dy * t).powi(2)).sqrt()
+    }).fold(f32::MAX, f32::min)).fold(0.0f32, f32::max);
+    assert!(worst < 0.6, "curve moved by {worst} px");
+    // closed path: splitting the closing segment appends the point
+    let mut c = Spline::preset(4, 0.0, 1.0).paths.remove(0);
+    let last = c.segment_count() - 1;
+    let at = c.split(last, 0.5);
+    assert_eq!(at, c.pts.len() - 1);
+    let (hi, ho) = c.handles(0);
+    assert!(hi[0].is_finite() && ho[1].is_finite());
+}

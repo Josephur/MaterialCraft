@@ -187,7 +187,7 @@ pub const SPECS: &[Spec] = &[
     s!("multi_directional_warp", ["in", "warp"], [], "warp in several directions at once: intensity directions(0 one,1 two,2 four) angle mode(0 average,1 max,2 min,3 chain)"),
     s!("normal_combine", ["base", "detail"], [], "combine two normal maps: technique(0 whiteout,1 channel mixer,2 detail oriented)"),
     s!("triangle_grid", [], [], "grid of triangles: style(0 squares,1 jittered mesh) count border variation x_amount y_amount random_position_multiplier quincunx_offset_x quincunx_offset_y triangulation(0 fixed,1 alternate,2 random) output(0 smooth,1 flat,2 edge distance) height_random thin_lines distance_to_edge_thickness thin_line_color thin_line_background seed contrast invert"),
-    s!("grunge_map", [], [], "grunge map 1-15: map balance contrast brush_pattern cracks disorder coverage seed invert"),
+    s!("grunge_map", [], [], "grunge map 1-24: map balance contrast brush_pattern cracks disorder coverage seed invert"),
     s!("rgba_split", ["in"], [], "split into R, G, B and A grayscale outputs"),
     s!("alpha_split", ["in"], [], "split into an RGB output and an alpha output"),
     s!("weave_generator", [], [], "woven threads with gaps: tile_x tile_y weave shape gap_x gap_y contrast invert"),
@@ -197,6 +197,60 @@ pub const SPECS: &[Spec] = &[
     s!("shape_glow", ["in"], [], "glow around a shape: width softness intensity threshold opacity spread color_r color_g color_b"),
     s!("chrominance_extract", ["in"], [], "colour without brightness"),
     s!("shape_drop_shadow", ["in"], [], "drop shadow of a mask: angle distance blur opacity spread"),
+    s!("contrast_luminosity", ["in"], [], "contrast around mid-gray and brightness shift: contrast luminosity"),
+    s!("srgb_to_linear", ["in"], [], "decode the sRGB curve (colour channels only)"),
+    s!("linear_to_srgb", ["in"], [], "encode the sRGB curve (colour channels only)"),
+    s!("premultiply", ["in"], [], "alpha premultiplication: mode(0 straight to premultiplied,1 premultiplied to straight)"),
+    s!("histogram_equalize", ["in"], [], "spread values evenly over 0..1: amount per_channel"),
+    s!("min_max", ["a", "b"], [], "per-channel minimum or maximum of two images: mode(0 min,1 max)"),
+    s!("morphology", ["in"], [], "grow or shrink bright areas: mode(0 dilate,1 erode,2 open,3 close) radius"),
+    s!("multi_switch", [], ["a", "b", "c", "d", "e", "f", "g", "h"], "pass one of up to eight inputs: index"),
+    s!("lookup_table", ["in", "lut"], [], "recolour through a lookup image: mode(0 per channel,1 by luminance) row"),
+    s!("frequency_split", ["in"], [], "split into a blurred low band and a high band centred on gray (outputs: low, high): radius"),
+    s!("frequency_merge", ["low", "high"], [], "recombine the bands of frequency_split: gain"),
+    s!("auto_crop", ["in"], [], "stretch the non-black area to fill the image: threshold margin keep_aspect"),
+    s!("polar_convert", ["in"], [], "mode(0 cartesian to polar,1 polar to cartesian) radius rotation tile"),
+    s!("clone_patch", ["in"], [], "copy a patch from one place to another: src_x src_y dst_x dst_y width height feather rotation opacity"),
+    s!("noise_upscale", ["in"], [], "smoothly enlarge a coarse image: cells mode(0 bicubic,1 bilinear,2 nearest)"),
+    s!("symmetry_slice", ["in"], [], "kaleidoscope of one slice around the centre: slices mirror rotation tile"),
+    s!("quad_transform", ["in"], [], "move the four corners: tl_x tl_y tr_x tr_y br_x br_y bl_x bl_y tile"),
+    s!("trapezoid_transform", ["in"], [], "perspective taper: top bottom skew tile"),
+    s!("bent_normal", ["in"], [], "bent normal of a height map (outputs: normal, ao): radius relief directions steps directx"),
+    s!("normal_facing", ["in"], [], "mask of surfaces that face a direction: angle tilt sharpness"),
+    s!("height_normal_blend", ["normal", "height"], [], "add the relief of a height map to a normal map: strength mode(0 reoriented,1 whiteout,2 partial derivative) opacity directx"),
+    s!("height_to_normal_world", ["in"], [], "normal map from real-world sizes: size height directx"),
+    s!("normal_transform", ["in"], [], "transform a normal map and turn its vectors with it: offset_x offset_y scale_x scale_y rotation rotate_vectors directx"),
+    s!("normal_sobel", ["in"], [], "edges or curvature of a normal map: mode(0 edges,1 curvature) intensity directx"),
+    s!("metal_rough_to_spec_gloss", ["base_color"], ["metallic", "roughness"], "convert a metal / roughness material (outputs: diffuse, specular, glossiness)"),
+    s!("spec_gloss_to_metal_rough", ["diffuse", "specular"], ["glossiness"], "convert a specular / glossiness material (outputs: base_color, metallic, roughness)"),
+    s!("material_blend", [], ["bg_base", "bg_normal", "bg_height", "bg_rough", "bg_metal", "bg_ao", "fg_base", "fg_normal", "fg_height", "fg_rough", "fg_metal", "fg_ao", "mask"], "blend two complete materials (outputs: base_color, normal, height, roughness, metallic, ao): opacity height_influence sharpness"),
+    s!("height_combine", ["a", "b"], ["mask"], "combine two height maps: mode(0 max,1 min,2 add,3 difference) amount"),
+    s!("convex_concave", ["in"], [], "ridge and cavity masks of a height map (outputs: convex, concave): radius gain"),
+    s!("leak_streaks", ["in"], ["noise"], "streaks that run on from a mask like drips: length angle intensity breakup"),
+    s!("settled_dust", ["in"], ["noise"], "dust that settles on flat upward surfaces and in cavities: amount slope cavity relief radius"),
+    s!("palette_extract", ["in"], [], "strip of the dominant colours of an image: count"),
+    s!("palette_apply", ["in", "palette"], [], "snap colours to the nearest palette colour: count amount"),
+    s!("make_it_tile_mirror", ["in"], [], "make an image tile by mirroring: mode(0 both axes,1 horizontal,2 vertical)"),
+    s!("blue_noise", [], [], "evenly spread grain with little low-frequency content: scale seed tightness contrast invert"),
+    s!("fibers", [], [], "random curved hair-like strands: count length thickness angle angle_variation curl taper brightness_variation seed contrast invert"),
+    s!("scratches", [], [], "random thin scratches: count length thickness angle angle_variation curl taper brightness_variation seed contrast invert"),
+    s!("caustics", [], [], "light patterns of water: scale octaves strength sharpness seed contrast invert"),
+    s!("liquid_noise", [], [], "swirling warped noise: scale octaves warp mode(0 liquid,1 marble) bands seed contrast invert"),
+    s!("perlin_3d", [], [], "slice of 3D noise that loops in depth: scale depth octaves gain seed contrast invert"),
+    s!("paving", [], [], "irregular paving stones (outputs: height, cell_id, gaps): scale jitter gap bevel height_variation dome seed contrast invert"),
+    s!("wire_mesh", [], [], "woven or chain-link wire: count_x count_y wire_width weave_depth mode(0 square,1 diamond) contrast invert"),
+    s!("path_stroke", [], [], "line along a spline (dashes, taper, profile 0 flat,1 round,2 bevel): file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit width softness profile taper_start taper_end dash_length dash_gap contrast invert"),
+    s!("path_fill", [], [], "inside of closed splines: file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit even_odd softness contrast invert"),
+    s!("path_distance", [], [], "distance to a spline: mode(0 falloff from the line,1 signed,2 inward gradient,3 outward gradient) range file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_border", [], [], "border or bevel along closed splines (outputs: height, mask): width side(0 inside,1 outside,2 both) profile(0 linear,1 round,2 smooth) flat file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_scatter", [], ["in"], "copies of a pattern along a spline: spacing scale scale_variation jitter_along jitter_across rotation(0 follow,1 fixed,2 random) angle angle_variation density opacity_variation blend(0 max,1 add) offset seed file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_track", [], [], "railway track along a spline (outputs: height, rails, sleepers): gauge rail_width sleeper_spacing sleeper_length sleeper_width rail_height sleeper_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_cable", [], [], "twisted cable along a spline (outputs: height, mask, strand): width strands strand_size twist file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_seam", [], [], "stitched seam along a spline (outputs: height, stitches): stitch_length stitch_gap stitch_width groove_width groove_depth stitch_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("halftone", ["in"], [], "dots whose size follows brightness: cells mode(0 grid,1 diagonal) softness gain"),
+    s!("reaction_diffusion", ["in"], [], "growing spots and stripes seeded by the input: resolution iterations feed kill spots seed"),
+    s!("fxaa", ["in"], [], "smooth jagged edges: strength threshold"),
+    s!("bilateral_blur", ["in"], ["guide"], "blur that keeps edges: radius range"),
 ];
 
 pub fn spec(kind: &str) -> Option<&'static Spec> {
@@ -207,12 +261,12 @@ pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
         "bitmap" | "input" | "input_value" | "subgraph" | "output" | "dot" => "Utility",
         k if k.starts_with("f_") => "Function",
         k if k.starts_with("fxm_") => "Pattern Program",
-        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
+        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" => "Material",
         _ => "Filters",
     }
 }
@@ -240,6 +294,14 @@ pub fn label(kind: &str) -> String {
         "pixel_processor" => "Pixel Processor",
         "value_processor" => "Value Processor",
         "svg" => "SVG",
+        "path_stroke" => "Path Stroke",
+        "path_fill" => "Path Fill",
+        "path_distance" => "Path Distance",
+        "path_border" => "Path Border",
+        "path_scatter" => "Path Scatter",
+        "path_track" => "Path Track",
+        "path_cable" => "Path Cable",
+        "path_seam" => "Path Seam",
         "text" => "Text",
         "fx_map" => "Pattern Program Map",
         "input_value" => "Input Value",
@@ -248,6 +310,14 @@ pub fn label(kind: &str) -> String {
         "rgba_split" => "RGBA Split",
         "pow" => "Pow",
         "sobel" => "Sobel",
+        "srgb_to_linear" => "sRGB To Linear",
+        "linear_to_srgb" => "Linear To sRGB",
+        "contrast_luminosity" => "Contrast / Luminosity",
+        "clone_patch" => "Clone Patch",
+        "perlin_3d" => "Perlin Noise 3D",
+        "fxaa" => "FXAA",
+        "metal_rough_to_spec_gloss" => "Metal/Rough To Spec/Gloss",
+        "spec_gloss_to_metal_rough" => "Spec/Gloss To Metal/Rough",
         _ => "",
     };
     if !named.is_empty() {
@@ -338,7 +408,10 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
         "sdf_op" | "sdf_mask" => (102, 103),
         "flood_fill" => (105, 105),
         k if k.starts_with("flood_fill_") => (106, 106),
-        "dust" | "curvature_smooth" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" => (107, 107),
+        "dust" | "curvature_smooth" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "normal_facing" | "normal_transform" | "normal_sobel" => (107, 107),
+        "spec_gloss_to_metal_rough" => (108, 100),
+        "palette_apply" => (108, 108),
+        "height_normal_blend" => (107, 100),
         "vector_warp" => (100, 107),
         "chrominance_extract" => (108, 108),
         _ => (100, 101),
@@ -354,6 +427,8 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
         "color_to_mask" => line += " r=0.5 g=0.5 b=0.5 range=0.12 softness=0.2",
         "replace_color" => line += " src_r=0.5 src_g=0.5 src_b=0.5 range=0.2",
         "switch" => line += " a=@100 b=@101 index=1",
+        "multi_switch" => line += " a=@100 b=@101 index=1",
+        "material_blend" => line += " bg_base=@108 fg_base=@100 bg_height=@100 fg_height=@101 mask=@101 bg_normal=@107",
         _ => {}
     }
     for (i, slot) in sp.req.iter().enumerate() {
@@ -1668,7 +1743,16 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
             h.str(k);
             h.str(v);
         }
-        if matches!(n.kind.as_str(), "bitmap" | "svg" | "text") {
+        if n.kind.starts_with("path_") {
+            // an embedded spline can be edited under the same name: its content is part of the identity
+            if let Some(b) = n.strs.get("file").and_then(|f| ctx.res.get(f)) {
+                h.u64(b.len() as u64);
+                for ch in b.chunks(8) {
+                    h.u64(ch.iter().fold(0u64, |a, &x| a.wrapping_mul(257).wrapping_add(x as u64)));
+                }
+            }
+        }
+        if matches!(n.kind.as_str(), "bitmap" | "svg" | "text") || n.kind.starts_with("path_") {
             // a file on disk can change under us: its size and modification time are part of the identity
             for f in [n.strs.get("file"), n.strs.get("font")].into_iter().flatten() {
                 if !ctx.res.contains_key(f) {
@@ -1920,6 +2004,17 @@ pub fn node_outputs(kind: &str) -> &'static [&'static str] {
         "splatter" => &["output", "id", "center", "size", "luminance"],
         "flood_fill_to_position" => &["position", "x", "y"],
         "flood_fill_to_bbox_size" => &["size", "width", "height"],
+        "frequency_split" => &["low", "high"],
+        "bent_normal" => &["normal", "ao"],
+        "metal_rough_to_spec_gloss" => &["diffuse", "specular", "glossiness"],
+        "spec_gloss_to_metal_rough" => &["base_color", "metallic", "roughness"],
+        "material_blend" => &["base_color", "normal", "height", "roughness", "metallic", "ao"],
+        "convex_concave" => &["convex", "concave"],
+        "paving" => &["height", "cell_id", "gaps"],
+        "path_border" => &["height", "mask"],
+        "path_track" => &["height", "rails", "sleepers"],
+        "path_cable" => &["height", "mask", "strand"],
+        "path_seam" => &["height", "stitches"],
         _ => &[],
     }
 }
@@ -2037,7 +2132,26 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
         // always colour
         "colorize" | "flood_fill_color" => Pin::Color,
         "tint" | "hsl" | "channel_mixer" | "merge" | "replace_color" | "chrominance_extract" | "normal" | "normal_blend" | "normal_combine"
-        | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "alpha_merge" | "vector_warp_color" => Pin::Color,
+        | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "alpha_merge" | "vector_warp_color" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" => Pin::Color,
+        "bent_normal" => match out {
+            Some("ao") => Pin::Gray,
+            _ => Pin::Color,
+        },
+        "metal_rough_to_spec_gloss" => match out {
+            Some("glossiness") => Pin::Gray,
+            _ => Pin::Color,
+        },
+        "spec_gloss_to_metal_rough" => match out {
+            Some("metallic") | Some("roughness") => Pin::Gray,
+            _ => Pin::Color,
+        },
+        "material_blend" => match out {
+            Some("base_color") | Some("normal") | None => Pin::Color,
+            _ => Pin::Gray,
+        },
+        "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" => Pin::Gray,
+        "palette_extract" | "palette_apply" => Pin::Color,
+        "normal_facing" | "normal_sobel" => Pin::Gray,
         "color" | "bitmap" => {
             if flag("gray") {
                 Pin::Gray
@@ -2076,7 +2190,7 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
         "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise"
         | "grunge" | "plasma" | "gradient" | "gradient_axial" | "gradient_circular" | "gradient_reflected" | "circle" | "rect" | "polygon" | "shape"
         | "star" | "starburst" | "checker" | "bricks" | "stripes" | "weave" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid"
-        | "grunge_map" | "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => Pin::Gray,
+        | "grunge_map" | "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "reaction_diffusion" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" => Pin::Gray,
         "weave_generator" => Pin::Gray,
         // pixel processor and the scatter family produce colour only when colour comes in
         "pixel_processor" | "value_processor" | "fx_map" => Pin::Color,
@@ -2516,7 +2630,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "grunge_map" => {
             let gp = grunge::GrungeP {
-                map: per("map", 1.0).clamp(1, 15) as u32,
+                map: per("map", 1.0).clamp(1, 24) as u32,
                 seed,
                 balance: f("balance", 0.5).clamp(0.0, 1.0),
                 contrast: f("contrast", 0.5).clamp(0.0, 1.0),
@@ -3240,7 +3354,19 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "emboss" => ops::emboss(tex("in")?, f("angle", 0.125), f("intensity", 4.0)),
         other => match crate::nodes2::compute(other, id, n, ins, s, hs, seed)? {
             Some(t) => t,
-            None => return Err(Error::UnknownNode(id, other.to_string())),
+            None => match crate::nodes3::compute(other, id, n, ins, s, hs, seed)? {
+                Some(t) => t,
+                None => match crate::nodes4::compute(other, id, n, ins, s, hs, seed)? {
+                    Some(t) => t,
+                    None => match crate::nodes5::compute(other, id, n, ins, s, hs, seed)? {
+                        Some(t) => t,
+                        None => match crate::nodes6::compute(other, id, n, ins, s, hs, seed, &|f| read_resource(id, f, ctx).map_err(|e| format!("{e}")))? {
+                            Some(t) => t,
+                            None => return Err(Error::UnknownNode(id, other.to_string())),
+                        },
+                    },
+                },
+            },
         },
     };
     let out = if out.w != s || out.h != hs { Tex::from_fn(s, hs, |u, v| out.sample(u, v)) } else { out };

@@ -1,10 +1,10 @@
 # MaterialCraft node reference
 
-136 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
+190 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
 
 Common to most nodes: **Output Size** (relative to input, relative to parent or absolute, with a power-of-two modifier), **Output format** (graph default, 8 / 16-bit integer, 16-bit float or 32-bit float; the graph default is set under Node Precision and is 32-bit float unless changed), `seed`, `contrast`, `invert` on generators, and the shared **disorder** group (`disorder`, `disorder_speed`, `anisotropy`, `anisotropy_angle`) and **tile offset** (`tile_x`, `tile_y`) on noises. Every node tiles seamlessly and works on non-square graphs; the cell-based generators (`perlin`, `fbm`, `clouds`, `voronoi`, `cells`, `tile_sampler`, `tile_generator`) also take `square_cells=1` to keep their cells square when the graph is not.
 
-Nodes with several outputs: `color_match` (output, mask); `quantize_color` (output, id, palette); `weave_generator` (height, mask_1, mask_2, opacity); `rgba_split` (r, g, b, a); `alpha_split` (rgb, alpha); `voronoi` (output, cell_id, edge, distance); `cells` (output, cell_id, distance, edge); `splatter` (output, id, center, size, luminance); `flood_fill_to_position` (position, x, y); `flood_fill_to_bbox_size` (size, width, height). Link to a named output with `in=@id.output` in a `.mcg` file, or with `output <name> <id>.<output>` for a graph output.
+Nodes with several outputs: `color_match` (output, mask); `quantize_color` (output, id, palette); `weave_generator` (height, mask_1, mask_2, opacity); `rgba_split` (r, g, b, a); `alpha_split` (rgb, alpha); `voronoi` (output, cell_id, edge, distance); `cells` (output, cell_id, distance, edge); `splatter` (output, id, center, size, luminance); `flood_fill_to_position` (position, x, y); `flood_fill_to_bbox_size` (size, width, height); `frequency_split` (low, high); `bent_normal` (normal, ao); `convex_concave` (convex, concave); `paving` (height, cell_id, gaps); `metal_rough_to_spec_gloss` (diffuse, specular, glossiness); `spec_gloss_to_metal_rough` (base_color, metallic, roughness); `material_blend` (base_color, normal, height, roughness, metallic, ao); `path_border` (height, mask); `path_track` (height, rails, sleepers); `path_cable` (height, mask, strand); `path_seam` (height, stitches). Link to a named output with `in=@id.output` in a `.mcg` file, or with `output <name> <id>.<output>` for a graph output.
 
 ## Generators
 
@@ -45,7 +45,7 @@ Nodes with several outputs: `color_match` (output, mask); `quantize_color` (outp
 | `waveform` |  | tileable wave pattern: count angle warp warp_scale seed shape(0 sine,1 triangle,2 saw,3 square) contrast invert disorder disorder_speed |
 | `gaussian_spots` |  | soft gaussian spots: scale size size_variation seed contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y |
 | `triangle_grid` |  | grid of triangles: style(0 squares,1 jittered mesh) count border variation x_amount y_amount random_position_multiplier quincunx_offset_x quincunx_offset_y triangulation(0 fixed,1 alternate,2 random) output(0 smooth,1 flat,2 edge distance) height_random thin_lines distance_to_edge_thickness thin_line_color thin_line_background seed contrast invert |
-| `grunge_map` |  | grunge map 1-15: map balance contrast brush_pattern cracks disorder coverage seed invert |
+| `grunge_map` |  | grunge map 1-24: map balance contrast brush_pattern cracks disorder coverage seed invert |
 | `weave_generator` |  | woven threads with gaps: tile_x tile_y weave shape gap_x gap_y contrast invert |
 | `starburst` |  | star-like rays: count rays sharpness size rotation rotation_random seed contrast invert |
 | `gradient_reflected` |  | gradient that goes 0-1-0: count angle contrast invert |
@@ -53,6 +53,22 @@ Nodes with several outputs: `color_match` (output, mask); `quantize_color` (outp
 | `svg` |  | vector image: file="art.svg" fit (0 contain 1 stretch 2 cover) scale x y |
 | `text` |  | text: text="..." font="face.ttf" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value |
 | `value_processor` | in, in2, in3, in4 | run fn="function" once; the result (float, float3 or float4) fills the image. The function can read image statistics |
+| `blue_noise` |  | evenly spread grain with little low-frequency content: scale seed tightness contrast invert |
+| `fibers` |  | random curved hair-like strands: count length thickness angle angle_variation curl taper brightness_variation seed contrast invert |
+| `scratches` |  | random thin scratches: count length thickness angle angle_variation curl taper brightness_variation seed contrast invert |
+| `caustics` |  | light patterns of water: scale octaves strength sharpness seed contrast invert |
+| `liquid_noise` |  | swirling warped noise: scale octaves warp mode(0 liquid,1 marble) bands seed contrast invert |
+| `perlin_3d` |  | slice of 3D noise that loops in depth: scale depth octaves gain seed contrast invert |
+| `paving` |  | irregular paving stones (outputs: height, cell_id, gaps): scale jitter gap bevel height_variation dome seed contrast invert |
+| `wire_mesh` |  | woven or chain-link wire: count_x count_y wire_width weave_depth mode(0 square,1 diamond) contrast invert |
+| `path_stroke` |  | line along a spline (dashes, taper, profile 0 flat,1 round,2 bevel): file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit width softness profile taper_start taper_end dash_length dash_gap contrast invert |
+| `path_fill` |  | inside of closed splines: file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit even_odd softness contrast invert |
+| `path_distance` |  | distance to a spline: mode(0 falloff from the line,1 signed,2 inward gradient,3 outward gradient) range file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
+| `path_border` |  | border or bevel along closed splines (outputs: height, mask): width side(0 inside,1 outside,2 both) profile(0 linear,1 round,2 smooth) flat file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
+| `path_scatter` | in | copies of a pattern along a spline: spacing scale scale_variation jitter_along jitter_across rotation(0 follow,1 fixed,2 random) angle angle_variation density opacity_variation blend(0 max,1 add) offset seed file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
+| `path_track` |  | railway track along a spline (outputs: height, rails, sleepers): gauge rail_width sleeper_spacing sleeper_length sleeper_width rail_height sleeper_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
+| `path_cable` |  | twisted cable along a spline (outputs: height, mask, strand): width strands strand_size twist file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
+| `path_seam` |  | stitched seam along a spline (outputs: height, stitches): stitch_length stitch_gap stitch_width groove_width groove_depth stitch_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert |
 
 ## SDF
 
@@ -147,6 +163,31 @@ Nodes with several outputs: `color_match` (output, mask); `quantize_color` (outp
 | `shape_drop_shadow` | in | drop shadow of a mask: angle distance blur opacity spread |
 | `curve` | in | tone curves: points (master), points_r points_g points_b points_a as "x:y,x:y" lists |
 | `channel_shuffle` | in, in2 | rebuild channels: src_r src_g src_b src_a (0-3 channels of in, 4-7 channels of in2, 8 zero, 9 one), inv_r inv_g inv_b inv_a |
+| `contrast_luminosity` | in | contrast around mid-gray and brightness shift: contrast luminosity |
+| `srgb_to_linear` | in | decode the sRGB curve (colour channels only) |
+| `linear_to_srgb` | in | encode the sRGB curve (colour channels only) |
+| `premultiply` | in | alpha premultiplication: mode(0 straight to premultiplied,1 premultiplied to straight) |
+| `histogram_equalize` | in | spread values evenly over 0..1: amount per_channel |
+| `min_max` | a, b | per-channel minimum or maximum of two images: mode(0 min,1 max) |
+| `morphology` | in | grow or shrink bright areas: mode(0 dilate,1 erode,2 open,3 close) radius |
+| `multi_switch` | a, b, c, d, e, f, g, h | pass one of up to eight inputs: index |
+| `lookup_table` | in, lut | recolour through a lookup image: mode(0 per channel,1 by luminance) row |
+| `frequency_split` | in | split into a blurred low band and a high band centred on gray (outputs: low, high): radius |
+| `frequency_merge` | low, high | recombine the bands of frequency_split: gain |
+| `auto_crop` | in | stretch the non-black area to fill the image: threshold margin keep_aspect |
+| `polar_convert` | in | mode(0 cartesian to polar,1 polar to cartesian) radius rotation tile |
+| `clone_patch` | in | copy a patch from one place to another: src_x src_y dst_x dst_y width height feather rotation opacity |
+| `noise_upscale` | in | smoothly enlarge a coarse image: cells mode(0 bicubic,1 bilinear,2 nearest) |
+| `symmetry_slice` | in | kaleidoscope of one slice around the centre: slices mirror rotation tile |
+| `quad_transform` | in | move the four corners: tl_x tl_y tr_x tr_y br_x br_y bl_x bl_y tile |
+| `trapezoid_transform` | in | perspective taper: top bottom skew tile |
+| `palette_extract` | in | strip of the dominant colours of an image: count |
+| `palette_apply` | in, palette | snap colours to the nearest palette colour: count amount |
+| `make_it_tile_mirror` | in | make an image tile by mirroring: mode(0 both axes,1 horizontal,2 vertical) |
+| `halftone` | in | dots whose size follows brightness: cells mode(0 grid,1 diagonal) softness gain |
+| `reaction_diffusion` | in | growing spots and stripes seeded by the input: resolution iterations feed kill spots seed |
+| `fxaa` | in | smooth jagged edges: strength threshold |
+| `bilateral_blur` | in, guide | blur that keeps edges: radius range |
 
 ## Material
 
@@ -166,6 +207,19 @@ Nodes with several outputs: `color_match` (output, mask); `quantize_color` (outp
 | `normal_vector_rotation` | in, rotation | rotate normal vectors: angle directx |
 | `normal_to_height` | in | integrate a normal map into a height map: directx relief_balance opacity |
 | `normal_combine` | base, detail | combine two normal maps: technique(0 whiteout,1 channel mixer,2 detail oriented) |
+| `bent_normal` | in | bent normal of a height map (outputs: normal, ao): radius relief directions steps directx |
+| `normal_facing` | in | mask of surfaces that face a direction: angle tilt sharpness |
+| `height_normal_blend` | normal, height | add the relief of a height map to a normal map: strength mode(0 reoriented,1 whiteout,2 partial derivative) opacity directx |
+| `height_to_normal_world` | in | normal map from real-world sizes: size height directx |
+| `normal_transform` | in | transform a normal map and turn its vectors with it: offset_x offset_y scale_x scale_y rotation rotate_vectors directx |
+| `normal_sobel` | in | edges or curvature of a normal map: mode(0 edges,1 curvature) intensity directx |
+| `metal_rough_to_spec_gloss` | base_color, metallic, roughness | convert a metal / roughness material (outputs: diffuse, specular, glossiness) |
+| `spec_gloss_to_metal_rough` | diffuse, specular, glossiness | convert a specular / glossiness material (outputs: base_color, metallic, roughness) |
+| `material_blend` | bg_base, bg_normal, bg_height, bg_rough, bg_metal, bg_ao, fg_base, fg_normal, fg_height, fg_rough, fg_metal, fg_ao, mask | blend two complete materials (outputs: base_color, normal, height, roughness, metallic, ao): opacity height_influence sharpness |
+| `height_combine` | a, b, mask | combine two height maps: mode(0 max,1 min,2 add,3 difference) amount |
+| `convex_concave` | in | ridge and cavity masks of a height map (outputs: convex, concave): radius gain |
+| `leak_streaks` | in, noise | streaks that run on from a mask like drips: length angle intensity breakup |
+| `settled_dust` | in, noise | dust that settles on flat upward surfaces and in cavities: amount slope cavity relief radius |
 
 ## Function-graph nodes
 
@@ -270,6 +324,10 @@ Used inside graphs with `meta kind "fxmap"`, run by the `fx_map` node. A cell (c
 | `fxm_iterate` | body | repeat body: count dx dy dscale drot dval, or grid_x grid_y stagger; rnd_x rnd_y rnd_scale rnd_rot rnd_val |
 | `fxm_switch` | a, b, c, d | run one branch: mode (0 index, 1 random) index w0..w3 |
 
+## Splines and path nodes
+
+A spline is a list of paths made of points with optional bezier handles and a width factor. It is stored in the package as an embedded text resource (usually `name.spl`, see `UXMap.md` section 3 for the format) and a path node names it with `file="name.spl"`. Without a file the node uses a built-in shape (`preset`: 0 line, 1 diagonal, 2 wave, 3 circle, 4 spiral, 5 zigzag, 6 figure eight, with `amplitude` and `frequency`). `path` picks one path of the spline (-1 = all). Coordinates are texture coordinates, so a spline wraps with the texture and the result always tiles. Widths and distances are given in pixels for a 512 px texture and scale with the size. With `fit=1` dashes, sleepers, stitches and scattered copies are spaced so the pattern meets itself where a path wraps around the texture. The editor draws and edits splines in the 2D view; `Import SVG paths` turns the outlines of a drawing into a spline.
+
 ## Planned node families
 
 Described by what they do; see `RELEASE_PLAN.md` for the order.
@@ -281,5 +339,6 @@ Described by what they do; see `RELEASE_PLAN.md` for the order.
 - More transforms: auto crop, polar conversion, clone, noise upscaling, safe and non-square transforms, trapezoid / quad transforms.
 - Normal tools: bent and facing normals, height-normal blending, world-unit height to normal, normal transform.
 - Material tools: PBR converters and validators, material blending, layers, snow / season / water filters, palette tools.
+- Path extras: mask to path, path warp and deformation, spline-driven tile sampler and splatter, spline thickness and height sampling.
 - Mesh-driven generators that use baked curvature, thickness, position and AO maps.
 - Splines and paths with shape, scatter and mapping nodes.

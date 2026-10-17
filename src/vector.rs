@@ -918,3 +918,57 @@ fn composite(acc: &mut [[f32; 4]], m: &Mask, c: [f32; 3], opacity: f32) {
         d[3] = a + d[3] * k;
     }
 }
+
+/// Outlines of every path and shape of an SVG document, scaled to fit the unit square (aspect kept, centred).
+/// Used to turn a drawing into a spline; fill and stroke styles are ignored.
+pub fn svg_outlines(src: &str) -> Result<Vec<Poly>, String> {
+    let ts = tags(src);
+    let root = ts.iter().find(|t| t.name == "svg" && t.open).ok_or("not an SVG document (no <svg> element)")?;
+    let a = |k: &str| root.attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    let vb: Vec<f32> = a("viewBox").map(|v| v.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
+    let (vx, vy, vw, vh) = if vb.len() == 4 && vb[2] > 0.0 && vb[3] > 0.0 {
+        (vb[0], vb[1], vb[2], vb[3])
+    } else {
+        (0.0, 0.0, a("width").and_then(num_attr).unwrap_or(100.0).max(1.0), a("height").and_then(num_attr).unwrap_or(100.0).max(1.0))
+    };
+    let k = 1.0 / vw.max(vh);
+    let base = Xf::translate(-vx - vw * 0.5, -vy - vh * 0.5).then(Xf::scale(k, k)).then(Xf::translate(0.5, 0.5));
+    let mut stack: Vec<Xf> = vec![base];
+    let mut skip_depth = 0usize;
+    let mut out: Vec<Poly> = Vec::new();
+    for t in &ts {
+        let hidden = matches!(t.name.as_str(), "defs" | "clipPath" | "mask" | "symbol" | "marker" | "pattern" | "linearGradient" | "radialGradient" | "style" | "title" | "desc" | "metadata" | "text" | "filter");
+        if t.open {
+            if skip_depth > 0 {
+                if !t.close {
+                    skip_depth += 1;
+                }
+                continue;
+            }
+            if hidden {
+                if !t.close {
+                    skip_depth = 1;
+                }
+                continue;
+            }
+            let mut xf = *stack.last().unwrap();
+            if let Some((_, v)) = t.attrs.iter().find(|(k, _)| k == "transform") {
+                xf = parse_transform(v).then(xf);
+            }
+            let segs = shape_segs(t);
+            if !segs.is_empty() {
+                out.extend(flatten(&segs, &xf));
+            }
+            if !t.close {
+                stack.push(xf);
+            }
+        } else if t.close {
+            if skip_depth > 0 {
+                skip_depth -= 1;
+            } else if stack.len() > 1 {
+                stack.pop();
+            }
+        }
+    }
+    Ok(out)
+}

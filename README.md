@@ -21,8 +21,10 @@ Requires a current stable Rust toolchain (https://rustup.rs). On Windows the MSV
 The core library has zero dependencies; the editor uses egui/eframe + rfd (native file dialogs).
 
 ## Editor
-Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid), Graph,
+Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid of 182 texture nodes plus "Ready-made" generator and filter folders; all 30 finished graphs also open as examples from the start screen), Graph,
 3D View, 2D View and Properties panels. Panels can be closed/reopened from the Windows menu.
+
+Path nodes (stroke, border, scatter, track, cable, seam) follow splines that you draw in the 2D view (select a path node > Edit spline) or import from an SVG.
 
 Tab = add node at cursor · drag a link into empty space = add + auto-connect · Ctrl+Z/Y undo/redo ·
 Ctrl+C/X/V/D · rubber-band & Shift/Ctrl multi-select · C = comment frame · double-click a subgraph to edit it ·
@@ -32,6 +34,7 @@ F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
     materialcraft render <graph.mcg|.mca> <outdir> [--sizes 512,1024] [--depth 16] [--param "Label=0.5"] [--variations 8] [--render3d]
     materialcraft publish <graph.mcg> <out.mca>      # embeds bitmaps, flattens editor data
     materialcraft bake <low.obj> <high.obj> <outdir> [--size 1024]
+    materialcraft library [words] [--kind material|generator|filter] [--export <id> <file>]   # built-in ready-made graphs
     materialcraft nodes | check | params | testmesh | example
 
 ## Platforms

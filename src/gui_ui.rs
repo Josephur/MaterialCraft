@@ -51,7 +51,7 @@ impl App {
             acts.push(Act::Drop((*payload).clone(), p));
         }
 
-        if resp.hovered() {
+        if ui.rect_contains_pointer(rect) {
             let sc = ui.input(|i| i.smooth_scroll_delta.y);
             if sc != 0.0 {
                 let old = self.zoom;
@@ -194,7 +194,9 @@ impl App {
         };
         let in_port = move |p: [f32; 2], i: usize, n: usize, dot: bool, body: f32| if dot { ts(p) + vec2(0.0, 12.0 * z) } else { ts(p) + vec2(0.0, (BAR + body * (i as f32 + 1.0) / (n as f32 + 1.0)) * z) };
         let link = |painter: &egui::Painter, a: Pos2, b: Pos2, col: Color32, w: f32| {
-            let dx = ((b.x - a.x).abs() * 0.5).max(40.0 * z);
+            // the handles follow the distance: close nodes get a short, tight wire; a wire that has to turn back gets a wider loop
+            let (adx, ady) = ((b.x - a.x).abs(), (b.y - a.y).abs());
+            let dx = if b.x >= a.x { (adx * 0.5).max(ady * 0.2).max(3.0 * z) } else { (adx * 0.25 + ady * 0.2 + 28.0 * z).min(120.0 * z) };
             painter.add(CubicBezierShape::from_points_stroke([a, a + vec2(dx, 0.0), b - vec2(dx, 0.0), b], false, Color32::TRANSPARENT, Stroke::new(w * z.max(0.7), col)));
         };
 
@@ -344,6 +346,7 @@ impl App {
                 nr.clone().on_hover_text(e);
             }
             let (kind, gname) = (s.kind.clone(), s.graph_name.clone());
+            let is_template = gname.as_ref().and_then(|g| self.g.subgraphs.get(g)).map(|sg| sg.meta.contains_key("template")).unwrap_or(false);
             nr.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     acts.push(Act::Copy);
@@ -360,7 +363,7 @@ impl App {
                 ui.separator();
                 if kind == "subgraph" {
                     if let Some(g) = &gname {
-                        if ui.button("Open subgraph").clicked() {
+                        if ui.button(if is_template { "Edit template" } else { "Open subgraph" }).on_hover_text(if is_template { "Opens the template's graph. Changes apply to every instance of it in this package." } else { "Opens the subgraph" }).clicked() {
                             acts.push(Act::EnterSub(g.clone()));
                             ui.close();
                         }
@@ -401,6 +404,7 @@ impl App {
                     if pr.drag_started() {
                         self.connecting = Some(id);
                         self.connecting_out = Some(oname.clone());
+                        self.relink_all = mods.shift && !self.children_of(id, Some(oname.as_str())).is_empty();
                     }
                 }
             } else if s.kind != "output" {
@@ -411,6 +415,7 @@ impl App {
                 if pr.drag_started() {
                     self.connecting = Some(id);
                     self.connecting_out = None;
+                    self.relink_all = mods.shift && !self.children_of(id, None).is_empty();
                 }
             }
             let n = s.slots.len();
@@ -444,9 +449,35 @@ impl App {
         // connection drag
         if let Some(src) = self.connecting {
             if let (Some(pt), Some(a)) = (pointer, src_port(src, self.connecting_out.as_deref())) {
-                link(&painter, a, pt, Color32::from_rgb(110, 225, 200), 2.0);
+                if self.relink_all {
+                    // Shift-drag: every link of this output follows the pointer to its new parent
+                    let kids = self.children_of(src, self.connecting_out.as_deref());
+                    for (kid, slot) in &kids {
+                        if let Some(ks) = snaps.iter().find(|x| x.id == *kid) {
+                            if let Some(i) = ks.slots.iter().position(|x| x.0 == slot.as_str()) {
+                                link(&painter, pt, in_port(ks.pos, i, ks.slots.len(), ks.dot, body_of(ks)), Color32::from_rgb(255, 190, 90), 2.0);
+                            }
+                        }
+                    }
+                    painter.circle_stroke(a, 8.0 * z, Stroke::new(1.5_f32, Color32::from_rgb(255, 190, 90)));
+                } else {
+                    link(&painter, a, pt, Color32::from_rgb(110, 225, 200), 2.0);
+                }
             }
-            if released {
+            if released && self.relink_all {
+                if let Some(pt) = pointer {
+                    // target: the nearest output socket, else the node card under the pointer
+                    let target = out_ports.iter().filter(|(_, _, p)| (*p - pt).length() < 16.0 * z).min_by(|a, b| (a.2 - pt).length().partial_cmp(&(b.2 - pt).length()).unwrap_or(std::cmp::Ordering::Equal)).map(|(i, o, _)| (*i, o.clone()))
+                        .or_else(|| snaps.iter().zip(&cards).find(|(sn, c)| c.contains(pt) && sn.kind != "output").map(|(sn, _)| (sn.id, None)));
+                    if let Some((t, tout)) = target {
+                        let o = self.connecting_out.clone();
+                        self.relink_children(src, o, t, tout);
+                    }
+                }
+                self.connecting = None;
+                self.connecting_out = None;
+                self.relink_all = false;
+            } else if released {
                 if let Some(pt) = pointer {
                     let near = ports.iter().filter(|(_, _, p)| (*p - pt).length() < 14.0 * z).min_by(|a, b| (a.2 - pt).length().partial_cmp(&(b.2 - pt).length()).unwrap_or(std::cmp::Ordering::Equal));
                     if let Some((dst, slot, _)) = near {
@@ -585,6 +616,9 @@ impl App {
                 self.enter_sub(&n);
             }
             Act::ExitSub => self.exit_sub(),
+            Act::SplineEdit(id) => self.spl_start(id),
+            Act::SplineImportSvg(id) => self.spl_import_svg(id),
+            Act::SplDelete => self.spl_delete_point(),
             Act::AutoLayout => {
                 self.snap();
                 auto_layout(&mut self.g);
@@ -603,7 +637,9 @@ impl App {
             Act::Drop(key, p) => {
                 let world = self.screen_to_world(p);
                 let w = pos2(world.x - CARD * 0.5, world.y - CARD_H * 0.5);
-                if let Some(e) = self.entries().into_iter().find(|e| e.label == key) {
+                if let Some(id) = key.strip_prefix("asset:") {
+                    self.add_template_node(id, Some(w));
+                } else if let Some(e) = self.entries().into_iter().find(|e| e.label == key) {
                     self.spawn(&e, w, None);
                 }
             }
@@ -641,6 +677,8 @@ impl App {
                 }
             }
             Act::NewOutput(usage, from) => self.new_output(&usage, from),
+            Act::OpenTemplate(id) => self.open_template(&id),
+            Act::AddTemplate(id) => self.add_template_to_project(&id),
         }
     }
 

@@ -1190,17 +1190,17 @@ fn phase5_voronoi_cells_grunge_properties() {
 #[test]
 fn phase6_grunge_maps_are_distinct_and_controllable() {
     let mut g = String::new();
-    for m in 1..=15 {
+    for m in 1..=24 {
         g += &format!("node {m} grunge_map map={m}\noutput m{m} {m}\n");
     }
-    g += "node 20 grunge_map map=2 balance=0.1\nnode 21 grunge_map map=2 balance=0.9\nnode 22 grunge_map map=2 invert=1\nnode 23 grunge_map map=2\noutput lo 20\noutput hi 21\noutput inv 22\noutput base 23\n";
+    g += "node 120 grunge_map map=2 balance=0.1\nnode 121 grunge_map map=2 balance=0.9\nnode 122 grunge_map map=2 invert=1\nnode 123 grunge_map map=2\noutput lo 120\noutput hi 121\noutput inv 122\noutput base 123\n";
     let run = |body: &str| Graph::parse(&format!("size 128\n{body}")).unwrap().evaluate(None).unwrap();
     let o = run(&g);
     let mean = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| p[0]).sum::<f32>() / t.px.len() as f32;
-    for m in 1..=15 {
+    for m in 1..=24 {
         let v = mean(&o[&format!("m{m}")]);
         assert!(v.is_finite() && v > 0.05 && v < 1.0, "map {m} mean {v}");
-        for n in (m + 1)..=15 {
+        for n in (m + 1)..=24 {
             let d: f32 = o[&format!("m{m}")].px.iter().zip(&o[&format!("m{n}")].px).map(|(a, b)| (a[0] - b[0]).abs()).sum();
             assert!(d > 10.0, "maps {m} and {n} look the same");
         }
@@ -1667,4 +1667,27 @@ fn colorspace_conversion_roundtrips_and_keeps_alpha() {
     assert!(p3.px[0][0] != t.px[0][0] || p3.px[0][1] != t.px[0][1]);
     assert!(colorspace::convert(&t, "nope").is_err());
     assert!(colorspace::is_color_output("basecolor") && !colorspace::is_color_output("normal"));
+}
+
+#[test]
+fn library_assets_parse_and_render() {
+    use materialcraft::library::{self, AssetKind};
+    let mut ids = std::collections::HashSet::new();
+    for a in library::assets() {
+        assert!(ids.insert(a.id), "duplicate id {}", a.id);
+        assert!(!a.tags.is_empty() && !a.description.is_empty(), "{} lacks tags or description", a.id);
+        let g = a.graph().unwrap_or_else(|e| panic!("{}: {e}", a.id));
+        let out = g.evaluate(Some(64)).unwrap_or_else(|e| panic!("{}: {e}", a.id));
+        assert!(!out.is_empty(), "{} has no outputs", a.id);
+        for (k, t) in &out {
+            assert!(t.px.iter().all(|v| v.iter().all(|c| c.is_finite())), "{}:{k} has non-finite values", a.id);
+        }
+        let th = a.thumbnail(32).unwrap();
+        assert_eq!((th.w, th.h), (32, 32));
+        assert!(library::find(a.id).is_some());
+    }
+    assert!(library::assets().iter().any(|a| a.kind == AssetKind::Material));
+    assert!(!library::search("rust", None).is_empty());
+    assert!(library::search("zzzz-nothing", None).is_empty());
+    assert_eq!(library::search("", Some(AssetKind::Filter)).len(), library::categories(AssetKind::Filter).iter().map(|c| library::assets().iter().filter(|a| a.kind == AssetKind::Filter && a.category == *c).count()).sum::<usize>());
 }

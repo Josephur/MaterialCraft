@@ -202,6 +202,9 @@ enum Act {
     Subgraph,
     EnterSub(String),
     ExitSub,
+    SplineEdit(u32),
+    SplineImportSvg(u32),
+    SplDelete,
     AutoLayout,
     FrameAll,
     Search(Option<Pos2>),
@@ -224,6 +227,10 @@ enum Act {
     LinkPackage,
     /// Re-read every live link of the current graph from disk.
     RefreshLinks,
+    /// Open a ready-made template (library id) as an example in its own tab; nothing is added to the project.
+    OpenTemplate(String),
+    /// Copy a template into the project as a new graph (File > Package > Add template).
+    AddTemplate(String),
 }
 
 /// Drag payload: a graph of an open package (package index, graph label, graph name or None for the main graph).
@@ -238,6 +245,9 @@ struct Pkg {
     modified: bool,
     /// graph tabs that were open in this package (subgraph names)
     tabs: Vec<String>,
+    /// Some(template id) while this is a read-only-style example opened from the launcher: it is not part of the
+    /// user's project, is not remembered in the recent list and disappears when its tab is closed.
+    example: Option<String>,
 }
 
 fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
@@ -250,7 +260,7 @@ fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
     if !g.meta.get("identifier").map(|s| !s.is_empty()).unwrap_or(false) {
         g.meta.insert("identifier".into(), path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
     }
-    Ok(Pkg { path: Some(path.to_path_buf()), name: path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), g, modified: false, tabs: Vec::new() })
+    Ok(Pkg { path: Some(path.to_path_buf()), name: path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), g, modified: false, tabs: Vec::new(), example: None })
 }
 
 struct EvalResult {
@@ -304,6 +314,8 @@ struct App {
     gpu_eval: bool,
     /// graphs of the open package that have a tab (the main graph always has one)
     graph_tabs: Vec<String>,
+    /// template id when the package being edited is an example opened from the launcher
+    example: Option<String>,
     show_deps: bool,
     /// smallest / largest channel value of the node shown in the 2D view (HDR range readout)
     tex2d_range: Option<(f32, f32)>,
@@ -322,6 +334,8 @@ struct App {
     connecting: Option<u32>,
     /// Output name of the graph-node socket a link is being dragged from.
     connecting_out: Option<String>,
+    /// Shift-drag from an output: move all of its links to another node
+    relink_all: bool,
     /// Output name to apply when a node created from a link drag gets connected.
     link_out: Option<String>,
     rubber: Option<Pos2>,
@@ -386,6 +400,8 @@ struct App {
     lib_thumbs: HashMap<String, egui::TextureHandle>,
     lib_rx: Option<Receiver<HashMap<String, ColorImage>>>,
     lib_cat: String,
+    spl: Option<SplEdit>,
+    view2d_rect: Rect,
     favorites: BTreeSet<String>,
     show: [bool; 5],
     modified: bool,
@@ -393,6 +409,8 @@ struct App {
     z2d: f32,
     pan2d: Vec2,
     need_fit: bool,
+    home_tpl: u8,
+    home_tpl_filter: String,
     connecting_in: Option<(u32, String)>,
     copy_out: Option<String>,
     logo: Option<egui::TextureHandle>,
@@ -424,6 +442,7 @@ impl App {
             was_focused: true,
             gpu_eval: true,
             graph_tabs: Vec::new(),
+            example: None,
             show_deps: false,
             tex2d_range: None,
             parents: Vec::new(),
@@ -439,6 +458,7 @@ impl App {
             canvas_rect: Rect::from_min_size(Pos2::ZERO, vec2(900.0, 500.0)),
             connecting: None,
             connecting_out: None,
+            relink_all: false,
             link_out: None,
             rubber: None,
             comment_members: Vec::new(),
@@ -496,6 +516,8 @@ impl App {
             lib_thumbs: HashMap::new(),
             lib_rx: Some(spawn_library_thumbs()),
             lib_cat: "Generators/Patterns".into(),
+            spl: None,
+            view2d_rect: Rect::NOTHING,
             favorites,
             show: [true; 5],
             modified: false,
@@ -503,6 +525,8 @@ impl App {
             z2d: 1.0,
             pan2d: Vec2::ZERO,
             need_fit: false,
+            home_tpl: 0,
+            home_tpl_filter: String::new(),
             connecting_in: None,
             copy_out: None,
             logo: Some(logo_handle),
@@ -685,7 +709,7 @@ impl App {
     }
 
     /// Embed `other` (or one named graph of it) as a subgraph of the current graph and place it as a node.
-    fn import_graph_value(&mut self, mut other: Graph, mut stem: String, at: Option<Pos2>, graph: Option<String>) {
+    fn import_graph_value(&mut self, mut other: Graph, mut stem: String, at: Option<Pos2>, graph: Option<String>) -> Option<String> {
         other.migrate_outputs();
         auto_layout_if_unplaced(&mut other);
         // a specific graph of the package: it becomes the imported root, the other graphs stay available to it
@@ -708,7 +732,8 @@ impl App {
         self.snap();
         if let Err(e) = self.g.import_graph(other, &name) {
             self.undo.pop();
-            return self.status(format!("Cannot import '{stem}': {e}"), false);
+            self.status(format!("Cannot import '{stem}': {e}"), false);
+            return None;
         }
         // the copy only exists to feed the node, so keep it out of the Explorer's graph list
         let prefix = format!("{name}__");
@@ -721,6 +746,7 @@ impl App {
         self.add_node_at("subgraph", Some(&name), pos);
         self.undo.pop(); // one undo step for the whole import
         self.status(format!("Added '{name}' as a node - drag from one of its output sockets to connect it"), true);
+        Some(name)
     }
 
     // ------------------------------------------------------------ workspace of packages
@@ -755,8 +781,8 @@ impl App {
 
     fn pkg_modified(&self, i: usize) -> bool {
         match self.pkgs.get(i) {
-            Some(Some(p)) => p.modified || p.path.is_none(),
-            _ => self.modified || self.file.is_none(),
+            Some(Some(p)) => p.modified || (p.path.is_none() && p.example.is_none()),
+            _ => self.modified || (self.file.is_none() && self.example.is_none()),
         }
     }
 
@@ -781,13 +807,14 @@ impl App {
 
     fn snapshot_active(&mut self) -> Pkg {
         self.goto_root();
-        Pkg { path: self.file.clone(), name: self.package_label(), g: self.g.clone(), modified: self.modified, tabs: self.graph_tabs.clone() }
+        Pkg { path: self.file.clone(), name: self.package_label(), g: self.g.clone(), modified: self.modified, tabs: self.graph_tabs.clone(), example: self.example.clone() }
     }
 
     fn load_active(&mut self, p: Pkg) {
         self.parents.clear();
         self.g = p.g;
         self.graph_tabs = p.tabs;
+        self.example = p.example;
         self.clear_views();
         self.file = p.path;
         self.unsaved_name = p.name;
@@ -815,7 +842,8 @@ impl App {
 
     /// Add a new package to the workspace and edit it.
     fn add_pkg_active(&mut self, p: Pkg) {
-        if self.screen != Screen::Editor {
+        // a workspace that is open behind the home screen stays open: the new package joins it
+        if self.screen != Screen::Editor && self.pkgs.is_empty() {
             self.ws_fresh();
             self.load_active(p);
             return;
@@ -974,6 +1002,71 @@ impl App {
     }
 
     /// Connect `src` (reading its named output when it is a graph node) to input `slot` of `dst`.
+    /// The inputs (node, slot) fed by output `out` of `src` (None: its only or first output).
+    fn children_of(&self, src: u32, out: Option<&str>) -> Vec<(u32, String)> {
+        let first = self.g.nodes.get(&src).and_then(|n| materialcraft::graph::node_outputs(&n.kind).first().map(|s| s.to_string()));
+        let mut v = Vec::new();
+        for (id, n) in &self.g.nodes {
+            for (slot, from) in &n.ins {
+                if *from != src {
+                    continue;
+                }
+                let link_out = n.in_out.get(slot).cloned().or_else(|| first.clone());
+                let want = out.map(|s| s.to_string()).or_else(|| first.clone());
+                if link_out == want {
+                    v.push((*id, slot.clone()));
+                }
+            }
+        }
+        v
+    }
+
+    /// Shift-drag: detach every link of output `out` of `src` and connect them to `target` instead. The nodes below keep
+    /// their place in the graph; links that would make a cycle or mismatch in type stay where they were.
+    fn relink_children(&mut self, src: u32, out: Option<String>, target: u32, tout: Option<String>) {
+        if src == target {
+            return;
+        }
+        let kids = self.children_of(src, out.as_deref());
+        let pins = materialcraft::graph::pin_types(&self.g);
+        let from = match (&tout, self.g.nodes.get(&target)) {
+            (Some(o), Some(tn)) if !materialcraft::graph::node_outputs(&tn.kind).is_empty() => materialcraft::graph::output_pin(&tn.kind, Some(o.as_str()), pins.get(&target) == Some(&materialcraft::graph::Pin::Color), tn),
+            _ => pins.get(&target).copied().unwrap_or(materialcraft::graph::Pin::Gray),
+        };
+        let mut todo = Vec::new();
+        let mut skipped = 0;
+        for (kid, slot) in kids {
+            let ok_type = self.g.nodes.get(&kid).map(|k| materialcraft::graph::input_value_type(&k.kind, &slot).unwrap_or(materialcraft::graph::Pin::Gray).accepts(from)).unwrap_or(false);
+            if kid == target || self.depends_on(target, kid) || !ok_type {
+                skipped += 1;
+            } else {
+                todo.push((kid, slot));
+            }
+        }
+        if todo.is_empty() {
+            self.status("Nothing moved: the links would make a cycle or do not fit that output.", false);
+            return;
+        }
+        self.snap();
+        let moved = todo.len();
+        for (kid, slot) in todo {
+            if let Some(n) = self.g.nodes.get_mut(&kid) {
+                n.ins.insert(slot.clone(), target);
+                match &tout {
+                    Some(o) => {
+                        n.in_out.insert(slot, o.clone());
+                    }
+                    None => {
+                        n.in_out.remove(&slot);
+                    }
+                }
+            }
+        }
+        self.dirty = true;
+        let extra = if skipped > 0 { format!(" ({skipped} left in place)") } else { String::new() };
+        self.status(format!("Moved {moved} link(s) to the new node{extra}"), true);
+    }
+
     fn try_connect_out(&mut self, src: u32, dst: u32, slot: &str, out: Option<String>) {
         if src == dst || self.depends_on(src, dst) {
             self.status("Connection rejected: it would create a cycle.", false);
@@ -1234,6 +1327,7 @@ impl App {
         self.dirty3d = true;
         self.gpu_maps_dirty = true;
         self.dirty = true;
+        self.spl = None;
     }
 
     fn enter_sub(&mut self, name: &str) {
@@ -1261,7 +1355,10 @@ impl App {
         if let Some((mut parent, name)) = self.parents.pop() {
             let mut sub = std::mem::take(&mut self.g);
             let libs = std::mem::take(&mut sub.subgraphs);
-            sub.resources.clear();
+            // splines made or edited inside the subgraph live in the package
+            for (k, v) in std::mem::take(&mut sub.resources) {
+                parent.resources.insert(k, v);
+            }
             for (k, v) in libs {
                 parent.subgraphs.entry(k).or_insert(v);
             }
@@ -1356,6 +1453,7 @@ impl App {
                 self.status(format!("Saved {}", p.display()), true);
                 self.push_recent(&p);
                 self.file = Some(p);
+                self.example = None;
                 self.modified = false;
             }
             Err(e) => self.status(format!("Save failed: {e}"), false),
@@ -1770,8 +1868,15 @@ fn auto_layout(g: &mut Graph) {
     }
 }
 
+/// Lay the graph out when its nodes have no usable positions: all at the origin, or several sharing one spot
+/// (graphs written by hand or by the library only place the nodes that were moved, e.g. migrated output nodes).
 fn auto_layout_if_unplaced(g: &mut Graph) {
-    if g.nodes.len() > 1 && g.nodes.values().all(|n| n.pos == [0.0, 0.0]) {
+    if g.nodes.len() < 2 {
+        return;
+    }
+    let mut seen: BTreeSet<(i32, i32)> = BTreeSet::new();
+    let dups = g.nodes.values().filter(|n| !seen.insert(((n.pos[0] / 8.0).round() as i32, (n.pos[1] / 8.0).round() as i32))).count();
+    if dups >= 1 && dups * 3 >= g.nodes.len() {
         auto_layout(g);
     }
 }
@@ -1809,5 +1914,6 @@ fn apply_theme(ctx: &egui::Context) {
 }
 
 include!("gui_params.rs");
+include!("gui_spline.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");

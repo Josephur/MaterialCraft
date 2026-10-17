@@ -20,6 +20,8 @@ USAGE:
   materialcraft bake    <low.obj> <high.obj> <outdir> [--size N] [--dist D] [--ao-rays N] [--ao-dist D] [--padding N]
   materialcraft testmesh <outdir>                   write a demo low/high-poly OBJ pair
   materialcraft example <outdir>
+  materialcraft library [words...] [--kind material|generator|filter]   list or search the built-in ready-made graphs
+  materialcraft library --export <id> <file.mcg>                          write one of them out to edit
   materialcraft nodes
 
 The visual editor is a separate binary:  cargo run --release --features gui --bin materialcraft-gui
@@ -65,6 +67,43 @@ fn run(args: &[String]) -> Result<(), String> {
             let text = g.publish().map_err(|e| e.to_string())?;
             materialcraft::safeio::write_file(Path::new(o), text.as_bytes()).map_err(|e| e.to_string())?;
             println!("published {o} ({} bytes, {} exposed parameters)", text.len(), g.exposed.len());
+            Ok(())
+        }
+        Some("library") => {
+            let mut words: Vec<&str> = Vec::new();
+            let (mut kind, mut export): (Option<materialcraft::library::AssetKind>, Option<(&str, &str)>) = (None, None);
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--kind" => {
+                        let v = args.get(i + 1).ok_or("--kind needs a value")?;
+                        kind = Some(materialcraft::library::AssetKind::parse(v).ok_or("unknown kind (use material, generator or filter)")?);
+                        i += 2;
+                    }
+                    "--export" => {
+                        let (id, file) = (args.get(i + 1).ok_or("--export needs an id and a file")?, args.get(i + 2).ok_or("--export needs a file")?);
+                        export = Some((id.as_str(), file.as_str()));
+                        i += 3;
+                    }
+                    w => {
+                        words.push(w);
+                        i += 1;
+                    }
+                }
+            }
+            if let Some((id, file)) = export {
+                let a = materialcraft::library::find(id).ok_or_else(|| format!("no library entry '{id}' (try: materialcraft library)"))?;
+                materialcraft::safeio::write_file(Path::new(file), a.source.as_bytes()).map_err(|e| format!("{file}: {e}"))?;
+                println!("wrote {file} ({})", a.name);
+                return Ok(());
+            }
+            let hits = materialcraft::library::search(&words.join(" "), kind);
+            if hits.is_empty() {
+                println!("nothing found");
+            }
+            for a in hits {
+                println!("{:<24} {:<10} {:<20} {}", a.id, a.kind.label(), a.category, a.tags.join(", "));
+            }
             Ok(())
         }
         Some("example") => {
