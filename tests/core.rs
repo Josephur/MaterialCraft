@@ -1101,7 +1101,7 @@ fn phase3b_nodes_behave_like_designer() {
     let diff = |a: &materialcraft::tex::Tex, b: &materialcraft::tex::Tex| a.px.iter().zip(&b.px).map(|(p, q)| (p[0] - q[0]).abs()).sum::<f32>() / a.px.len() as f32;
     // Edge Detect: width, invert, tolerance, roundness
     let run512 = |body: &str| Graph::parse(&format!("size 512\n{body}")).unwrap().evaluate(None).unwrap();
-    let o = run512("node 1 stripes count=2 softness=0.001 width=0.5\nnode 2 edge_detect in=@1 edge_width=1\nnode 3 edge_detect in=@1 edge_width=9\nnode 4 edge_detect in=@1 edge_width=1 invert=1\nnode 5 edge_detect in=@1 edge_width=9 edge_roundness=8\nnode 6 perlin scale=4 seed=1\nnode 7 edge_detect in=@6 tolerance=0\nnode 8 edge_detect in=@6 tolerance=0.9\nnode 9 edge_detect in=@1 mode=1\noutput w1 2\noutput w9 3\noutput inv 4\noutput round 5\noutput t0 7\noutput t9 8\noutput legacy 9\n");
+    let o = run512("node 1 stripes count=2 softness=0.001 width=0.5\nnode 2 edge_detect in=@1 edge_width=1 edge_roundness=0\nnode 3 edge_detect in=@1 edge_width=9 edge_roundness=0\nnode 4 edge_detect in=@1 edge_width=1 edge_roundness=0 invert=1\nnode 5 edge_detect in=@1 edge_width=9 edge_roundness=8\nnode 6 perlin scale=4 seed=1\nnode 7 edge_detect in=@6 tolerance=0 edge_roundness=0\nnode 8 edge_detect in=@6 tolerance=0.9 edge_roundness=0\nnode 9 edge_detect in=@1 mode=1\noutput w1 2\noutput w9 3\noutput inv 4\noutput round 5\noutput t0 7\noutput t9 8\noutput legacy 9\n");
     assert!(sum(&o["w1"]) > 1.0, "edges found");
     assert!(sum(&o["w9"]) > sum(&o["w1"]) * 2.0, "edge width widens the line");
     assert!((sum(&o["inv"]) + sum(&o["w1"]) - 512.0 * 512.0).abs() < 1.0, "invert");
@@ -1184,4 +1184,76 @@ fn phase5_voronoi_cells_grunge_properties() {
     assert!(mean(&o["specks"]) < mean(&o["c"]) && mean(&o["scr"]) > mean(&o["c"]), "concrete specks darken, scratches add");
     assert!(mean(&o["s1"]) > mean(&o["s0"]), "wider scratches cover more");
     assert!(diff(&o["p0"], &o["p1"]) > 0.01, "spots details / coverage");
+}
+
+#[test]
+fn phase6_grunge_maps_are_distinct_and_controllable() {
+    let mut g = String::new();
+    for m in 1..=15 {
+        g += &format!("node {m} grunge_map map={m}\noutput m{m} {m}\n");
+    }
+    g += "node 20 grunge_map map=2 balance=0.1\nnode 21 grunge_map map=2 balance=0.9\nnode 22 grunge_map map=2 invert=1\nnode 23 grunge_map map=2\noutput lo 20\noutput hi 21\noutput inv 22\noutput base 23\n";
+    let run = |body: &str| Graph::parse(&format!("size 128\n{body}")).unwrap().evaluate(None).unwrap();
+    let o = run(&g);
+    let mean = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| p[0]).sum::<f32>() / t.px.len() as f32;
+    for m in 1..=15 {
+        let v = mean(&o[&format!("m{m}")]);
+        assert!(v.is_finite() && v > 0.05 && v < 1.0, "map {m} mean {v}");
+        for n in (m + 1)..=15 {
+            let d: f32 = o[&format!("m{m}")].px.iter().zip(&o[&format!("m{n}")].px).map(|(a, b)| (a[0] - b[0]).abs()).sum();
+            assert!(d > 10.0, "maps {m} and {n} look the same");
+        }
+    }
+    assert!(mean(&o["lo"]) < mean(&o["base"]) && mean(&o["base"]) < mean(&o["hi"]), "balance moves the amount of dirt");
+    assert!((mean(&o["inv"]) + mean(&o["base"]) - 1.0).abs() < 1e-3, "invert");
+}
+
+#[test]
+fn phase6_gradient_map_and_color_match() {
+    let run = |body: &str| Graph::parse(&format!("size 64\n{body}")).unwrap().evaluate(None).unwrap();
+    let mean = |t: &materialcraft::tex::Tex, c: usize| t.px.iter().map(|p| p[c]).sum::<f32>() / t.px.len() as f32;
+    // gradient map: repeat wraps the input, clamp does not; alpha stops are only used on request
+    let stops = "p0=0 r0=0 g0=0 b0=0 a0=0 p1=1 r1=1 g1=1 b1=1 a1=1";
+    let o = run(&format!(
+        "node 1 color gray=1 v=1.25\nnode 2 colorize in=@1 {stops}\nnode 3 colorize in=@1 addressing=1 {stops}\nnode 4 gradient mode=0\nnode 5 colorize in=@4 use_alpha=1 {stops}\nnode 6 colorize in=@4 {stops}\noutput clamp 2\noutput rep 3\noutput al 5\noutput noal 6\n"
+    ));
+    assert!((o["clamp"].px[0][0] - 1.0).abs() < 1e-4, "clamped");
+    assert!((o["rep"].px[0][0] - 0.25).abs() < 1e-3, "repeat wraps 1.25 to 0.25");
+    assert!((mean(&o["al"], 3) - 0.5).abs() < 0.1 && (mean(&o["noal"], 3) - 1.0).abs() < 1e-4, "alpha stops");
+    // colour swap: a red surface becomes blue, a green one is left alone by the mask
+    let o = run(
+        "node 1 color r=0.8 g=0.1 b=0.1\nnode 2 color r=0.1 g=0.7 b=0.1\nnode 3 color_match in=@1 method=1 source_mode=1 src_r=0.8 src_g=0.1 src_b=0.1 target_r=0.1 target_g=0.2 target_b=0.9\nnode 4 color_match in=@2 method=1 source_mode=1 src_r=0.8 src_g=0.1 src_b=0.1 target_r=0.1 target_g=0.2 target_b=0.9\nnode 5 color_match in=@2 method=1 source_mode=1 src_r=0.8 src_g=0.1 src_b=0.1 target_r=0.1 target_g=0.2 target_b=0.9 use_mask=0\nnode 6 color_match in=@1 method=1 target_r=0.1 target_g=0.2 target_b=0.9\noutput red 3\noutput green 4\noutput nomask 5\noutput avg 6\n",
+    );
+    let r = o["red"].px[0];
+    assert!(r[2] > r[0] + 0.3 && (r[0] - 0.1).abs() < 0.08 && (r[2] - 0.9).abs() < 0.08, "red turned blue: {r:?}");
+    let g = o["green"].px[0];
+    assert!((g[0] - 0.1).abs() < 1e-3 && (g[1] - 0.7).abs() < 1e-3, "green untouched by the mask");
+    assert!((o["nomask"].px[0][1] - 0.7).abs() > 0.05, "without the mask everything moves");
+    let a = o["avg"].px[0];
+    assert!(a[2] > a[0] + 0.3, "average source mode: {a:?}");
+}
+
+#[test]
+fn phase8_hbao_and_quantize_color() {
+    let run = |body: &str| Graph::parse(&format!("size 128\n{body}")).unwrap().evaluate(None).unwrap();
+    let mean = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| p[0]).sum::<f32>() / t.px.len() as f32;
+    // a flat surface is unoccluded; a pit is darker at its bottom than a flat area, and taller height means darker
+    let o = run(
+        "node 1 color gray=1 v=0.5\nnode 2 ao in=@1 mode=1\nnode 3 circle radius=0.3 softness=0.05\nnode 4 invert in=@3\nnode 5 ao in=@4 mode=1 height_depth=0.1\nnode 6 ao in=@4 mode=1 height_depth=0.5\nnode 7 ao in=@4 mode=1 use_world_units=1 height_depth_cm=30 surface_size=300\nnode 8 ao in=@4 mode=1 use_world_units=1 height_depth_cm=300 surface_size=300\nnode 9 ao in=@4 mode=1 quality=2\noutput flat 2\noutput shallow 5\noutput deep 6\noutput w_small 7\noutput w_big 8\noutput q16 9\n",
+    );
+    assert!(mean(&o["flat"]) > 0.999, "flat is unoccluded");
+    assert!(mean(&o["shallow"]) < 0.999 && mean(&o["deep"]) < mean(&o["shallow"]), "taller height occludes more");
+    assert!(mean(&o["w_big"]) < mean(&o["w_small"]), "world units: higher height scale occludes more");
+    assert!(o["q16"].px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])));
+    // quantize colour: a smooth gradient reduces to the requested number of colours
+    let o = run("node 1 gradient mode=0\nnode 2 colorize in=@1 p0=0 r0=1 g0=0 b0=0 p1=0.5 r1=0 g1=1 b1=0 p2=1 r2=0 g2=0 b2=1\nnode 3 quantize_color in=@2 color_amount=3\nnode 4 quantize_color in=@2 color_amount=8 dithering=1 dithering_pattern=1\nnode 5 quantize_color in=@2 color_amount=1\noutput three 3\noutput eight 4\noutput one 5\n");
+    let distinct = |t: &materialcraft::tex::Tex| {
+        let mut v: Vec<[i32; 3]> = t.px.iter().map(|p| [(p[0] * 200.0) as i32, (p[1] * 200.0) as i32, (p[2] * 200.0) as i32]).collect();
+        v.sort();
+        v.dedup();
+        v.len()
+    };
+    assert!(distinct(&o["three"]) <= 3, "at most 3 colours, got {}", distinct(&o["three"]));
+    assert!(distinct(&o["eight"]) <= 8 && distinct(&o["eight"]) > 3, "dithered 8 colours: {}", distinct(&o["eight"]));
+    assert_eq!(distinct(&o["one"]), 1);
 }

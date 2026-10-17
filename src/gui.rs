@@ -728,6 +728,9 @@ impl App {
             }
             _ => {}
         }
+        for (k, v) in new_node_defaults(kind) {
+            n.nums.insert((*k).to_string(), *v);
+        }
         self.g.nodes.insert(id, n);
         self.sel = [id].into_iter().collect();
         self.active = Some(id);

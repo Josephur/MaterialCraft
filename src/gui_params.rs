@@ -236,6 +236,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "bnw_spots" => vec![pe("variant", "Type", 0, &["Spots 1", "Spots 2", "Spots 3"]), pi("scale", "Scale", 8, 1, 64), p_dis(), p_seed(), p_con(), p_inv()],
         "crystal" => vec![pe("variant", "Type", 0, &["Crystal 1", "Crystal 2"]), pi("scale", "Scale", 6, 1, 64), p_dis(), p_seed(), p_con(), p_inv()],
         "directional_noise" => vec![pf("scale", "Scale", 6.0, 1.0, 32.0), pf("stretch", "Stretch", 8.0, 1.0, 32.0), pf("angle", "Angle", 0.0, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "grunge_map" => vec![pi("map", "Grunge map", 1, 1, 15), pf("balance", "Balance", 0.5, 0.0, 1.0), pf("contrast", "Contrast", 0.5, 0.0, 1.0), pf("brush_pattern", "Brush pattern", 0.0, 0.0, 1.0), pf("cracks", "Cracks (maps 11, 13)", 0.5, 0.0, 1.0), pf("disorder", "Disorder", 0.0, 0.0, 1.0), pb("invert", "Invert", false), p_seed()],
         "grunge" => vec![
             pe("variant", "Type", 0, &["Concrete", "Scratches", "Spots", "Smudges"]),
             pf("balance", "Balance", 0.5, 0.0, 1.0),
@@ -262,7 +263,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "gradient_circular" => vec![pf("offset", "Offset", 0.0, 0.0, 1.0)],
         "circle" => vec![pf("radius", "Radius", 0.4, 0.0, 0.7), pf("softness", "Edge softness", 0.01, 0.0, 0.5)],
         "rect" => vec![pf("width", "Width", 0.6, 0.0, 1.0), pf("height", "Height", 0.4, 0.0, 1.0), pf("softness", "Edge softness", 0.01, 0.0, 0.5)],
-        "polygon" => vec![pi("sides", "Sides", 5, 3, 12), pf("radius", "Radius", 0.4, 0.0, 0.7), pf("softness", "Edge softness", 0.01, 0.0, 0.5), pf("rotation", "Rotation", 0.0, 0.0, 1.0)],
+        "polygon" => vec![pi("sides", "Sides", 5, 3, 32), pf("radius", "Radius", 0.4, 0.0, 0.7), pf("softness", "Edge softness", 0.01, 0.0, 0.5), pf("rotation", "Rotation", 0.0, 0.0, 1.0)],
         "shape" => vec![
             pe("shape", "Shape", 1, SHAPES),
             pf("size_x", "Width", 0.6, 0.0, 1.5),
@@ -401,7 +402,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "quantize" => vec![pi("steps", "Steps", 4, 2, 32)],
         "channel" => vec![pe("ch", "Channel", 0, &["Red", "Green", "Blue", "Alpha"])],
         "tint" => vec![pf("r", "Red", 1.0, 0.0, 1.0), pf("g", "Green", 1.0, 0.0, 1.0), pf("b", "Blue", 1.0, 0.0, 1.0)],
-        "colorize" => vec![pe("interp", "Interpolation", 0, &["Linear", "Smooth", "Step"])],
+        "colorize" => vec![pe("interp", "Interpolation", 0, &["Linear", "Smooth", "Step", "Smoother"]), pf("smoothness", "Smoothness", 1.0, 0.0, 1.0), pe("addressing", "Gradient addressing", 0, &["Clamp", "Repeat"]), pb("use_alpha", "Use gradient alpha", false)],
         "hsl" => vec![pf("hue", "Hue", 0.0, -1.0, 1.0), pf("sat", "Saturation", 1.0, 0.0, 2.0), pf("val", "Lightness", 1.0, 0.0, 2.0)],
         "transform" => vec![
             pf("offset_x", "Offset X", 0.0, -1.0, 1.0),
@@ -438,10 +439,22 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "normal" => vec![pf("strength", "Intensity", 2.0, 0.0, 10.0), pb("directx", "DirectX format", false), pb("alpha_from_input", "Fill alpha with input", false)],
         "normal_blend" => vec![pf("opacity", "Opacity", 1.0, 0.0, 1.0)],
         "normal_combine" => vec![pe("technique", "Technique", 2, &["Whiteout", "Channel mixer", "Detail oriented"])],
-        "ao" => vec![pf("radius", "Spread", 6.0, 0.0, 64.0), pf("intensity", "Height depth", 2.0, 0.0, 10.0)],
+        "ao" => vec![
+            pe("mode", "Method", 0, &["Blur (legacy)", "Horizon (HBAO)"]),
+            pf("radius", "Spread (legacy)", 6.0, 0.0, 64.0),
+            pf("intensity", "Height depth (legacy)", 2.0, 0.0, 10.0),
+            pf("hbao_radius", "Radius", 1.0, 0.0, 1.0),
+            pf("hbao_intensity", "Intensity", 1.0, 0.0, 2.0),
+            pe("quality", "Quality", 1, &["4 samples", "8 samples", "16 samples"]),
+            pb("use_world_units", "Use world units", false),
+            pf("height_depth", "Height depth (screen)", 0.1, 0.0, 1.0),
+            pf("surface_size", "Surface size (cm)", 300.0, 1.0, 1000.0),
+            pf("height_depth_cm", "Height depth (cm)", 30.0, 0.0, 1000.0),
+        ],
+        "quantize_color" => vec![pi("color_amount", "Max. colour amount", 32, 1, 128), pf("contour_smoothing", "Contour smoothing", 0.0, 0.0, 8.0), pf("dithering", "Dithering", 0.0, 0.0, 1.0), pe("dithering_pattern", "Dithering pattern", 0, &["Noise", "Bayer"]), pb("ignore_alpha", "Ignore alpha", false), pe("distance_color_space", "Distance colour space", 0, &["Lab", "RGB"])],
         "curvature" => vec![pe("mode", "Input", 0, &["Normal map", "Height map (legacy)"]), pe("directx", "Normal format", 0, &["OpenGL", "DirectX"]), pf("intensity", "Intensity", 4.0, 0.0, 10.0), pf("radius", "Radius (height input)", 3.0, 0.0, 64.0)],
         "curvature_smooth" => vec![pf("smoothing", "Smoothing", 2.0, 0.0, 32.0), pf("intensity", "Intensity", 6.0, 0.0, 20.0)],
-        "edge_detect" => vec![pe("mode", "Method", 0, &["Edge lines", "Sobel (legacy)"]), pf("edge_width", "Edge width", 2.0, 1.0, 16.0), pf("edge_roundness", "Edge roundness", 0.0, 0.0, 16.0), pb("invert", "Invert", false), pf("tolerance", "Tolerance", 0.0, 0.0, 1.0), pf("intensity", "Intensity (Sobel)", 2.0, 0.0, 10.0)],
+        "edge_detect" => vec![pe("mode", "Method", 0, &["Edge lines", "Sobel (legacy)"]), pf("edge_width", "Edge width", 2.0, 1.0, 16.0), pf("edge_roundness", "Edge roundness", 4.0, 0.0, 16.0), pb("invert", "Invert", false), pf("tolerance", "Tolerance", 0.0, 0.0, 1.0), pf("intensity", "Intensity (Sobel)", 2.0, 0.0, 10.0)],
         "emboss" => vec![pf("angle", "Angle", 0.125, 0.0, 1.0), pf("intensity", "Intensity", 4.0, 0.0, 10.0)],
         "flood_fill" => vec![pf("threshold", "Threshold", 0.05, 0.0, 1.0)],
         "flood_fill_random" => vec![pf("min", "Minimum", 0.0, 0.0, 1.0), pf("max", "Maximum", 1.0, 0.0, 1.0), p_seed()],
@@ -457,14 +470,26 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
             pe("directx", "Normal format", 0, &["OpenGL", "DirectX"]),
         ],
         "distance" => vec![pf("distance", "Distance range", 0.1, 0.0, 1.0), pf("threshold", "Shape threshold", 0.5, 0.0, 1.0), pe("mode", "Mode", 0, &["Inside", "Outside", "Both"])],
-        "color_match" => vec![pf("strength", "Strength", 1.0, 0.0, 1.0)],
+        "color_match" => vec![
+            pe("method", "Method", 0, &["Statistics transfer", "Colour swap"]),
+            pf("strength", "Strength", 1.0, 0.0, 1.0),
+            pe("source_mode", "Source colour mode", 0, &["Average", "Colour", "Input"]),
+            pf("src_r", "Source red", 0.5, 0.0, 1.0), pf("src_g", "Source green", 0.5, 0.0, 1.0), pf("src_b", "Source blue", 0.5, 0.0, 1.0),
+            pe("target_mode", "Target colour mode", 0, &["Colour", "Input"]),
+            pf("target_r", "Target red", 0.5, 0.0, 1.0), pf("target_g", "Target green", 0.5, 0.0, 1.0), pf("target_b", "Target blue", 0.5, 0.0, 1.0),
+            pb("custom_variation", "Custom colour variation", false),
+            pf("variation_hue", "Hue", 0.0, 0.0, 360.0), pf("variation_chroma", "Chrominance", 1.0, 0.0, 2.0), pf("variation_luma", "Luminance", 1.0, 0.0, 2.0),
+            pb("use_mask", "Use mask", true),
+            pf("mask_hue_range", "Mask hue range", 30.0, 0.0, 180.0), pf("mask_chroma_range", "Mask chroma range", 0.5, 0.0, 1.0), pf("mask_luma_range", "Mask luma range", 0.5, 0.0, 1.0),
+            pf("mask_smoothness", "Mask smoothness", 0.3, 0.0, 2.0),
+        ],
         "height_blend" => vec![pf("opacity", "Opacity", 1.0, 0.0, 1.0), pf("contrast", "Height transition", 0.5, 0.0, 2.0), pe("output", "Output", 0, &["Height", "Blend mask"])],
         "make_it_tile_photo" => vec![pf("width", "Mask size H", 0.6, 0.1, 1.0), pf("width_v", "Mask size V", 0.6, 0.1, 1.0)],
         "make_it_tile_patch" => vec![pi("patches", "Patches", 6, 2, 32), pf("softness", "Softness", 0.5, 0.0, 1.0), p_seed()],
         "edge_wear" => vec![pf("amount", "Amount", 0.5, 0.0, 1.0), pf("width", "Edge width", 2.0, 0.0, 16.0), pf("contrast", "Contrast", 1.0, 0.1, 4.0)],
         "dirt" | "dust" => vec![pf("amount", "Amount", 0.5, 0.0, 1.0), pf("contrast", "Contrast", 1.0, 0.1, 4.0)],
         "non_uniform_blur" => vec![pf("intensity", "Intensity", 8.0, 0.0, 64.0)],
-        "radial_blur" => vec![pe("mode", "Blur type", 0, &["Spin", "Zoom (legacy)"]), pi("samples", "Samples", 32, 1, 128), pf("angle", "Angle", 0.1, 0.0, 0.5), pf("x", "Center X", 0.0, -0.5, 0.5), pf("y", "Center Y", 0.0, -0.5, 0.5), pf("amount", "Zoom amount", 0.1, 0.0, 1.0), pf("radius", "Zoom radius", 0.5, 0.01, 0.5)],
+        "radial_blur" => vec![pe("mode", "Blur type", 0, &["Spin", "Zoom (legacy)"]), pi("samples", "Samples", 64, 1, 128), pf("angle", "Angle", 0.125, 0.0, 0.5), pf("x", "Center X", 0.0, -0.5, 0.5), pf("y", "Center Y", 0.0, -0.5, 0.5), pf("amount", "Zoom amount", 0.1, 0.0, 1.0), pf("radius", "Zoom radius", 0.5, 0.01, 0.5)],
         "anisotropic_blur" => vec![pf("intensity", "Intensity", 8.0, 0.0, 64.0), pf("anisotropy", "Anisotropy", 0.8, 0.0, 1.0), pf("angle", "Angle", 0.0, 0.0, 1.0)],
         "symmetry" => vec![
             pe("axis", "Symmetry mode", 0, &["Mirror X", "Mirror Y", "Mirror X / Y", "Diagonal left", "Diagonal right", "Eight-fold"]),
@@ -504,7 +529,28 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "normal_to_height" => vec![pf("relief_balance", "Relief balance", 0.5, 0.0, 1.0), pe("directx", "Normal format", 0, &["OpenGL", "DirectX"]), pf("opacity", "Global opacity", 1.0, 0.0, 1.0)],
         "non_uniform_directional_warp" => vec![pf("intensity", "Intensity", 0.1, -1.0, 1.0), pf("angle", "Angle", 0.0, 0.0, 1.0)],
         "multi_directional_warp" => vec![pf("intensity", "Intensity", 0.1, -1.0, 1.0), pe("directions", "Directions", 2, &["1", "2", "4"]), pf("angle", "Warp angle", 0.0, 0.0, 1.0), pe("mode", "Mode", 0, &["Average", "Max", "Min", "Chain"])],
-        "triangle_grid" => vec![pi("count", "Count", 8, 1, 64), pf("border", "Border", 0.06, 0.0, 0.5), pf("variation", "Variation", 1.0, 0.0, 1.0), p_seed(), p_con(), p_inv()],
+        "triangle_grid" => vec![
+            pe("style", "Style", 0, &["Squares (legacy)", "Jittered mesh"]),
+            pi("count", "Count (legacy)", 8, 1, 64),
+            pf("border", "Border (legacy)", 0.06, 0.0, 0.5),
+            pf("variation", "Variation (legacy)", 1.0, 0.0, 1.0),
+            pi("x_amount", "X amount", 16, 1, 64),
+            pi("y_amount", "Y amount", 16, 1, 64),
+            pf("random_position_multiplier", "Random position", 1.0, 0.0, 2.0),
+            pf("quincunx_offset_x", "Quincunx offset X", 0.0, 0.0, 1.0),
+            pf("quincunx_offset_y", "Quincunx offset Y", 0.0, 0.0, 1.0),
+            pe("triangulation", "Triangulation", 0, &["Fixed", "Alternate", "Random"]),
+            pe("output", "Output", 0, &["Smooth heights", "Flat triangles", "Edge distance"]),
+            pf("height_random", "Height random", 1.0, 0.0, 1.0),
+            pb("thin_lines", "Thin lines", false),
+            pf("distance_to_edge_thickness", "Line thickness", 0.025, 0.0, 0.1),
+            pf("thin_line_color", "Line colour", 1.0, 0.0, 1.0),
+            pf("thin_line_background", "Line background", 0.0, 0.0, 1.0),
+            p_seed(),
+            p_con(),
+            p_inv(),
+        ],
+        "weave_generator" => vec![pi("tile_x", "Tile X", 1, 1, 20), pi("tile_y", "Tile Y", 1, 1, 20), pi("weave", "Weave", 2, 1, 10), pf("shape", "Shape", 0.5, 0.0, 1.0), pf("gap_x", "Gap X", 0.1, 0.0, 0.9), pf("gap_y", "Gap Y", 0.1, 0.0, 0.9), p_con(), p_inv()],
         "starburst" => vec![
             pi("count", "Count", 3, 1, 32), pi("rays", "Rays", 8, 2, 64), pf("sharpness", "Sharpness", 2.0, 0.1, 16.0), pf("size", "Size", 1.0, 0.05, 2.0),
             pf("rotation", "Rotation", 0.0, 0.0, 1.0), pf("rotation_random", "Rotation random", 0.0, 0.0, 1.0), p_seed(), p_con(), p_inv(),
@@ -1198,5 +1244,25 @@ impl App {
                 self.g.exposed.push(Exposed { label: format!("{} {} {}", label(&kind), id, key), node: id, param: key, min: lo, max: hi });
             }
         }
+    }
+}
+
+/// Starting values a node gets when it is created in the editor, chosen to match the defaults Designer's own
+/// library nodes start with. They are written into the node, so graphs saved earlier (which rely on the
+/// engine's own fallbacks) keep rendering exactly as before.
+pub fn new_node_defaults(kind: &str) -> &'static [(&'static str, f32)] {
+    match kind {
+        "polygon" => &[("sides", 6.0)],
+        "triangle_grid" => &[("style", 1.0)],
+        "color_match" => &[("method", 1.0)],
+        "ao" => &[("mode", 1.0)],
+        "tile_sampler" => &[("x_amount", 16.0), ("y_amount", 16.0)],
+        "tile_generator" => &[("x_amount", 10.0), ("y_amount", 10.0)],
+        "splatter_circular" => &[("number", 10.0), ("radius", 0.25), ("center_orientation", 1.0)],
+        "splatter" => &[("grid_number", 4.0)],
+        "histogram_range" => &[("range", 0.5)],
+        "pow" => &[("exponent", 4.0)],
+        "shape_drop_shadow" => &[("angle", 0.25), ("distance", 0.02), ("opacity", 0.5)],
+        _ => &[],
     }
 }

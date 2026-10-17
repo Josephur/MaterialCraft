@@ -1693,3 +1693,275 @@ pub fn resize(t: &Tex, size: usize) -> Tex {
     }
     Tex::from_fn(size, size, |u, v| t.sample(u, v))
 }
+
+// ---------- gradient map with alpha, addressing and smoothness ----------
+/// Gradient map. `stops` are (position, rgb, alpha). `interp`: 0 linear, 1 smooth (`smoothness` blends linear and
+/// smoothstep), 2 step, 3 smoother. `repeat` wraps the input instead of clamping it; `use_alpha` writes the
+/// gradient's alpha into the result (otherwise the input's alpha is kept).
+pub fn colorize_ex(t: &Tex, stops: &[(f32, [f32; 3], f32)], interp: u32, smoothness: f32, repeat: bool, use_alpha: bool) -> Tex {
+    let mut st: Vec<(f32, [f32; 3], f32)> = stops.to_vec();
+    st.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let sm = smoothness.clamp(0.0, 1.0);
+    t.map(|p| {
+        let mut g = lum(p);
+        g = if repeat { g.rem_euclid(1.0) } else { g.clamp(0.0, 1.0) };
+        let out = |c: [f32; 3], a: f32| [c[0], c[1], c[2], if use_alpha { a } else { p[3] }];
+        if st.is_empty() {
+            return [g, g, g, p[3]];
+        }
+        if g <= st[0].0 {
+            return out(st[0].1, st[0].2);
+        }
+        for i in 1..st.len() {
+            if g <= st[i].0 {
+                let (a, b) = (st[i - 1], st[i]);
+                let mut f = (g - a.0) / (b.0 - a.0).max(1e-9);
+                f = match interp {
+                    1 => f + (f * f * (3.0 - 2.0 * f) - f) * sm,
+                    2 => 0.0,
+                    3 => f * f * f * (f * (f * 6.0 - 15.0) + 10.0),
+                    _ => f,
+                };
+                let l = |x: f32, y: f32| x + (y - x) * f;
+                return out([l(a.1[0], b.1[0]), l(a.1[1], b.1[1]), l(a.1[2], b.1[2])], l(a.2, b.2));
+            }
+        }
+        let e = st[st.len() - 1];
+        out(e.1, e.2)
+    })
+}
+
+// ---------- colour match (colour swap in OKLCh) ----------
+fn to_lin(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+fn from_lin(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+/// sRGB -> (L, C, h in turns)
+pub fn rgb_to_lch(c: [f32; 3]) -> [f32; 3] {
+    let (r, g, b) = (to_lin(c[0]), to_lin(c[1]), to_lin(c[2]));
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let ll = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
+    let aa = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
+    let bb = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
+    [ll, (aa * aa + bb * bb).sqrt(), (bb.atan2(aa) / std::f32::consts::TAU).rem_euclid(1.0)]
+}
+pub fn lch_to_rgb(c: [f32; 3]) -> [f32; 3] {
+    let (aa, bb) = ((c[2] * std::f32::consts::TAU).cos() * c[1], (c[2] * std::f32::consts::TAU).sin() * c[1]);
+    let l = (c[0] + 0.396_337_78 * aa + 0.215_803_76 * bb).powi(3);
+    let m = (c[0] - 0.105_561_346 * aa - 0.063_854_17 * bb).powi(3);
+    let s = (c[0] - 0.089_484_18 * aa - 1.291_485_5 * bb).powi(3);
+    [
+        from_lin(4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s),
+        from_lin(-1.268_438 * l + 2.609_757_4 * m - 0.341_319_4 * s),
+        from_lin(-0.004_196_086 * l - 0.703_418_6 * m + 1.707_614_7 * s),
+    ]
+}
+pub fn mean_rgb(t: &Tex) -> [f32; 3] {
+    let n = t.px.len().max(1) as f32;
+    let mut m = [0.0f32; 3];
+    for p in &t.px {
+        for c in 0..3 {
+            m[c] += p[c] / n;
+        }
+    }
+    m
+}
+
+/// Parameters of the colour swap.
+pub struct ColorSwap {
+    pub source: [f32; 3],
+    pub target: [f32; 3],
+    pub hue_shift: f32,     // turns
+    pub chroma_mul: f32,
+    pub luma_mul: f32,
+    pub use_mask: bool,
+    pub hue_range: f32,     // turns
+    pub chroma_range: f32,
+    pub luma_range: f32,
+    pub smooth: f32,
+    pub strength: f32,
+}
+
+/// Moves every colour near `source` towards `target` (hue rotated, chroma and luma scaled by the ratio between the two,
+/// each times its variation) and returns (result, mask). The mask is how much each pixel was selected.
+pub fn color_swap(t: &Tex, c: &ColorSwap) -> (Tex, Tex) {
+    let (s, g) = (rgb_to_lch(c.source), rgb_to_lch(c.target));
+    let dh = g[2] - s[2] + c.hue_shift;
+    let cr = (g[1] / s[1].max(1e-3)).clamp(0.0, 8.0) * c.chroma_mul;
+    let lr = (g[0] / s[0].max(1e-3)).clamp(0.0, 8.0).powf(1.0) * c.luma_mul;
+    // the chroma ratio is meaningless for a grey source: fall back to adding the target's chroma
+    let grey = s[1] < 0.01;
+    let wrap = |d: f32| {
+        let d = d.rem_euclid(1.0);
+        d.min(1.0 - d)
+    };
+    let calc = |p: [f32; 4]| -> ([f32; 4], f32) {
+        let q = rgb_to_lch([p[0], p[1], p[2]]);
+        let w = if c.use_mask {
+            let d = (wrap(q[2] - s[2]) / c.hue_range.max(1e-4)).max((q[1] - s[1]).abs() / c.chroma_range.max(1e-4)).max((q[0] - s[0]).abs() / c.luma_range.max(1e-4));
+            1.0 - ((d - 1.0) / c.smooth.max(0.02)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let w = (w * c.strength).clamp(0.0, 1.0);
+        let nc = if grey { q[1] + g[1] * c.chroma_mul } else { q[1] * cr };
+        let nl = (q[0] * lr).clamp(0.0, 1.2);
+        let res = lch_to_rgb([nl, nc.max(0.0), (q[2] + dh).rem_euclid(1.0)]);
+        ([p[0] + (res[0] - p[0]) * w, p[1] + (res[1] - p[1]) * w, p[2] + (res[2] - p[2]) * w, p[3]], w)
+    };
+    (t.map(|p| calc(p).0), t.map(|p| {
+        let w = calc(p).1;
+        [w, w, w, 1.0]
+    }))
+}
+
+// ---------- horizon based ambient occlusion ----------
+/// Horizon-based AO of a height map. `radius_uv` is the search distance in image units (0..1), `height_scale` how tall
+/// a height of 1.0 is in the same units (screen-relative: the "height depth"; world units: height cm / surface cm),
+/// `dirs` the number of directions (4 / 8 / 16). Wraps at the borders, so tileable inputs give tileable output.
+pub fn hbao(h: &Tex, radius_uv: f32, height_scale: f32, dirs: u32, intensity: f32) -> Tex {
+    let g = to_gray(h);
+    let (w, hh) = (g.w, g.h);
+    let dirs = dirs.clamp(2, 64) as usize;
+    let steps = 14usize;
+    let tab: Vec<(f32, f32)> = (0..dirs).map(|k| ((k as f32 / dirs as f32 * std::f32::consts::TAU).cos(), (k as f32 / dirs as f32 * std::f32::consts::TAU).sin())).collect();
+    let rows = crate::tex::par_map(hh, |y| {
+        let mut row = vec![[0.0f32; 4]; w];
+        for x in 0..w {
+            let (u, v) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / hh as f32);
+            let h0 = g.px[y * w + x][0];
+            let mut occ = 0.0f32;
+            for &(dx, dy) in &tab {
+                let mut best = 0.0f32;
+                for j in 1..=steps {
+                    let t = j as f32 / steps as f32;
+                    let d = radius_uv * t;
+                    let hs = g.sample(u + dx * d, v + dy * d)[0];
+                    let dz = (hs - h0) * height_scale;
+                    let s = dz / (dz * dz + d * d).sqrt().max(1e-9);
+                    let falloff = 1.0 - t * t;
+                    best = best.max(s * falloff);
+                }
+                occ += best;
+            }
+            let a = (1.0 - occ / dirs as f32 * intensity).clamp(0.0, 1.0);
+            row[x] = [a, a, a, 1.0];
+        }
+        row
+    });
+    let mut o = g.clone();
+    for (y, r) in rows.into_iter().enumerate() {
+        o.px[y * w..(y + 1) * w].copy_from_slice(&r);
+    }
+    o
+}
+
+// ---------- colour quantisation (k-means) ----------
+fn oklab(c: [f32; 3]) -> [f32; 3] {
+    let l = rgb_to_lch(c);
+    let a = (l[2] * std::f32::consts::TAU).cos() * l[1];
+    let b = (l[2] * std::f32::consts::TAU).sin() * l[1];
+    [l[0], a, b]
+}
+
+/// Reduces `t` to at most `k` colours chosen by k-means over the image's colour histogram. `smoothing` blurs the input
+/// first (pixels) so contours between colour regions are smoother; `dither` (0..1) adds an ordered pattern
+/// (`bayer`) or a hash noise before choosing the nearest colour; `lab` measures distance in OKLab instead of RGB.
+pub fn quantize_color(t: &Tex, k: usize, smoothing: f32, dither: f32, bayer: bool, lab: bool, ignore_alpha: bool) -> Tex {
+    let src = if smoothing > 0.0 { blur(t, smoothing) } else { t.clone() };
+    let k = k.clamp(1, 128);
+    let space = |p: [f32; 4]| if lab { oklab([p[0], p[1], p[2]]) } else { [p[0], p[1], p[2]] };
+    // histogram with 24 bins per channel: [count, sum of the three channels in the working space]
+    const B: usize = 24;
+    let mut hist: std::collections::HashMap<usize, (f64, [f64; 3], [f64; 3])> = std::collections::HashMap::new();
+    for p in &src.px {
+        let key = ((p[0].clamp(0.0, 1.0) * (B as f32 - 1e-3)) as usize * B + (p[1].clamp(0.0, 1.0) * (B as f32 - 1e-3)) as usize) * B + (p[2].clamp(0.0, 1.0) * (B as f32 - 1e-3)) as usize;
+        let e = hist.entry(key).or_insert((0.0, [0.0; 3], [0.0; 3]));
+        let s = space(*p);
+        e.0 += 1.0;
+        for c in 0..3 {
+            e.1[c] += s[c] as f64;
+            e.2[c] += p[c] as f64;
+        }
+    }
+    let mut bins: Vec<(usize, f64, [f32; 3], [f32; 3])> = hist
+        .into_iter()
+        .map(|(key, (n, s, r))| (key, n, [(s[0] / n) as f32, (s[1] / n) as f32, (s[2] / n) as f32], [(r[0] / n) as f32, (r[1] / n) as f32, (r[2] / n) as f32]))
+        .collect();
+    bins.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))); // deterministic
+    if bins.is_empty() {
+        return t.clone();
+    }
+    let d2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+    // farthest-point initialisation starting from the most common colour
+    let mut cent: Vec<[f32; 3]> = vec![bins[0].2];
+    while cent.len() < k.min(bins.len()) {
+        let mut best = (0.0f32, 0usize);
+        for (i, b) in bins.iter().enumerate() {
+            let d = cent.iter().map(|c| d2(*c, b.2)).fold(f32::MAX, f32::min) * (b.1 as f32).sqrt();
+            if d > best.0 {
+                best = (d, i);
+            }
+        }
+        if best.0 <= 0.0 {
+            break;
+        }
+        cent.push(bins[best.1].2);
+    }
+    for _ in 0..10 {
+        let mut acc = vec![([0.0f64; 3], 0.0f64); cent.len()];
+        for b in &bins {
+            let j = (0..cent.len()).min_by(|&x, &y| d2(cent[x], b.2).partial_cmp(&d2(cent[y], b.2)).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+            for c in 0..3 {
+                acc[j].0[c] += b.2[c] as f64 * b.1;
+            }
+            acc[j].1 += b.1;
+        }
+        for (j, a) in acc.iter().enumerate() {
+            if a.1 > 0.0 {
+                cent[j] = [(a.0[0] / a.1) as f32, (a.0[1] / a.1) as f32, (a.0[2] / a.1) as f32];
+            }
+        }
+    }
+    // palette in RGB: mean RGB of the pixels (bins) that fall to each centre
+    let mut pal = vec![([0.0f64; 3], 0.0f64); cent.len()];
+    for b in &bins {
+        let j = (0..cent.len()).min_by(|&x, &y| d2(cent[x], b.2).partial_cmp(&d2(cent[y], b.2)).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        for c in 0..3 {
+            pal[j].0[c] += b.3[c] as f64 * b.1;
+        }
+        pal[j].1 += b.1;
+    }
+    let pal: Vec<[f32; 3]> = pal.iter().zip(&cent).map(|(p, c)| if p.1 > 0.0 { [(p.0[0] / p.1) as f32, (p.0[1] / p.1) as f32, (p.0[2] / p.1) as f32] } else { *c }).collect();
+    const BAYER: [[f32; 8]; 8] = [
+        [0., 32., 8., 40., 2., 34., 10., 42.],
+        [48., 16., 56., 24., 50., 18., 58., 26.],
+        [12., 44., 4., 36., 14., 46., 6., 38.],
+        [60., 28., 52., 20., 62., 30., 54., 22.],
+        [3., 35., 11., 43., 1., 33., 9., 41.],
+        [51., 19., 59., 27., 49., 17., 57., 25.],
+        [15., 47., 7., 39., 13., 45., 5., 37.],
+        [63., 31., 55., 23., 61., 29., 53., 21.],
+    ];
+    let spread = dither * 0.6 / (cent.len() as f32).cbrt();
+    let w = src.w;
+    let mut out = src.clone();
+    for (i, p) in src.px.iter().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let off = if dither > 0.0 {
+            let n = if bayer { BAYER[y % 8][x % 8] / 64.0 } else { rnd(x as i32, y as i32, 4242) };
+            (n - 0.5) * spread
+        } else {
+            0.0
+        };
+        let q = space([p[0] + off, p[1] + off, p[2] + off, p[3]]);
+        let j = (0..cent.len()).min_by(|&a, &b| d2(cent[a], q).partial_cmp(&d2(cent[b], q)).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        out.px[i] = [pal[j][0], pal[j][1], pal[j][2], if ignore_alpha { 1.0 } else { p[3] }];
+    }
+    out
+}

@@ -3,6 +3,7 @@ use crate::expr;
 use crate::noise;
 use crate::ops;
 use crate::png;
+use crate::grunge;
 use crate::scatter;
 use crate::tex::{lum, Tex};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -107,7 +108,7 @@ pub const SPECS: &[Spec] = &[
     s!("histogram_range", ["in"], [], "select a range of values: position range contrast invert"),
     s!("bevel", ["in"], [], "bevel a shape: distance smoothing threshold use_as_normal normal_intensity corner(0 round,1 angular) directx"),
     s!("distance", ["in"], [], "distance field of a mask: distance mode"),
-    s!("color_match", ["in", "reference"], [], "match colors to a reference: strength"),
+    s!("color_match", ["in"], ["reference", "src_color", "target_color"], "recolour: method(0 statistics transfer from reference,1 colour swap) strength source_mode(0 average,1 colour,2 input) src_r src_g src_b target_mode(0 colour,1 input) target_r target_g target_b custom_variation variation_hue variation_chroma variation_luma use_mask mask_hue_range mask_chroma_range mask_luma_range mask_smoothness"),
     s!("curvature_smooth", ["in"], [], "smooth curvature from a normal map"),
     s!("height_blend", ["bg", "fg"], ["mask"], "blend two height maps: opacity contrast output"),
     s!("make_it_tile_photo", ["in"], [], "make a photo tile: width width_v"),
@@ -133,7 +134,7 @@ pub const SPECS: &[Spec] = &[
     s!("channel", ["in"], [], "ch(0 r,1 g,2 b,3 a)"),
     s!("merge", [], ["r", "g", "b", "a"], "combine channels"),
     s!("tint", ["in"], [], "multiply by colour: r g b"),
-    s!("colorize", ["in"], [], "gradient map: p0 r0 g0 b0 ... p7 r7 g7 b7"),
+    s!("colorize", ["in"], [], "gradient map: interp(0 linear,1 smooth,2 step,3 smoother) smoothness addressing(0 clamp,1 repeat) use_alpha  stops p0 r0 g0 b0 a0 ... p15 r15 g15 b15 a15"),
     s!("hsl", ["in"], [], "hue sat val"),
     s!("transform", ["in"], [], "offset_x offset_y scale_x scale_y rotation(turns)"),
     s!("mirror", ["in"], [], "mirror an image: axis(0 x,1 y,2 both,3 corner) offset_x offset_y invert_x invert_y corner(0 top left,1 top right,2 bottom left,3 bottom right)"),
@@ -142,7 +143,8 @@ pub const SPECS: &[Spec] = &[
     s!("blend", ["fg", "bg"], ["mask"], "blend two images: mode(0 copy,1 add,2 sub,3 mul,4 screen,5 overlay,6 max,7 min,8 diff,9 softlight,20 add sub,21 switch) opacity alpha_mode(0 source alpha,1 ignore alpha,2 straight,3 premultiplied) crop_x0 crop_y0 crop_x1 crop_y1"),
     s!("normal", ["in"], [], "height->normal (OpenGL +Y): strength directx alpha_from_input"),
     s!("normal_blend", ["a", "b"], ["mask"], "blend normal maps (a = background, b = foreground): opacity"),
-    s!("ao", ["in"], [], "height-based ambient occlusion: radius intensity"),
+    s!("ao", ["in"], [], "ambient occlusion: mode(0 blur,1 horizon) radius intensity hbao_radius hbao_intensity quality(0 4,1 8,2 16 samples) use_world_units height_depth surface_size height_depth_cm"),
+    s!("quantize_color", ["in"], [], "reduce to few colours (k-means): color_amount contour_smoothing dithering dithering_pattern(0 noise,1 bayer) ignore_alpha distance_color_space(0 lab,1 rgb)"),
     s!("curvature", ["in"], [], "curvature of a normal map: mode(0 normal map,1 height map) intensity directx radius"),
     s!("edge_detect", ["in"], [], "edge lines: mode(0 designer,1 sobel) edge_width edge_roundness invert tolerance intensity"),
     s!("emboss", ["in"], [], "angle intensity"),
@@ -173,7 +175,9 @@ pub const SPECS: &[Spec] = &[
     s!("non_uniform_directional_warp", ["in", "intensity"], ["angle"], "warp along a direction chosen per pixel: intensity angle"),
     s!("multi_directional_warp", ["in", "warp"], [], "warp in several directions at once: intensity directions(0 one,1 two,2 four) angle mode(0 average,1 max,2 min,3 chain)"),
     s!("normal_combine", ["base", "detail"], [], "combine two normal maps: technique(0 whiteout,1 channel mixer,2 detail oriented)"),
-    s!("triangle_grid", [], [], "grid of triangles: count border variation seed contrast invert"),
+    s!("triangle_grid", [], [], "grid of triangles: style(0 squares,1 jittered mesh) count border variation x_amount y_amount random_position_multiplier quincunx_offset_x quincunx_offset_y triangulation(0 fixed,1 alternate,2 random) output(0 smooth,1 flat,2 edge distance) height_random thin_lines distance_to_edge_thickness thin_line_color thin_line_background seed contrast invert"),
+    s!("grunge_map", [], [], "grunge map 1-15: map balance contrast brush_pattern cracks disorder coverage seed invert"),
+    s!("weave_generator", [], [], "woven threads with gaps: tile_x tile_y weave shape gap_x gap_y contrast invert"),
     s!("starburst", [], [], "star-like rays: count rays sharpness size rotation rotation_random seed contrast invert"),
     s!("gradient_reflected", [], [], "gradient that goes 0-1-0: count angle contrast invert"),
     s!("shape_stroke", ["in"], [], "outline of a shape: width offset softness threshold opacity color_r color_g color_b"),
@@ -190,7 +194,7 @@ pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
         "bitmap" | "input" | "subgraph" | "output" | "dot" => "Utility",
         "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
@@ -1716,6 +1720,23 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 (val + (balance - 0.5)).clamp(0.0, 1.0)
             }))
         }
+        "grunge_map" => {
+            let gp = grunge::GrungeP {
+                map: per("map", 1.0).clamp(1, 15) as u32,
+                seed,
+                balance: f("balance", 0.5).clamp(0.0, 1.0),
+                contrast: f("contrast", 0.5).clamp(0.0, 1.0),
+                brush: f("brush_pattern", 0.0).clamp(0.0, 1.0),
+                cracks: f("cracks", 0.5).clamp(0.0, 1.0),
+                disorder: f("disorder", 0.0).clamp(0.0, 1.0),
+            };
+            let t0 = f("coverage", grunge::T0[(gp.map - 1) as usize]);
+            let inv = f("invert", 0.0) > 0.5;
+            Tex::gray_fn(s, s, move |u, v| {
+                let x = grunge::grunge_map(&gp, u, v, t0);
+                if inv { 1.0 - x } else { x }
+            })
+        }
         "plasma" => {
             let sc = f("scale", 3.0).round().max(1.0);
             fin(Tex::gray_fn(s, s, move |u, v| {
@@ -2035,7 +2056,32 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }
         }
         "distance" => ops::distance(tex("in")?, f("distance", 0.1) * s as f32, f("threshold", 0.5), f("mode", 0.0) as u32),
-        "color_match" => ops::color_match(tex("in")?, tex("reference")?, f("strength", 1.0)),
+        "color_match" if f("method", 0.0) < 0.5 => ops::color_match(tex("in")?, ins.get("reference").map(|r| r.as_ref()).unwrap_or(tex("in")?), f("strength", 1.0)),
+        "color_match" => {
+            let src = tex("in")?;
+            let rgb = |name: &str, d: f32| [f(&format!("{name}_r"), d), f(&format!("{name}_g"), d), f(&format!("{name}_b"), d)];
+            let source = match f("source_mode", 0.0).round() as i32 {
+                1 => rgb("src", 0.5),
+                2 => ops::mean_rgb(tex("src_color")?),
+                _ => ops::mean_rgb(src),
+            };
+            let target = if f("target_mode", 0.0) > 0.5 { ops::mean_rgb(tex("target_color")?) } else { rgb("target", 0.5) };
+            let var = f("custom_variation", 0.0) > 0.5;
+            let sw = ops::ColorSwap {
+                source,
+                target,
+                hue_shift: if var { f("variation_hue", 0.0) / 360.0 } else { 0.0 },
+                chroma_mul: if var { f("variation_chroma", 1.0).max(0.0) } else { 1.0 },
+                luma_mul: if var { f("variation_luma", 1.0).max(0.0) } else { 1.0 },
+                use_mask: f("use_mask", 1.0) > 0.5,
+                hue_range: f("mask_hue_range", 30.0) / 360.0,
+                chroma_range: f("mask_chroma_range", 0.5),
+                luma_range: f("mask_luma_range", 0.5),
+                smooth: f("mask_smoothness", 0.3),
+                strength: f("strength", 1.0),
+            };
+            ops::color_swap(src, &sw).0
+        }
         "curvature_smooth" => ops::curvature_from_normal(tex("in")?, f("smoothing", 2.0) * rs, f("intensity", 6.0)),
         "height_blend" => {
             let (h, m) = ops::height_blend(tex("bg")?, tex("fg")?, ins.get("mask").map(|x| x.as_ref()), f("opacity", 1.0), f("contrast", 0.5));
@@ -2169,13 +2215,13 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             for i in 0..16 {
                 if let Some(p) = n.nums.get(&format!("p{i}")) {
                     let g = |c: &str| n.nums.get(&format!("{c}{i}")).copied().unwrap_or(0.0);
-                    stops.push((*p, [g("r"), g("g"), g("b")]));
+                    stops.push((*p, [g("r"), g("g"), g("b")], n.nums.get(&format!("a{i}")).copied().unwrap_or(1.0)));
                 }
             }
             if stops.is_empty() {
                 return Err(Error::BadParam(id, "colorize needs at least one stop (p0 r0 g0 b0)".into()));
             }
-            ops::colorize(tex("in")?, &stops, f("interp", 0.0) as u32)
+            ops::colorize_ex(tex("in")?, &stops, f("interp", 0.0) as u32, f("smoothness", 1.0), f("addressing", 0.0) > 0.5, f("use_alpha", 0.0) > 0.5)
         }
         "hsl" => ops::hsl_adjust(tex("in")?, f("hue", 0.0), f("sat", 1.0), f("val", 1.0)),
         "transform" => ops::transform(tex("in")?, f("offset_x", 0.0), f("offset_y", 0.0), f("scale_x", 1.0), f("scale_y", 1.0), f("rotation", 0.0), f("tiling", 0.0) < 0.5),
@@ -2206,7 +2252,21 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }
         }
         "normal_blend" => ops::normal_blend_ex(tex("a")?, tex("b")?, f("opacity", 1.0), ins.get("mask").map(|m| m.as_ref())),
-        "ao" => ops::ambient_occlusion(tex("in")?, f("radius", 6.0) * rs, f("intensity", 2.0)),
+        "ao" if f("mode", 0.0) < 0.5 => ops::ambient_occlusion(tex("in")?, f("radius", 6.0) * rs, f("intensity", 2.0)),
+        "ao" => {
+            let scale = if f("use_world_units", 0.0) > 0.5 { f("height_depth_cm", 30.0) / f("surface_size", 300.0).max(1.0) } else { f("height_depth", 0.1) };
+            let dirs = [4u32, 8, 16][(f("quality", 1.0).round() as usize).min(2)];
+            ops::hbao(tex("in")?, f("hbao_radius", 1.0).clamp(0.0, 1.0) * 0.25, scale, dirs, f("hbao_intensity", 1.0))
+        }
+        "quantize_color" => ops::quantize_color(
+            tex("in")?,
+            per("color_amount", 32.0).clamp(1, 128) as usize,
+            f("contour_smoothing", 0.0) * rs,
+            f("dithering", 0.0).clamp(0.0, 1.0),
+            f("dithering_pattern", 0.0) > 0.5,
+            f("distance_color_space", 0.0) < 0.5,
+            f("ignore_alpha", 0.0) > 0.5,
+        ),
         "curvature" => {
             if f("mode", 0.0) > 0.5 {
                 ops::curvature(tex("in")?, f("radius", 3.0) * rs, f("intensity", 4.0))
@@ -2219,7 +2279,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 ops::edge_detect(tex("in")?, f("intensity", 2.0))
             } else {
                 // widths are given in pixels at the 512 reference size and scale with the resolution
-                ops::edge_detect_ex(tex("in")?, (f("edge_width", 2.0) * rs).max(1.0), f("edge_roundness", 0.0) * rs, f("invert", 0.0) > 0.5, f("tolerance", 0.0))
+                ops::edge_detect_ex(tex("in")?, (f("edge_width", 2.0) * rs).max(1.0), f("edge_roundness", 4.0) * rs, f("invert", 0.0) > 0.5, f("tolerance", 0.0))
             }
         }
         "emboss" => ops::emboss(tex("in")?, f("angle", 0.125), f("intensity", 4.0)),
