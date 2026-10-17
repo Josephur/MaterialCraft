@@ -6,9 +6,9 @@ our discord is here: if you want to submit features or got any cool ideas! https
 
 # MaterialCraft
 
-<img width="1495" height="949" alt="image" src="https://github.com/user-attachments/assets/dc27324c-f63c-4569-beb7-be4766bd839c" />
+<img width="1505" height="954" alt="image" src="https://github.com/user-attachments/assets/117b9925-5d4a-47d1-b205-1bb34e784eb9" />
 
-<img width="2556" height="1388" alt="image" src="https://github.com/user-attachments/assets/75dba5c4-50ac-4f79-8395-8d3c20697d63" />
+<img width="2555" height="1388" alt="image" src="https://github.com/user-attachments/assets/ea5b0174-9821-4b28-a70b-9bef1c1dbbbf" />
 
 Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
 
