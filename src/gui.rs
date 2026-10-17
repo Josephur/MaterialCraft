@@ -3,7 +3,7 @@
 //! MaterialCraft visual editor. Run: cargo run --release --features gui --bin materialcraft-gui
 use eframe::egui::{
     self, epaint::CubicBezierShape, Align2, Color32, ColorImage, FontId, Id, Key, Modifiers, PointerButton, Pos2, Rect,
-    Rounding, Sense, Stroke, TextStyle, Vec2, pos2, vec2,
+    Sense, Stroke, TextStyle, Vec2, pos2, vec2,
 };
 use materialcraft::bake::{self, BakeSettings};
 use materialcraft::graph::{category, label, spec, usage_label, Comment, Exposed, Graph, Node, NodeCache, EXAMPLE, SPECS, THUMB};
@@ -29,6 +29,106 @@ const CARD_H: f32 = BAR + CARD;
 fn card_body(n_slots: usize, n_outs: usize) -> f32 {
     CARD.max(15.0 * (n_slots as f32 + 1.0)).max(if n_outs >= 2 { 20.0 * n_outs as f32 } else { 0.0 })
 }
+/// Persistent user settings, stored as `config.toml` by `craft-settings` (atomic saves, backup, damaged-file recovery).
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+#[serde(default)]
+struct Prefs {
+    general: PrefsGeneral,
+    library: PrefsLibrary,
+    recent: PrefsRecent,
+    layout: PrefsLayout,
+}
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+#[serde(default)]
+struct PrefsLayout {
+    dock: Option<craft_ui::docking::Layout<Pn>>,
+}
+
+/// The panels of the editor window. `Graph` is the canvas and cannot be closed, moved or floated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+enum Pn {
+    Explorer,
+    Library,
+    Graph,
+    View3d,
+    View2d,
+    Props,
+}
+
+impl Pn {
+    const ALL: [Pn; 6] = [Pn::Explorer, Pn::Library, Pn::Graph, Pn::View3d, Pn::View2d, Pn::Props];
+    fn label(self) -> &'static str {
+        match self {
+            Pn::Explorer => "Explorer",
+            Pn::Library => "Library",
+            Pn::Graph => "Graph",
+            Pn::View3d => "3D View",
+            Pn::View2d => "2D View",
+            Pn::Props => "Properties",
+        }
+    }
+    /// Index into `App::show` (the canvas has none: it is always visible).
+    fn show_index(self) -> Option<usize> {
+        match self {
+            Pn::Explorer => Some(0),
+            Pn::Library => Some(1),
+            Pn::View3d => Some(2),
+            Pn::View2d => Some(3),
+            Pn::Props => Some(4),
+            Pn::Graph => None,
+        }
+    }
+}
+
+fn dock_tabs(p: Pn) -> craft_ui::docking::Node<Pn> {
+    craft_ui::docking::Node::Tabs { panels: vec![p], active: 0 }
+}
+
+fn dock_split(axis: craft_ui::layout::SplitAxis, size: craft_ui::layout::SplitSize, a: craft_ui::docking::Node<Pn>, b: craft_ui::docking::Node<Pn>) -> craft_ui::docking::Node<Pn> {
+    craft_ui::docking::Node::Split { axis, size, first: Box::new(a), second: Box::new(b) }
+}
+
+/// Explorer and Library on the left, the graph in the middle with the 3D and 2D views under it, Properties on the right.
+fn default_dock() -> craft_ui::docking::Layout<Pn> {
+    use craft_ui::layout::{SplitAxis::*, SplitSize::*};
+    let views = dock_split(Horizontal, Ratio(0.5), dock_tabs(Pn::View3d), dock_tabs(Pn::View2d));
+    let centre = dock_split(Vertical, FixedSecond(330.0), dock_tabs(Pn::Graph), views);
+    let left = dock_split(Vertical, Ratio(0.33), dock_tabs(Pn::Explorer), dock_tabs(Pn::Library));
+    let right = dock_split(Horizontal, FixedSecond(330.0), centre, dock_tabs(Pn::Props));
+    craft_ui::docking::Layout { root: Some(dock_split(Horizontal, FixedFirst(380.0), left, right)), floating: Vec::new() }
+}
+
+/// A saved layout is used only when it is valid and holds exactly the panels this build knows.
+fn checked_dock(l: Option<craft_ui::docking::Layout<Pn>>) -> craft_ui::docking::Layout<Pn> {
+    match l {
+        Some(l) if l.validate().is_ok() && l.contains(&Pn::Graph) && l.panels().iter().all(|p| Pn::ALL.contains(p)) => l,
+        _ => default_dock(),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+#[serde(default)]
+struct PrefsGeneral {
+    skip_home: bool,
+    hide_tip: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+#[serde(default)]
+struct PrefsLibrary {
+    favorites: Vec<String>,
+}
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, PartialEq)]
+#[serde(default)]
+struct PrefsRecent {
+    files: Vec<String>,
+}
+impl craft_settings::Settings for Prefs {
+    const APP_ID: &'static str = "materialcraft";
+    const SCHEMA_VERSION: u32 = 1;
+    fn migrate(_from: u32, _doc: &mut craft_settings::DocumentMut) -> Result<(), craft_settings::MigrateError> {
+        Ok(())
+    }
+}
+
 const OUTPUT_NAMES: [&str; 11] = ["basecolor", "normal", "roughness", "metallic", "height", "ambient_occlusion", "opacity", "emissive", "diffuse", "specular", "glossiness"];
 const COMMENT_COLORS: [[u8; 3]; 6] = [[90, 140, 200], [200, 160, 60], [90, 180, 110], [190, 90, 90], [150, 100, 200], [150, 150, 150]];
 
@@ -185,6 +285,8 @@ struct ExportUi {
     fmt: Format,
     quality: u8,
     skip: BTreeSet<String>,
+    /// output colour space for colour maps (index into `colorspace::SPACES`)
+    space: usize,
 }
 
 struct BakeUi {
@@ -276,6 +378,9 @@ struct App {
     home_page: u8,
     skip_home: bool,
     hide_suggestions: bool,
+    prefs: craft_settings::SettingsStore<Prefs>,
+    dock: craft_ui::docking::Layout<Pn>,
+    dock_closed: HashMap<Pn, craft_ui::docking::Location<Pn>>,
     banner: Option<egui::TextureHandle>,
     banner_rx: Option<Receiver<ColorImage>>,
     lib_thumbs: HashMap<String, egui::TextureHandle>,
@@ -287,12 +392,7 @@ struct App {
     last_title: String,
     z2d: f32,
     pan2d: Vec2,
-    left_split: f32,
     need_fit: bool,
-    w_left: f32,
-    w_props: f32,
-    h_views: f32,
-    view_split: f32,
     connecting_in: Option<(u32, String)>,
     copy_out: Option<String>,
     logo: Option<egui::TextureHandle>,
@@ -307,10 +407,19 @@ impl App {
         let mut g = Graph::default();
         g.meta.insert("identifier".into(), "Graph".into());
         let active: Option<u32> = None;
-        let settings = read_lines("settings.txt");
-        let skip_home = settings.iter().any(|l| l == "skip_home=1");
-        let favorites: BTreeSet<String> = settings.iter().find_map(|l| l.strip_prefix("favorites=")).map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect()).unwrap_or_default();
-        let recent: Vec<PathBuf> = read_lines("recent.txt").into_iter().map(PathBuf::from).collect();
+        let (mut prefs, _prefs_report) = craft_settings::SettingsStore::<Prefs>::open(craft_settings::Location::Auto);
+        if prefs.path().map(|p| !p.exists()).unwrap_or(false) {
+            // first run with the new store: carry over the old plain-text settings
+            let old = read_lines("settings.txt");
+            let mut v = Prefs::default();
+            v.general.skip_home = old.iter().any(|l| l == "skip_home=1");
+            v.library.favorites = old.iter().find_map(|l| l.strip_prefix("favorites=")).map(|f| f.split(',').filter(|x| !x.is_empty()).map(String::from).collect()).unwrap_or_default();
+            v.recent.files = read_lines("recent.txt");
+            prefs.set(v);
+        }
+        let skip_home = prefs.get().general.skip_home;
+        let favorites: BTreeSet<String> = prefs.get().library.favorites.iter().cloned().collect();
+        let recent: Vec<PathBuf> = prefs.get().recent.files.iter().map(PathBuf::from).collect();
         App {
             was_focused: true,
             gpu_eval: true,
@@ -368,7 +477,7 @@ impl App {
             node_cache: std::sync::Arc::new(NodeCache::with_default_budget()),
             lib_search: String::new(),
             text_focus: false,
-            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
+            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new(), space: 0 },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
             link_pick: None,
@@ -378,7 +487,10 @@ impl App {
             home_filter: String::new(),
             home_page: 0,
             skip_home,
-            hide_suggestions: false,
+            hide_suggestions: prefs.get().general.hide_tip,
+            dock: checked_dock(prefs.get().layout.dock.clone()),
+            dock_closed: HashMap::new(),
+            prefs,
             banner: None,
             banner_rx: Some(spawn_banner()),
             lib_thumbs: HashMap::new(),
@@ -390,12 +502,7 @@ impl App {
             last_title: String::new(),
             z2d: 1.0,
             pan2d: Vec2::ZERO,
-            left_split: 0.33,
             need_fit: false,
-            w_left: 380.0,
-            w_props: 330.0,
-            h_views: 330.0,
-            view_split: 0.5,
             connecting_in: None,
             copy_out: None,
             logo: Some(logo_handle),
@@ -1244,7 +1351,7 @@ impl App {
 
     fn save_to(&mut self, p: PathBuf) {
         self.goto_root();
-        match std::fs::write(&p, self.g.to_text()) {
+        match materialcraft::safeio::write_file(&p, self.g.to_text().as_bytes()) {
             Ok(()) => {
                 self.status(format!("Saved {}", p.display()), true);
                 self.push_recent(&p);
@@ -1273,7 +1380,7 @@ impl App {
         match self.g.publish() {
             Ok(text) => {
                 if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft published asset", &["mca"]).set_file_name("material.mca").save_file() {
-                    match std::fs::write(&p, &text) {
+                    match materialcraft::safeio::write_file(&p, text.as_bytes()) {
                         Ok(()) => self.status(format!("Published {} ({} KB, {} exposed parameters)", p.display(), text.len() / 1024, self.g.exposed.len()), true),
                         Err(e) => self.status(format!("Publish failed: {e}"), false),
                     }
@@ -1320,7 +1427,19 @@ impl App {
                             continue;
                         }
                         let p = d.join(format!("{}{}.{}", self.export.prefix, name, fmt.ext()));
-                        if let Err(e) = std::fs::write(&p, export::encode(fmt, t, depth, self.export.quality)) {
+                        let converted;
+                        let t = if materialcraft::colorspace::is_color_output(name) && self.export.space != 0 {
+                            match materialcraft::colorspace::convert(t, materialcraft::colorspace::SPACES[self.export.space].0) {
+                                Ok(c) => {
+                                    converted = c;
+                                    &converted
+                                }
+                                Err(e) => return self.status(format!("Colour conversion failed: {e}"), false),
+                            }
+                        } else {
+                            t
+                        };
+                        if let Err(e) = materialcraft::safeio::write_file(&p, &export::encode(fmt, t, depth, self.export.quality)) {
                             return self.status(format!("Export failed: {e}"), false);
                         }
                         count += 1;
@@ -1350,7 +1469,7 @@ impl App {
                 let mut files = Vec::new();
                 for (name, t) in &maps {
                     let p = out.join(format!("{name}.png"));
-                    std::fs::write(&p, png::encode(t.w, t.h, &t.px, 8)).map_err(|e| e.to_string())?;
+                    materialcraft::safeio::write_file(&p, &png::encode(t.w, t.h, &t.px, 8)).map_err(|e| e.to_string())?;
                     files.push(p);
                 }
                 Ok(files)
@@ -1658,7 +1777,7 @@ fn auto_layout_if_unplaced(g: &mut Graph) {
 }
 
 fn apply_theme(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
     let mut v = egui::Visuals::dark();
     v.panel_fill = Color32::from_rgb(46, 46, 46);
     v.window_fill = Color32::from_rgb(52, 52, 52);
@@ -1673,8 +1792,8 @@ fn apply_theme(ctx: &egui::Context) {
     v.widgets.active.weak_bg_fill = Color32::from_rgb(40, 170, 145);
     v.selection.bg_fill = Color32::from_rgb(35, 150, 130);
     v.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
-    v.window_rounding = Rounding::same(3.0);
-    v.menu_rounding = Rounding::same(3.0);
+    v.window_corner_radius = egui::CornerRadius::same((3.0) as u8);
+    v.menu_corner_radius = egui::CornerRadius::same((3.0) as u8);
     style.visuals = v;
     style.text_styles.insert(TextStyle::Body, FontId::proportional(12.5));
     style.text_styles.insert(TextStyle::Button, FontId::proportional(12.5));
@@ -1683,7 +1802,10 @@ fn apply_theme(ctx: &egui::Context) {
     style.spacing.item_spacing = vec2(6.0, 4.0);
     style.spacing.button_padding = vec2(6.0, 2.0);
     style.spacing.slider_width = 150.0;
-    ctx.set_style(style);
+    // always dark: never follow the operating system's light theme (it made text unreadable on the dark panels)
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
 include!("gui_params.rs");

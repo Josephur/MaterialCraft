@@ -2,6 +2,9 @@
 //! MaterialCraft: procedural node-based material authoring in pure Rust.
 //! The core library has no external dependencies; it builds on Windows, Linux and macOS.
 pub mod bake;
+pub mod safeio;
+#[cfg(any(feature = "cms", feature = "craft"))]
+pub mod colorspace;
 pub mod export;
 pub mod curve;
 pub mod expr;

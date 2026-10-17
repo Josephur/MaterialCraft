@@ -1650,3 +1650,21 @@ fn m1_channel_shuffle_and_bitmap_options() {
     let p = g.evaluate(Some(8)).unwrap()["o"].px[0];
     assert!((p[0] - 0.6).abs() < 1e-5 && p[1] == 0.0 && p[2] == 1.0 && p[3] == 0.0, "{p:?}");
 }
+
+#[cfg(any(feature = "cms", feature = "craft"))]
+#[test]
+fn colorspace_conversion_roundtrips_and_keeps_alpha() {
+    use materialcraft::{colorspace, tex::Tex};
+    let t = Tex::solid(4, 4, [0.5, 0.25, 0.75, 0.6]);
+    // sRGB means no conversion
+    assert_eq!(colorspace::convert(&t, "srgb").unwrap().px[0], t.px[0]);
+    // mid grey in sRGB is about 0.214 in linear light
+    let lin = colorspace::convert(&Tex::solid(2, 2, [0.5, 0.5, 0.5, 1.0]), "linear").unwrap();
+    assert!((lin.px[0][0] - 0.214).abs() < 0.01, "{:?}", lin.px[0]);
+    // alpha is untouched, wider spaces change colours
+    let p3 = colorspace::convert(&t, "p3").unwrap();
+    assert!((p3.px[0][3] - 0.6).abs() < 1e-6);
+    assert!(p3.px[0][0] != t.px[0][0] || p3.px[0][1] != t.px[0][1]);
+    assert!(colorspace::convert(&t, "nope").is_err());
+    assert!(colorspace::is_color_output("basecolor") && !colorspace::is_color_output("normal"));
+}

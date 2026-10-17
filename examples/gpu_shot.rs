@@ -49,8 +49,9 @@ struct App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
-        egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+    fn ui(&mut self, root: &mut egui::Ui, _f: &mut eframe::Frame) {
+        let ctx = root.ctx().clone();
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(root, |ui| {
             let rect = ui.max_rect();
             let (g, v) = (self.gpu.clone(), self.view.clone());
             ui.painter().add(egui::PaintCallback { rect, callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| gpu3d::paint(&g, &info, painter, &v))) });

@@ -10,3 +10,8 @@ repository belong to their respective owners.
 
 The graphical editor (the optional "gui" feature) links third-party open source
 libraries. Their licences are listed in THIRD_PARTY_LICENSES.md.
+
+The editor also uses the shared Craft libraries (craft-atomic, craft-settings,
+craft-cms, craft-ui, craft-quit) from https://github.com/storytold/craft-libs,
+Copyright (c) 2026 ArtCraft Team and the craft-libs contributors, under
+MIT OR Apache-2.0. Their own notices are kept in that repository.

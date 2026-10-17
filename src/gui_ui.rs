@@ -52,7 +52,7 @@ impl App {
         }
 
         if resp.hovered() {
-            let sc = ui.input(|i| i.raw_scroll_delta.y);
+            let sc = ui.input(|i| i.smooth_scroll_delta.y);
             if sc != 0.0 {
                 let old = self.zoom;
                 let nz = (old * (1.0 + sc * 0.0012)).clamp(0.25, 2.5);
@@ -112,10 +112,10 @@ impl App {
             let col = COMMENT_COLORS[c.color as usize % COMMENT_COLORS.len()];
             let base = Color32::from_rgb(col[0], col[1], col[2]);
             let selected = self.sel_comment == Some(ci);
-            painter.rect_filled(r, Rounding::same(4.0 * z), base.gamma_multiply(0.16));
+            painter.rect_filled(r, egui::CornerRadius::same((4.0 * z) as u8), base.gamma_multiply(0.16));
             let title = Rect::from_min_size(r.min, vec2(r.width(), 22.0 * z));
-            painter.rect_filled(title, Rounding { nw: 4.0 * z, ne: 4.0 * z, sw: 0.0, se: 0.0 }, base.gamma_multiply(0.5));
-            painter.rect_stroke(r, Rounding::same(4.0 * z), Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { base.gamma_multiply(0.8) }));
+            painter.rect_filled(title, egui::CornerRadius { nw: (4.0 * z) as u8, ne: (4.0 * z) as u8, sw: (0.0) as u8, se: (0.0) as u8 }, base.gamma_multiply(0.5));
+            painter.rect_stroke(r, egui::CornerRadius::same((4.0 * z) as u8), Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { base.gamma_multiply(0.8) }), egui::StrokeKind::Inside);
             painter.text(title.left_center() + vec2(8.0 * z, 0.0), Align2::LEFT_CENTER, &c.text, FontId::proportional(13.0 * z), Color32::WHITE);
             let tr = ui.interact(title, Id::new(("cmt", ci)), Sense::click_and_drag());
             if tr.drag_started() {
@@ -142,7 +142,7 @@ impl App {
             }
             let hs = vec2(14.0, 14.0) * z;
             let handle = Rect::from_min_size(r.max - hs, hs);
-            painter.rect_filled(handle, Rounding::same(2.0), base.gamma_multiply(0.7));
+            painter.rect_filled(handle, egui::CornerRadius::same((2.0) as u8), base.gamma_multiply(0.7));
             let hr = ui.interact(handle, Id::new(("cmtr", ci)), Sense::drag());
             if hr.drag_started() {
                 self.snap();
@@ -234,10 +234,10 @@ impl App {
                 painter.circle(card.center(), 9.0 * z, Color32::from_rgb(38, 38, 38), Stroke::new(if selected { 2.4_f32 } else { 1.3_f32 }, sel_col));
                 painter.circle_filled(card.center(), 3.2 * z, Color32::from_gray(200));
             } else {
-            painter.rect_filled(card.translate(vec2(2.0, 3.0) * z), Rounding::same(3.0 * z), Color32::from_black_alpha(70));
-            painter.rect_filled(card, Rounding::same(3.0 * z), Color32::from_rgb(32, 32, 32));
+            painter.rect_filled(card.translate(vec2(2.0, 3.0) * z), egui::CornerRadius::same((3.0 * z) as u8), Color32::from_black_alpha(70));
+            painter.rect_filled(card, egui::CornerRadius::same((3.0 * z) as u8), Color32::from_rgb(32, 32, 32));
             let bar = Rect::from_min_size(card.min, vec2(card.width(), BAR * z));
-            painter.rect_filled(bar, Rounding { nw: 3.0 * z, ne: 3.0 * z, sw: 0.0, se: 0.0 }, kind_color(&s.kind));
+            painter.rect_filled(bar, egui::CornerRadius { nw: (3.0 * z) as u8, ne: (3.0 * z) as u8, sw: (0.0) as u8, se: (0.0) as u8 }, kind_color(&s.kind));
             let node_ref = self.g.nodes.get(&id);
             let usage = node_ref.and_then(|n| n.strs.get("usage").cloned()).unwrap_or_else(|| "basecolor".into());
             let ident = node_ref.and_then(|n| n.strs.get("identifier").cloned()).filter(|x| !x.is_empty()).unwrap_or_else(|| usage.clone());
@@ -261,9 +261,9 @@ impl App {
                 painter.rect_filled(th, 0.0, Color32::from_rgba_unmultiplied(170, 30, 30, 150));
                 painter.text(th.center(), Align2::CENTER_CENTER, "!", FontId::proportional(30.0 * z), Color32::WHITE);
             }
-            painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(if selected { 2.4_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { Color32::from_rgb(14, 14, 14) }));
+            painter.rect_stroke(card, egui::CornerRadius::same((3.0 * z) as u8), Stroke::new(if selected { 2.4_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { Color32::from_rgb(14, 14, 14) }), egui::StrokeKind::Inside);
             if self.active == Some(id) && !selected {
-                painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(1.5_f32, Color32::from_rgb(150, 150, 150)));
+                painter.rect_stroke(card, egui::CornerRadius::same((3.0 * z) as u8), Stroke::new(1.5_f32, Color32::from_rgb(150, 150, 150)), egui::StrokeKind::Inside);
             }
 
             if s.kind == "output" {
@@ -347,34 +347,34 @@ impl App {
             nr.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     acts.push(Act::Copy);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Duplicate").clicked() {
                     acts.push(Act::Duplicate);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Delete").clicked() {
                     acts.push(Act::Delete);
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if kind == "subgraph" {
                     if let Some(g) = &gname {
                         if ui.button("Open subgraph").clicked() {
                             acts.push(Act::EnterSub(g.clone()));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 }
                 if ui.button("Create subgraph from selection").clicked() {
                     acts.push(Act::Subgraph);
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.menu_button("Add output node", |ui| {
                     for name in &out_names {
                         if ui.button(usage_label(name)).clicked() {
                             acts.push(Act::NewOutput(name.to_string(), id));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -487,7 +487,7 @@ impl App {
         if let Some(start) = self.rubber {
             if let Some(pt) = pointer {
                 let r = Rect::from_two_pos(start, pt);
-                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(60, 200, 170, 28), Stroke::new(1.0_f32, Color32::from_rgb(60, 200, 170)));
+                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(60, 200, 170, 28), Stroke::new(1.0_f32, Color32::from_rgb(60, 200, 170)), egui::StrokeKind::Inside);
                 if released {
                     for (s, c) in snaps.iter().zip(&cards) {
                         if r.intersects(*c) {
@@ -510,28 +510,28 @@ impl App {
         resp.context_menu(|ui| {
             if ui.button("Add node...   Tab").clicked() {
                 acts.push(Act::Search(click_pos));
-                ui.close_menu();
+                ui.close();
             }
             if ui.add_enabled(!self.clip.is_empty(), egui::Button::new("Paste")).clicked() {
                 acts.push(Act::Paste(click_pos.map(|p| self.screen_to_world(p))));
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Add comment frame   C").clicked() {
                 acts.push(Act::Comment);
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             if ui.button("Select all").clicked() {
                 acts.push(Act::SelectAll);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Frame all   F").clicked() {
                 acts.push(Act::FrameAll);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Auto-layout").clicked() {
                 acts.push(Act::AutoLayout);
-                ui.close_menu();
+                ui.close();
             }
         });
 
@@ -694,7 +694,7 @@ impl App {
         st.idx = st.idx.min(list.len().saturating_sub(1));
         let mut chosen: Option<Entry> = None;
         let mut close = esc;
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let pos = pos2(st.screen.x.min(screen.right() - 330.0).max(4.0), st.screen.y.min(screen.bottom() - 420.0).max(4.0));
         let max_h = (screen.bottom() - pos.y - 120.0).clamp(160.0, 520.0);
         let area = egui::Area::new(Id::new("node_search")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
@@ -805,6 +805,15 @@ impl App {
                         }
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Colour space");
+                    egui::ComboBox::from_id_salt("exp_space").selected_text(materialcraft::colorspace::SPACES[self.export.space].1).show_ui(ui, |ui| {
+                        for (i, s) in materialcraft::colorspace::SPACES.iter().enumerate() {
+                            ui.selectable_value(&mut self.export.space, i, s.1);
+                        }
+                    });
+                });
+                ui.small("Applies to colour maps only (base colour, emissive, diffuse, specular, 'output'). Data maps are never converted.");
                 ui.label("Resolutions (one sub-folder each when several are selected):");
                 ui.horizontal(|ui| {
                     for (i, s) in [256, 512, 1024, 2048, 4096, 8192].iter().enumerate() {

@@ -772,7 +772,7 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
         let r = Rect::from_min_max(pos2(bar.min.x + bar.width() * i as f32 / segs as f32, bar.min.y), pos2(bar.min.x + bar.width() * (i + 1) as f32 / segs as f32 + 1.0, bar.max.y));
         painter.rect_filled(r, 0.0, c32(grad_at(stops, t)));
     }
-    painter.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, Color32::from_gray(20)));
+    painter.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, Color32::from_gray(20)), egui::StrokeKind::Inside);
     let mut sel = ui.data(|d| d.get_temp::<usize>(id)).unwrap_or(0).min(stops.len() - 1);
     let bar_resp = ui.interact(bar, id.with("bar"), Sense::click());
     let mut grabbed = false;
@@ -797,7 +797,7 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
         painter.add(egui::Shape::convex_polygon(vec![pos2(x, bar.max.y + 1.0), pos2(x - 5.0, bar.max.y + 8.0), pos2(x + 5.0, bar.max.y + 8.0)], edge, Stroke::NONE));
         let sq = Rect::from_center_size(pos2(x, bar.max.y + 15.0), vec2(11.0, 9.0));
         painter.rect_filled(sq, 1.0, c32(stops[i].1));
-        painter.rect_stroke(sq, 1.0, Stroke::new(1.5_f32, edge));
+        painter.rect_stroke(sq, 1.0, Stroke::new(1.5_f32, edge), egui::StrokeKind::Inside);
     }
     if bar_resp.clicked() && !grabbed && stops.len() < 16 {
         if let Some(p) = bar_resp.interact_pointer_pos() {
@@ -923,7 +923,7 @@ fn curve_editor(ui: &mut egui::Ui, id: u32, node: &Node, strs: &mut Vec<(String,
     }
     let shown = if changed { Curve::new(pts.iter().map(|p| (p.0, p.1, None, None)).collect()) } else { curve };
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, Rounding::same(3.0), Color32::from_gray(28));
+    painter.rect_filled(rect, egui::CornerRadius::same((3.0) as u8), Color32::from_gray(28));
     for k in 1..4 {
         let t = k as f32 / 4.0;
         painter.line_segment([to_s(t, 0.0), to_s(t, 1.0)], Stroke::new(1.0_f32, Color32::from_gray(48)));
@@ -969,9 +969,9 @@ impl App {
             ui.horizontal(|ui| {
                 for (i, col) in COMMENT_COLORS.iter().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(vec2(22.0, 18.0), Sense::click());
-                    ui.painter().rect_filled(r, Rounding::same(3.0), Color32::from_rgb(col[0], col[1], col[2]));
+                    ui.painter().rect_filled(r, egui::CornerRadius::same((3.0) as u8), Color32::from_rgb(col[0], col[1], col[2]));
                     if c.color as usize == i {
-                        ui.painter().rect_stroke(r, Rounding::same(3.0), Stroke::new(2.0_f32, Color32::WHITE));
+                        ui.painter().rect_stroke(r, egui::CornerRadius::same((3.0) as u8), Stroke::new(2.0_f32, Color32::WHITE), egui::StrokeKind::Inside);
                     }
                     if resp.clicked() {
                         c.color = i as u8;
@@ -1237,7 +1237,7 @@ impl App {
                             ui.vertical(|ui| {
                                 let (r, _) = ui.allocate_exact_size(vec2(54.0, 36.0), Sense::hover());
                                 ui.painter().rect_filled(r, 3.0, c32(rgb));
-                                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0_f32, Color32::from_gray(15)));
+                                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0_f32, Color32::from_gray(15)), egui::StrokeKind::Inside);
                                 let mut hex = rgb_hex(rgb);
                                 if ui.add(egui::TextEdit::singleline(&mut hex).desired_width(60.0)).changed() {
                                     if let Some(c) = parse_hex(&hex) {
@@ -1491,12 +1491,12 @@ impl App {
                             ui.menu_button(if bound.is_empty() { "fn" } else { "fn*" }, |ui| {
                                 if ui.selectable_label(bound.is_empty(), "(not driven)").clicked() {
                                     strs.push((fkey.clone(), None));
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                                 for f in &funcs_all {
                                     if ui.selectable_label(*f == bound, f).clicked() {
                                         strs.push((fkey.clone(), Some(f.clone())));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             })

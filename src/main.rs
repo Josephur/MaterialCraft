@@ -13,7 +13,7 @@ const HELP: &str = "materialcraft - procedural material authoring (pure Rust)
 
 USAGE:
   materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16|32]
-                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff|exr|hdr] [--quality 1-100] [--only basecolor,normal]
+                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff|exr|hdr] [--quality 1-100] [--only basecolor,normal]\n                  [--colorspace srgb|p3|wide|romm|rec2020|linear]
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
@@ -26,7 +26,7 @@ The visual editor is a separate binary:  cargo run --release --features gui --bi
 ";
 
 fn write_png(path: &Path, t: &Tex, depth: u8) -> Result<(), String> {
-    fs::write(path, png::encode(t.w, t.h, &t.px, depth)).map_err(|e| format!("{}: {e}", path.display()))
+    materialcraft::safeio::write_file(path, &png::encode(t.w, t.h, &t.px, depth)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn load(path: &str) -> Result<Graph, String> {
@@ -63,7 +63,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let (i, o) = (args.get(1).ok_or("usage: materialcraft publish <in.mcg> <out.mca>")?, args.get(2).ok_or("missing <out.mca>")?);
             let g = load(i)?;
             let text = g.publish().map_err(|e| e.to_string())?;
-            fs::write(o, &text).map_err(|e| e.to_string())?;
+            materialcraft::safeio::write_file(Path::new(o), text.as_bytes()).map_err(|e| e.to_string())?;
             println!("published {o} ({} bytes, {} exposed parameters)", text.len(), g.exposed.len());
             Ok(())
         }
@@ -71,7 +71,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let dir = args.get(1).ok_or("usage: materialcraft example <outdir>")?;
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             let p = Path::new(dir).join("brick_wall.mcg");
-            fs::write(&p, EXAMPLE).map_err(|e| e.to_string())?;
+            materialcraft::safeio::write_file(&p, EXAMPLE.as_bytes()).map_err(|e| e.to_string())?;
             println!("wrote {}", p.display());
             Ok(())
         }
@@ -118,6 +118,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let dir = args.get(2).ok_or("missing <outdir>")?;
             let mut g = load(gp)?;
             let (mut sizes, mut depth, mut preview, mut r3d, mut variations) = (vec![g.size], 8u8, false, false, 1u32);
+            #[allow(unused_mut, unused_variables)]
+            let mut space = String::from("srgb");
             let mut params: BTreeMap<String, f32> = BTreeMap::new();
             let (mut fmt, mut quality, mut only): (Format, u8, Option<Vec<String>>) = (Format::Png, 92, None);
             let mut i = 3;
@@ -163,6 +165,19 @@ fn run(args: &[String]) -> Result<(), String> {
                         i += 1;
                         only = Some(args.get(i).ok_or("--only needs a comma-separated list")?.split(',').map(|s| s.trim().to_string()).collect());
                     }
+                    "--colorspace" => {
+                        i += 1;
+                        let v = args.get(i).ok_or("--colorspace needs a name")?;
+                        #[cfg(any(feature = "cms", feature = "craft"))]
+                        {
+                            if materialcraft::colorspace::find(v).is_none() {
+                                return Err(format!("--colorspace must be one of: {}", materialcraft::colorspace::SPACES.iter().map(|s| s.0).collect::<Vec<_>>().join(", ")));
+                            }
+                            space = v.to_string();
+                        }
+                        #[cfg(not(any(feature = "cms", feature = "craft")))]
+                        return Err(format!("--colorspace {v}: this build has no colour management (build with --features cms)"));
+                    }
                     "--preview" => preview = true,
                     "--render3d" => r3d = true,
                     o => return Err(format!("unknown option '{o}'")),
@@ -189,7 +204,16 @@ fn run(args: &[String]) -> Result<(), String> {
                             continue;
                         }
                         let p = d.join(format!("{name}.{}", fmt.ext()));
-                        fs::write(&p, export::encode(fmt, t, if fmt == Format::Jpeg { 8 } else { depth }, quality)).map_err(|e| format!("{}: {e}", p.display()))?;
+                        #[cfg(any(feature = "cms", feature = "craft"))]
+                        let conv;
+                        #[cfg(any(feature = "cms", feature = "craft"))]
+                        let t = if materialcraft::colorspace::is_color_output(name) {
+                            conv = materialcraft::colorspace::convert(t, &space)?;
+                            &conv
+                        } else {
+                            t
+                        };
+                        materialcraft::safeio::write_file(&p, &export::encode(fmt, t, if fmt == Format::Jpeg { 8 } else { depth }, quality)).map_err(|e| format!("{}: {e}", p.display()))?;
                         println!("wrote {}", p.display());
                     }
                     let flat = Tex::solid(s, s, [0.5, 0.5, 1.0, 1.0]);

@@ -36,8 +36,10 @@ F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
 
 ## Platforms
 Windows, Linux and macOS use the same code: `eframe` (glow / OpenGL 3.3 core) for the window and the 3D viewport, `rfd` for
-file dialogs, and only the Rust standard library elsewhere (no platform-specific code besides where the settings folder is:
-`%APPDATA%`, `~/.config` or `~/Library/Application Support`). GitHub Actions (`.github/workflows/ci.yml`) builds and tests all three.
+file dialogs, plus the shared Craft libraries (`craft-ui` docking, `craft-settings`, `craft-atomic`, `craft-cms`, `craft-quit`, from
+https://github.com/storytold/craft-libs, MIT OR Apache-2.0). The core library and the command-line tool still use only the Rust standard
+library unless built with `--features cms` or `--features gui`. Settings live in `config.toml` under `%APPDATA%\materialcraft`, `~/.config/materialcraft` or
+`~/Library/Application Support/materialcraft`. Building needs Rust 1.95 or newer. GitHub Actions (`.github/workflows/ci.yml`) builds and tests all three.
 Linux needs the usual X11/Wayland/GL development packages (`libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev`).
 
 ## Licence

@@ -81,7 +81,9 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Subgraph creation and editing, multiple graphs, exposed parameters
 - Per-node property panels with color wheel and gradient editor
 - Home screen with recent files, New Graph dialog, node library with thumbnails
-- Resizable 2D and 3D views
+- Dockable panels (shared `craft-ui` docking): drag a tab to another group, to a side or out into a floating panel; Windows > Reset layout; the layout is remembered between runs; the graph canvas stays fixed
+- Settings in `config.toml` (shared `craft-settings`): atomic saves, backup file, damaged files moved aside; old `settings.txt` / `recent.txt` are imported on first run
+- Forced dark theme (does not follow the operating system's light theme)
 
 ### 3D viewport (GPU, OpenGL 3.3 via egui_glow)
 - 13 preview objects: Cube, Cylinder, Hollow box, Inner box (seen from inside), Plane, Plane (hi-res), Sphere, Cloth, Mat ball, Rounded cube, Rounded cylinder, Sphere 2 tiles, Torus (mesh resolution up to 768 x 768; all closed shapes stay crack-free when displaced)
@@ -93,7 +95,9 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Headless test: `cargo run --release --features gui --example gpu_shot -- out.png [shape] [relief] [w h] [nomsaa] [wire]`
 
 ### Export, files and tools
-- Export to PNG, JPEG, TIFF at 8 or 16 bit
+- Export to PNG, JPEG, TIFF at 8 or 16 bit, EXR, HDR
+- Crash-safe writes for graphs, packages and exports (`craft-atomic`: staged file, flush, atomic replace)
+- Output colour space on export for colour maps: sRGB, P3, wide-gamut RGB, ROMM RGB, Rec. 2020, linear sRGB (`craft-cms` ICC engine); CLI `--colorspace`
 - Several resolutions at once (256 to 8192 px) and per-output selection
 - `.mcg` editable graphs, `.mca` published packages with exposed parameters
 - Mesh baking from OBJ (BVH): normal, world normal, AO, curvature, thickness, position, ID
@@ -160,7 +164,8 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [x] SVG import (own rasteriser: shapes, paths, transforms, solid fill and stroke), TrueType font import and text nodes (own reader and a built-in face). Not supported: SVG gradients / clipping / filters, CFF (.otf) fonts, kerning and complex-script shaping
 - [ ] Bitmap import for JPEG, TIFF, EXR (only PNG today)
 - [ ] AxF material import
-- [ ] OCIO and ICC colour management (sRGB only today)
+- [x] ICC-based output colour spaces for colour maps on export (built-in profiles, `craft-cms`)
+- [ ] OCIO config support, per-bitmap input colour space, ICC profile import, colour-managed 2D / 3D views
 - [x] 32-bit float output: EXR, HDR and float TIFF export (graph clamps still to be reviewed)
 
 ### Publishing and automation
