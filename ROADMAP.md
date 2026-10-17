@@ -119,6 +119,8 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ## 2. Not implemented yet
 
+The full plan for a complete Designer replacement (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
+
 ### Graph logic
 - [ ] Package context menu: Rename, Save As, Duplicate, Reveal in file explorer, Delete; graph context menu: Rename, Duplicate, Delete, Close Graph
 - [ ] Several graph tabs open at once (one graph is shown at a time today)
