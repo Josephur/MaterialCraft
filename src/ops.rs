@@ -792,6 +792,99 @@ pub fn edge_detect(t: &Tex, intensity: f32) -> Tex {
     })
 }
 
+/// Separable grey-scale dilation (maximum filter) of radius `r` pixels, wrapping at the borders.
+pub fn dilate(t: &Tex, r: i64) -> Tex {
+    if r <= 0 {
+        return t.clone();
+    }
+    let h = Tex::from_fn(t.w, t.h, |u, v| {
+        let (x, y) = ((u * t.w as f32) as i64, (v * t.h as f32) as i64);
+        let m = (-r..=r).map(|d| t.gray_at(x + d, y)).fold(0.0f32, f32::max);
+        [m, m, m, 1.0]
+    });
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let (x, y) = ((u * t.w as f32) as i64, (v * t.h as f32) as i64);
+        let m = (-r..=r).map(|d| h.gray_at(x, y + d)).fold(0.0f32, f32::max);
+        [m, m, m, 1.0]
+    })
+}
+
+/// Edge Detect as in Designer: white lines of `width` pixels where the image changes by more than `tolerance`;
+/// `roundness` (pixels) rounds the corners of the lines; `invert` flips the result.
+pub fn edge_detect_ex(t: &Tex, width: f32, roundness: f32, invert: bool, tolerance: f32) -> Tex {
+    let g = to_gray(t);
+    // Sobel magnitude, 1 for a full black / white step
+    let e = Tex::from_fn(t.w, t.h, |u, v| {
+        let (x, y) = ((u * t.w as f32) as i64, (v * t.h as f32) as i64);
+        let gx = -g.gray_at(x - 1, y - 1) - 2.0 * g.gray_at(x - 1, y) - g.gray_at(x - 1, y + 1) + g.gray_at(x + 1, y - 1) + 2.0 * g.gray_at(x + 1, y) + g.gray_at(x + 1, y + 1);
+        let gy = -g.gray_at(x - 1, y - 1) - 2.0 * g.gray_at(x, y - 1) - g.gray_at(x + 1, y - 1) + g.gray_at(x - 1, y + 1) + 2.0 * g.gray_at(x, y + 1) + g.gray_at(x + 1, y + 1);
+        let m = (gx * gx + gy * gy).sqrt() * 0.25;
+        let k = tolerance.clamp(0.0, 0.999);
+        // everything below the tolerance is no edge; a step of the tolerance size already counts as a full edge
+        let o = if m <= k * 0.5 { 0.0 } else { ((m - k * 0.5) / (0.5 * (1.0 - k)).max(1e-3)).clamp(0.0, 1.0) };
+        [o, o, o, 1.0]
+    });
+    let mut d = dilate(&e, ((width.max(1.0) - 1.0) * 0.5).round() as i64);
+    if roundness > 0.5 {
+        let b = blur(&d, roundness * 0.5);
+        d = Tex::from_fn(t.w, t.h, |u, v| {
+            let x = sm(0.25, 0.75, lum(b.sample(u, v)));
+            [x, x, x, 1.0]
+        });
+    }
+    if invert {
+        for p in d.px.iter_mut() {
+            let v = 1.0 - p[0];
+            *p = [v, v, v, 1.0];
+        }
+    }
+    d
+}
+
+/// Curvature of a normal map: the divergence of its XY components (convex bright, concave dark).
+pub fn curvature_normal(n: &Tex, intensity: f32, directx: bool) -> Tex {
+    let s = if directx { -1.0 } else { 1.0 };
+    Tex::from_fn(n.w, n.h, |u, v| {
+        let (x, y) = ((u * n.w as f32) as i64, (v * n.h as f32) as i64);
+        let div = (n.at(x + 1, y)[0] - n.at(x - 1, y)[0]) - s * (n.at(x, y + 1)[1] - n.at(x, y - 1)[1]);
+        let g = (0.5 + div * intensity).clamp(0.0, 1.0);
+        [g, g, g, 1.0]
+    })
+}
+
+/// Mosaic driven by a map: every region of equal map value takes the mean colour of the input inside it.
+/// `intensity` blends between the input (0) and the mosaic (1).
+pub fn mosaic_map(t: &Tex, map: &Tex, intensity: f32) -> Tex {
+    use std::collections::HashMap;
+    let key = |u: f32, v: f32| (lum(map.sample(u, v)) * 4095.0).round() as i32;
+    let mut acc: HashMap<i32, ([f64; 4], f64)> = HashMap::new();
+    for y in 0..t.h {
+        for x in 0..t.w {
+            let (u, v) = ((x as f32 + 0.5) / t.w as f32, (y as f32 + 0.5) / t.h as f32);
+            let e = acc.entry(key(u, v)).or_insert(([0.0; 4], 0.0));
+            let p = t.px[y * t.w + x];
+            for c in 0..4 {
+                e.0[c] += p[c] as f64;
+            }
+            e.1 += 1.0;
+        }
+    }
+    let k = intensity.clamp(0.0, 1.0);
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let src = t.sample(u, v);
+        match acc.get(&key(u, v)) {
+            Some((s, n)) if *n > 0.0 => {
+                let mut o = [0.0f32; 4];
+                for c in 0..4 {
+                    o[c] = src[c] + ((s[c] / n) as f32 - src[c]) * k;
+                }
+                o
+            }
+            _ => src,
+        }
+    })
+}
+
 pub fn emboss(t: &Tex, angle: f32, intensity: f32) -> Tex {
     let (s, c) = (angle * TAU).sin_cos();
     Tex::from_fn(t.w, t.h, |u, v| {

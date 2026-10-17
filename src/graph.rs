@@ -64,7 +64,8 @@ pub const SPECS: &[Spec] = &[
     s!("gaussian_noise", [], [], "gaussian-distributed per-pixel noise: seed scale contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
     s!("perlin", [], [], "perlin noise: scale scale_x scale_y seed disorder disorder_speed tile_x tile_y"),
     s!("fbm", [], [], "fractal noise/clouds: scale octaves gain seed mode(0 fbm,1 ridged,2 turbulence) disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
-    s!("voronoi", [], [], "cellular: scale jitter seed mode(0 dist,1 id,2 edge,3 f2)"),
+    s!("voronoi", [], [], "cellular: scale jitter seed mode(0 f1,1 cell id,2 edge,3 f2,4 f2-f1,5 f1*f2,6 f1/f2) aspect offset_x offset_y distortion distortion_scale distance_mode(0 euclid,1 manhattan,2 chebyshev,3 minkowski) minkowski edge_thickness rounded distance_scale color_seed_mode color_seed invert"),
+    s!("voronoi_fractal", [], [], "layered voronoi: scale jitter seed mode aspect offset_x offset_y distortion distortion_scale distance_mode minkowski edge_thickness rounded distance_scale min_level max_level roughness lacunarity opacity blend(0 add,1 max,2 min) color_seed_mode color_seed invert"),
     s!("gradient", [], [], "gradient: mode(0 linear,1 radial) angle"),
     s!("circle", [], [], "radius softness"),
     s!("rect", [], [], "width height softness"),
@@ -88,7 +89,7 @@ pub const SPECS: &[Spec] = &[
     s!("bnw_spots", [], [], "black and white spots: scale seed contrast invert variant disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
     s!("crystal", [], [], "faceted crystal cells: scale disorder seed contrast invert variant"),
     s!("directional_noise", [], [], "streak noise, seamless at any angle: scale stretch angle seed contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
-    s!("grunge", [], [], "grunge masks: concrete, scratches, spots, smudges"),
+    s!("grunge", [], [], "grunge masks: variant(0 concrete,1 scratches,2 spots,3 smudges) balance large_variation base_noisiness dirt_specks_opacity invert_dirt scratches_opacity sharpen quantity scratch_width scratch_length details coverage coverage_contrast disorder disorder_speed seed contrast invert"),
     s!("plasma", [], [], "smooth plasma waves"),
     s!("stripes", [], [], "stripes: count angle softness width tile(1 = snap to seamless angle, 0 = exact)"),
     s!("weave", [], [], "woven threads: count width"),
@@ -142,11 +143,11 @@ pub const SPECS: &[Spec] = &[
     s!("normal", ["in"], [], "height->normal (OpenGL +Y): strength directx alpha_from_input"),
     s!("normal_blend", ["a", "b"], ["mask"], "blend normal maps (a = background, b = foreground): opacity"),
     s!("ao", ["in"], [], "height-based ambient occlusion: radius intensity"),
-    s!("curvature", ["in"], [], "radius intensity"),
-    s!("edge_detect", ["in"], [], "intensity"),
+    s!("curvature", ["in"], [], "curvature of a normal map: mode(0 normal map,1 height map) intensity directx radius"),
+    s!("edge_detect", ["in"], [], "edge lines: mode(0 designer,1 sobel) edge_width edge_roundness invert tolerance intensity"),
     s!("emboss", ["in"], [], "angle intensity"),
     s!("non_uniform_blur", ["in", "mask"], [], "blur by a mask: intensity"),
-    s!("radial_blur", ["in"], [], "zoom blur around a centre: amount radius x y"),
+    s!("radial_blur", ["in"], [], "spin blur around a centre: mode(0 spin,1 zoom) samples angle x y amount radius"),
     s!("anisotropic_blur", ["in"], [], "blur stretched in one direction: intensity anisotropy angle"),
     s!("symmetry", ["in"], [], "mirror the image around a line: axis(0 x,1 y,2 both,3 diagonal,4 anti-diagonal,5 eight-fold) offset flip transfer(0 copy,1 add,2 sub,3 mul,4 add sub,5 max,6 min)"),
     s!("skew", ["in"], [], "shear that keeps tiling: skew_x skew_y (whole numbers) align(0 centre,1 top left,2 bottom right)"),
@@ -158,7 +159,7 @@ pub const SPECS: &[Spec] = &[
     s!("pow", ["in"], [], "raise values to a power: exponent"),
     s!("histogram_shift", ["in"], [], "shift all values: position"),
     s!("grayscale_conversion", ["in"], [], "weighted grayscale: r g b"),
-    s!("cells", [], [], "cellular noise: scale jitter seed variant(0 cells1,1 cells2,2 cells3,3 cells4) contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
+    s!("cells", [], ["color"], "cellular noise: scale jitter seed variant(0 cells1,1 cells2,2 cells3,3 cells4) luminance_random color_source(0 random,1 pseudorandom,2 image) pseudorandom_seed edge_width hardness contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
     s!("fractal_sum", [], [], "sum of noise octaves: scale min_level max_level roughness seed mode(0 base,1 turbulence,2 creased) contrast invert disorder disorder_speed"),
     s!("waveform", [], [], "tileable wave pattern: count angle warp warp_scale seed shape(0 sine,1 triangle,2 saw,3 square) contrast invert disorder disorder_speed"),
     s!("gaussian_spots", [], [], "soft gaussian spots: scale size size_variation seed contrast invert disorder disorder_speed anisotropy anisotropy_angle tile_x tile_y"),
@@ -168,7 +169,7 @@ pub const SPECS: &[Spec] = &[
     s!("normal_to_height", ["in"], [], "integrate a normal map into a height map: directx relief_balance opacity"),
     s!("sobel", ["in"], [], "sobel edge magnitude: intensity"),
     s!("glow", ["in"], [], "glow around bright areas: width intensity clear glow_r glow_g glow_b"),
-    s!("mosaic", ["in"], [], "pixelate: count"),
+    s!("mosaic", ["in"], ["mosaic_map"], "mosaic of the map regions (or a pixel grid without a map): count intensity"),
     s!("non_uniform_directional_warp", ["in", "intensity"], ["angle"], "warp along a direction chosen per pixel: intensity angle"),
     s!("multi_directional_warp", ["in", "warp"], [], "warp in several directions at once: intensity directions(0 one,1 two,2 four) angle mode(0 average,1 max,2 min,3 chain)"),
     s!("normal_combine", ["base", "detail"], [], "combine two normal maps: technique(0 whiteout,1 channel mixer,2 detail oriented)"),
@@ -187,7 +188,7 @@ pub fn spec(kind: &str) -> Option<&'static Spec> {
 
 pub fn category(kind: &str) -> &'static str {
     match kind {
-        "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
+        "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
         | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
@@ -205,6 +206,7 @@ pub fn label(kind: &str) -> String {
         "bnw_spots" => "BnW Spots",
         "merge" => "RGBA Merge",
         "colorize" => "Gradient Map",
+        "voronoi_fractal" => "Voronoi Fractal",
         "color" => "Uniform Color",
         "hsl" => "HSL",
         "ao" => "Ambient Occlusion",
@@ -1668,27 +1670,50 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "grunge" => {
             let var = f("variant", 0.0) as u32;
+            let balance = f("balance", 0.5).clamp(0.0, 1.0);
+            // concrete
+            let (large, noisy) = (f("large_variation", 0.55), f("base_noisiness", 0.45));
+            let (specks, scr_op, sharpen) = (f("dirt_specks_opacity", 0.0).clamp(0.0, 1.0), f("scratches_opacity", 0.0).clamp(0.0, 1.0), f("sharpen", 0.0).clamp(0.0, 1.0));
+            let invert_dirt = f("invert_dirt", 0.0) > 0.5;
+            // scratches
+            let (quant, width, length) = (per("quantity", 3.0).min(32), f("scratch_width", 0.4).clamp(0.05, 0.95), f("scratch_length", 0.45).clamp(0.0, 0.9));
+            // spots
+            let (details, cover, cover_c) = (per("details", 22.0).min(128), f("coverage", 0.35).clamp(0.0, 0.9), f("coverage_contrast", 0.25).clamp(0.02, 1.0));
             fin(Tex::gray_fn(s, s, move |u, v| {
                 let (a, b) = warp(u, v);
-                match var {
+                let val = match var {
                     0 => {
-                        let n = noise::fbm(a, b, 8, 8, 6, 0.55, seed, 0) * 0.55 + noise::fbm(a, b, 40, 40, 3, 0.5, seed.wrapping_add(1), 0) * 0.45;
-                        ((n - 0.35) * 2.2).clamp(0.0, 1.0)
+                        let n = noise::fbm(a, b, 8, 8, 6, 0.55, seed, 0) * large + noise::fbm(a, b, 40, 40, 3, 0.5, seed.wrapping_add(1), 0) * noisy;
+                        let mut c = ((n - 0.35) * 2.2).clamp(0.0, 1.0);
+                        if specks > 0.0 {
+                            let sp = noise::spots(a, b, 64, 64, seed.wrapping_add(11), |id| (0.1, 0.18 + id * 0.2), 0.0);
+                            c = if invert_dirt { c + (1.0 - c) * sp * specks } else { c * (1.0 - sp * specks) };
+                        }
+                        if scr_op > 0.0 {
+                            let line = noise::perlin(a * 3.0 % 1.0, b, 3, 160, seed.wrapping_add(13));
+                            c = (c + smooth(0.62, 0.7, line) * scr_op).clamp(0.0, 1.0);
+                        }
+                        if sharpen > 0.0 {
+                            c += (smooth(0.0, 1.0, c) - c) * sharpen;
+                        }
+                        c
                     }
                     1 => {
-                        let line = noise::perlin(a * 3.0 % 1.0, b, 3, 90, seed);
+                        let q = quant as f32;
+                        let line = noise::perlin(a * q % 1.0, b, quant, 90, seed);
                         let m = noise::fbm(a, b, 5, 5, 4, 0.5, seed.wrapping_add(3), 0);
-                        smooth(0.6, 0.7, line) * smooth(0.45, 0.6, m)
+                        smooth(1.0 - width, 1.1 - width, line) * smooth(length, length + 0.15, m)
                     }
                     2 => {
                         let m = noise::fbm(a, b, 6, 6, 4, 0.5, seed.wrapping_add(4), 0);
-                        noise::spots(a, b, 22, 22, seed, |id| (0.12, 0.2 + id * 0.3), 0.0) * smooth(0.35, 0.6, m)
+                        noise::spots(a, b, details, details, seed, |id| (0.12, 0.2 + id * 0.3), 0.0) * smooth(cover, cover + cover_c, m)
                     }
                     _ => {
                         let n = noise::fbm(a, b, 3, 3, 5, 0.6, seed, 2);
                         smooth(0.2, 0.8, n)
                     }
-                }
+                };
+                (val + (balance - 0.5)).clamp(0.0, 1.0)
             }))
         }
         "plasma" => {
@@ -1759,17 +1784,42 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 0.5 + (a - 0.5) * w
             })
         }
-        "voronoi" => {
-            let (p, j, mode) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
-            Tex::gray_fn(s, s, move |u, v| {
-                let (a, b, c) = noise::voronoi(u, v, p, p, seed, j);
-                match mode {
-                    1 => c,
-                    2 => ((b - a) * 4.0).clamp(0.0, 1.0),
-                    3 => b,
-                    _ => a,
+        "voronoi" | "voronoi_fractal" => {
+            let fractal = n.kind == "voronoi_fractal";
+            let (p, j, style) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
+            let aspect = f("aspect", 1.0).clamp(0.25, 4.0);
+            let (ox, oy) = (f("offset_x", 0.0), f("offset_y", 0.0));
+            let (dist, dscale) = (f("distortion", 0.0).clamp(0.0, 2.0), per("distortion_scale", 3.0));
+            let metric = noise::Metric::from_index(f("distance_mode", 0.0) as u32, f("minkowski", 2.0));
+            let (thick, round, dsc) = (f("edge_thickness", 0.25), f("rounded", 0.0), f("distance_scale", 1.0).clamp(0.0, 8.0));
+            let id_seed = if f("color_seed_mode", 0.0) > 0.5 { f("color_seed", 0.0) as u32 } else { seed };
+            let (lo, hi) = (f("min_level", 0.0).clamp(0.0, 8.0) as u32, f("max_level", 3.0).clamp(0.0, 8.0) as u32);
+            let (rough, lac, opac, blend) = (f("roughness", 0.5).clamp(0.0, 1.5), f("lacunarity", 2.0).clamp(1.0, 4.0), f("opacity", 1.0).clamp(0.0, 1.0), f("blend", 0.0) as u32);
+            let hi = hi.max(lo);
+            let one = move |u: f32, v: f32, px: i32, sd: u32| -> f32 {
+                let py = ((px as f32 * aspect).round().max(1.0)) as i32;
+                let (u, v) = (u + ox, v + oy);
+                let (u, v) = if dist > 0.0 { (u + (noise::perlin(u, v, dscale, dscale, seed.wrapping_add(5)) - 0.5) * dist * 0.3, v + (noise::perlin(u, v, dscale, dscale, seed.wrapping_add(6)) - 0.5) * dist * 0.3) } else { (u, v) };
+                let r = noise::voronoi_gen(u, v, px, py, sd, id_seed.wrapping_add(sd.wrapping_sub(seed)), j, metric);
+                (noise::voronoi_style(&r, style, thick, round) * dsc).clamp(0.0, 1.0)
+            };
+            let levels: Vec<(i32, f32)> = if fractal { (lo..=hi).map(|l| (((p as f32) * lac.powi(l as i32)).round().clamp(1.0, 512.0) as i32, rough.powi((l - lo) as i32))).collect() } else { vec![(p, 1.0)] };
+            let norm: f32 = levels.iter().map(|l| l.1).sum::<f32>().max(1e-6);
+            fin(Tex::gray_fn(s, s, move |u, v| {
+                if !fractal {
+                    return one(u, v, p, seed);
                 }
-            })
+                let mut acc: f32 = if blend == 2 { 1.0 } else { 0.0 };
+                for (i, (px, amp)) in levels.iter().enumerate() {
+                    let val = one(u, v, *px, seed.wrapping_add(i as u32 * 131));
+                    match blend {
+                        1 => acc = acc.max(val * if i == 0 { 1.0 } else { opac }),
+                        2 => acc = acc.min(1.0 - (1.0 - val) * if i == 0 { 1.0 } else { opac }),
+                        _ => acc += amp * val * if i == 0 { 1.0 } else { opac },
+                    }
+                }
+                if blend == 0 { acc / norm } else { acc }.clamp(0.0, 1.0)
+            }))
         }
         "gradient" => {
             let (mode, (sa, ca)) = (f("mode", 0.0) as u32, (f("angle", 0.0) * std::f32::consts::TAU).sin_cos());
@@ -2157,8 +2207,21 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "normal_blend" => ops::normal_blend_ex(tex("a")?, tex("b")?, f("opacity", 1.0), ins.get("mask").map(|m| m.as_ref())),
         "ao" => ops::ambient_occlusion(tex("in")?, f("radius", 6.0) * rs, f("intensity", 2.0)),
-        "curvature" => ops::curvature(tex("in")?, f("radius", 3.0) * rs, f("intensity", 4.0)),
-        "edge_detect" => ops::edge_detect(tex("in")?, f("intensity", 2.0)),
+        "curvature" => {
+            if f("mode", 0.0) > 0.5 {
+                ops::curvature(tex("in")?, f("radius", 3.0) * rs, f("intensity", 4.0))
+            } else {
+                ops::curvature_normal(tex("in")?, f("intensity", 4.0), f("directx", 0.0) > 0.5)
+            }
+        }
+        "edge_detect" => {
+            if f("mode", 0.0) > 0.5 {
+                ops::edge_detect(tex("in")?, f("intensity", 2.0))
+            } else {
+                // widths are given in pixels at the 512 reference size and scale with the resolution
+                ops::edge_detect_ex(tex("in")?, (f("edge_width", 2.0) * rs).max(1.0), f("edge_roundness", 0.0) * rs, f("invert", 0.0) > 0.5, f("tolerance", 0.0))
+            }
+        }
         "emboss" => ops::emboss(tex("in")?, f("angle", 0.125), f("intensity", 4.0)),
         other => match crate::nodes2::compute(other, id, n, ins, s, seed)? {
             Some(t) => t,

@@ -6,7 +6,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
-## 1. Implemented (120 node types)
+## 1. Implemented (121 node types)
 
 ### Generators: noise
 - White Noise
@@ -112,7 +112,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Memory: intermediate textures are freed as soon as every node that reads them has finished, so large graphs at 4K fit
 
 ### Quality checks
-- 55 automated tests, including: a wrap-around check that rolls the input of 30 filters and requires the output to roll identically (proves every filter wraps at the borders), seam checks on every node, every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import and per-output links
+- 57 automated tests, including: a wrap-around check that rolls the input of 30 filters and requires the output to roll identically (proves every filter wraps at the borders), seam checks on every node, every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import and per-output links
 - `cargo run --release --example node_sheet -- out_dir` renders a PNG for every node type for visual review
 
 ---
@@ -179,9 +179,9 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ## 2b. Designer feature gap (checked against Adobe's node library and release notes, Oct 2026)
 
-We have 120 node types; Designer's library has roughly 500. Missing, by area:
+We have 121 node types; Designer's library has roughly 500. Missing, by area:
 
-**Property parity:** `NODES.md` lists, for each of our 120 nodes, the properties Designer documents, what our Properties panel has and what is missing. Done so far: the cheap one-property gaps (Phase 1) the shared noise block (Disorder speed / anisotropy, Tile offset; Phase 2) and the Tile Sampler / Tile Generator / Splatter / Splatter Circular rebuilds (Phase 3: built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), see its status section. Still open: the other large rebuilds (Voronoi, Grunge Maps, Cells 1-4 variants, Triangle Grid, Gradient Map editor, Color Match, Quantize Color, RTAO / world-unit AO), the nodes whose behaviour differs from Designer (Radial Blur, Mosaic, Edge Detect, Curvature), and the properties that need engine features (multi-output nodes, extra image inputs, function graphs, baked mesh inputs).
+**Property parity:** `NODES.md` lists, for each of our 121 nodes, the properties Designer documents, what our Properties panel has and what is missing. Done so far: the cheap one-property gaps (Phase 1) the shared noise block (Disorder speed / anisotropy, Tile offset; Phase 2) and the Tile Sampler / Tile Generator / Splatter / Splatter Circular rebuilds (Phase 3: built-in patterns, six inputs, offsets, masks, blending, map inputs, rings) and the four nodes that behaved differently (Phase 4: Radial Blur spin, Edge Detect lines, Mosaic map, Curvature from normal maps) and Voronoi / Voronoi Fractal / Cells / Grunge properties (Phase 5), see its status section. Still open: the other large rebuilds (Grunge Map 001-015 images, Triangle Grid, Gradient Map editor, Color Match, Quantize Color, RTAO / world-unit AO), and the properties that need engine features (multi-output nodes, extra image inputs, function graphs, baked mesh inputs).
 
 ### Noises and generators
 - (done in batch 1: Cells, Fractal Sum, Waveform, Gaussian Spots) Fur 1-3, Fluid, Liquid, Caustics, Moisture Noise, Messy Fibers 1-3, Microscope View, Anisotropic Noise, Blue Noise, Voronoi Fractal, Clouds 2-3, Directional Noise 2-4, Directional Scratches, Dirt 1-5, Dirt Gradient, White Noise Fast

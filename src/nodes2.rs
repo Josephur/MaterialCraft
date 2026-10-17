@@ -151,22 +151,44 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         "radial_blur" => {
             let t = need("in")?;
             let (cx, cy) = (0.5 + f("x", 0.0), 0.5 + f("y", 0.0));
-            let (amount, rad) = (f("amount", 0.1).clamp(0.0, 1.0), f("radius", 0.5).clamp(0.01, 0.5));
-            let taps = 24;
-            Tex::from_fn(t.w, t.h, |u, v| {
-                let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
-                let r = (dx * dx + dy * dy).sqrt();
-                let amt = amount * smooth(0.0, 1.0, 1.0 - r / rad);
-                let mut a = [0.0f32; 4];
-                for k in 0..taps {
-                    let sc = 1.0 - amt * (k as f32 / (taps - 1) as f32);
-                    let p = t.sample(cx + dx * sc, cy + dy * sc);
-                    for c in 0..4 {
-                        a[c] += p[c] / taps as f32;
+            if f("mode", 0.0) > 0.5 {
+                // legacy zoom blur
+                let (amount, rad) = (f("amount", 0.1).clamp(0.0, 1.0), f("radius", 0.5).clamp(0.01, 0.5));
+                let taps = 24;
+                Tex::from_fn(t.w, t.h, |u, v| {
+                    let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
+                    let r = (dx * dx + dy * dy).sqrt();
+                    let amt = amount * smooth(0.0, 1.0, 1.0 - r / rad);
+                    let mut a = [0.0f32; 4];
+                    for k in 0..taps {
+                        let sc = 1.0 - amt * (k as f32 / (taps - 1) as f32);
+                        let p = t.sample(cx + dx * sc, cy + dy * sc);
+                        for c in 0..4 {
+                            a[c] += p[c] / taps as f32;
+                        }
                     }
-                }
-                a
-            })
+                    a
+                })
+            } else {
+                // Designer: spin blur, `samples` taps along an arc of `angle` turns around the centre
+                let n = f("samples", 32.0).round().clamp(1.0, 128.0) as usize;
+                let arc = f("angle", 0.1).clamp(0.0, 0.5) * TAU;
+                Tex::from_fn(t.w, t.h, |u, v| {
+                    let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
+                    // the blur fades out towards the image border so the result still tiles
+                    let fade = ((0.5 - (dx * dx + dy * dy).sqrt()) / 0.15).clamp(0.0, 1.0);
+                    let mut a = [0.0f32; 4];
+                    for k in 0..n {
+                        let th = if n > 1 { (k as f32 / (n - 1) as f32 - 0.5) * arc * fade } else { 0.0 };
+                        let (sn, cs) = th.sin_cos();
+                        let p = t.sample(cx + dx * cs - dy * sn, cy + dx * sn + dy * cs);
+                        for c in 0..4 {
+                            a[c] += p[c] / n as f32;
+                        }
+                    }
+                    a
+                })
+            }
         }
         "anisotropic_blur" => {
             let t = need("in")?;
@@ -323,14 +345,23 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         "cells" => {
             let (var, p) = (f("variant", 0.0) as u32, per("scale", 8.0));
             let jitter = f("jitter", 1.0).clamp(0.0, 1.0);
+            let (lum_rand, edge_w, hard) = (f("luminance_random", 0.0).clamp(0.0, 1.0), f("edge_width", 0.25).clamp(0.01, 1.0), f("hardness", 2.0).clamp(0.1, 16.0));
+            let (src, pseed) = (f("color_source", 0.0) as u32, f("pseudorandom_seed", 0.0) as u32);
+            let img = if src == 2 { opt("color") } else { None };
             fin(Tex::gray_fn(s, s, move |u, v| {
                 let (u, v) = dz.warp(u, v);
                 let vr = noise::voronoi_ext(u, v, p, p, seed, jitter);
+                // cell value of Cells 4: random, pseudorandom (re-rolled with its own seed) or the input image at the cell centre
+                let cell_val = || match (src, img) {
+                    (2, Some(t)) => lum(t.sample(u + vr.dx / p as f32, v + vr.dy / p as f32)),
+                    (1, _) => noise::rnd((((u + vr.dx / p as f32) * p as f32).floor()) as i32, (((v + vr.dy / p as f32) * p as f32).floor()) as i32, pseed.wrapping_add(4242)),
+                    _ => vr.id1,
+                };
                 match var {
-                    0 => 1.0 - vr.f1,
-                    1 => vr.id1,
-                    2 => smooth(0.0, 0.25, vr.f2 - vr.f1),
-                    _ => vr.id1 * (1.0 - vr.f1 * vr.f1),
+                    0 => (1.0 - vr.f1) * (1.0 - lum_rand * vr.id1),
+                    1 => cell_val(),
+                    2 => smooth(0.0, edge_w, vr.f2 - vr.f1),
+                    _ => vr.id1 * (1.0 - vr.f1.powf(hard)),
                 }
             }))
         }
@@ -441,8 +472,13 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         }
         "mosaic" => {
             let t = need("in")?;
-            let c = per("count", 16.0) as f32;
-            Tex::from_fn(t.w, t.h, |u, v| t.sample(((u * c).floor() + 0.5) / c, ((v * c).floor() + 0.5) / c))
+            if let Some(m) = opt("mosaic_map") {
+                ops::mosaic_map(t, m, f("intensity", 1.0))
+            } else {
+                // no map: a plain grid of `count` cells per side
+                let c = per("count", 16.0) as f32;
+                Tex::from_fn(t.w, t.h, |u, v| t.sample(((u * c).floor() + 0.5) / c, ((v * c).floor() + 0.5) / c))
+            }
         }
         "shape_drop_shadow" => {
             let t = need("in")?;

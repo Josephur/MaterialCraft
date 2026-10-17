@@ -1093,3 +1093,95 @@ fn tile_sampler_and_generator_are_seamless() {
         }
     }
 }
+
+#[test]
+fn phase3b_nodes_behave_like_designer() {
+    let run = |body: &str| Graph::parse(&format!("size 64\n{body}")).unwrap().evaluate(None).unwrap();
+    let sum = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| p[0]).sum::<f32>();
+    let diff = |a: &materialcraft::tex::Tex, b: &materialcraft::tex::Tex| a.px.iter().zip(&b.px).map(|(p, q)| (p[0] - q[0]).abs()).sum::<f32>() / a.px.len() as f32;
+    // Edge Detect: width, invert, tolerance, roundness
+    let run512 = |body: &str| Graph::parse(&format!("size 512\n{body}")).unwrap().evaluate(None).unwrap();
+    let o = run512("node 1 stripes count=2 softness=0.001 width=0.5\nnode 2 edge_detect in=@1 edge_width=1\nnode 3 edge_detect in=@1 edge_width=9\nnode 4 edge_detect in=@1 edge_width=1 invert=1\nnode 5 edge_detect in=@1 edge_width=9 edge_roundness=8\nnode 6 perlin scale=4 seed=1\nnode 7 edge_detect in=@6 tolerance=0\nnode 8 edge_detect in=@6 tolerance=0.9\nnode 9 edge_detect in=@1 mode=1\noutput w1 2\noutput w9 3\noutput inv 4\noutput round 5\noutput t0 7\noutput t9 8\noutput legacy 9\n");
+    assert!(sum(&o["w1"]) > 1.0, "edges found");
+    assert!(sum(&o["w9"]) > sum(&o["w1"]) * 2.0, "edge width widens the line");
+    assert!((sum(&o["inv"]) + sum(&o["w1"]) - 512.0 * 512.0).abs() < 1.0, "invert");
+    assert!(o["round"].px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])));
+    assert!(sum(&o["t9"]) < sum(&o["t0"]) * 0.5, "tolerance drops weak edges");
+    assert!(sum(&o["legacy"]) > 1.0, "legacy sobel still works");
+    // Radial Blur: a spin blur leaves concentric rings alone, the legacy zoom blur smears them
+    let o = run("node 1 pixel_processor expr=\"sqrt((u-0.5)*(u-0.5)+(v-0.5)*(v-0.5))*2\"\nnode 2 radial_blur in=@1 angle=0.2 samples=16\nnode 3 radial_blur in=@1 mode=1 amount=0.5\nnode 4 radial_blur in=@1 angle=0.4 samples=1\noutput src 1\noutput spin 2\noutput zoom 3\noutput one 4\n");
+    // compare the inner disc only (the blur samples stay inside the image there)
+    let inner = |a: &materialcraft::tex::Tex, b: &materialcraft::tex::Tex| {
+        let (mut d, mut n) = (0.0f32, 0.0f32);
+        for y in 0..64usize {
+            for x in 0..64usize {
+                let (dx, dy) = ((x as f32 + 0.5) / 64.0 - 0.5, (y as f32 + 0.5) / 64.0 - 0.5);
+                if dx * dx + dy * dy < 0.25 * 0.25 {
+                    d += (a.at(x as i64, y as i64)[0] - b.at(x as i64, y as i64)[0]).abs();
+                    n += 1.0;
+                }
+            }
+        }
+        d / n
+    };
+    assert!(inner(&o["spin"], &o["src"]) < inner(&o["zoom"], &o["src"]) * 0.5, "spin {} zoom {}", inner(&o["spin"], &o["src"]), inner(&o["zoom"], &o["src"]));
+    assert!(diff(&o["one"], &o["src"]) < 1e-3, "one sample is the identity");
+    // Mosaic: the map regions are flattened to one colour each
+    let o = run("node 1 perlin scale=4 seed=2\nnode 2 stripes count=2 softness=0.001 width=0.5\nnode 3 mosaic in=@1 mosaic_map=@2\nnode 4 mosaic in=@1 mosaic_map=@2 intensity=0\noutput m 3\noutput z 4\noutput src 1\n");
+    let distinct = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| (p[0] * 1000.0).round() as i32).collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct(&o["m"]) < 60 && distinct(&o["src"]) > 300, "{} {}", distinct(&o["m"]), distinct(&o["src"]));
+    assert!(diff(&o["z"], &o["src"]) < 1e-4, "intensity 0 keeps the input");
+    // Curvature reads a normal map: flat is mid grey, a bump is not
+    let o = run("node 1 color gray=1 v=0.5\nnode 2 normal in=@1\nnode 3 curvature in=@2\nnode 4 shape shape=0 size=0.3\nnode 5 blur in=@4 intensity=6\nnode 6 normal in=@5 strength=8\nnode 7 curvature in=@6 intensity=8\nnode 8 curvature in=@6 intensity=8 directx=1\noutput flat 3\noutput bump 7\noutput bumpdx 8\n");
+    assert!(o["flat"].px.iter().all(|p| (p[0] - 0.5).abs() < 1e-4), "flat normal map has no curvature");
+    let (mn, mx) = o["bump"].px.iter().fold((1.0f32, 0.0f32), |a, p| (a.0.min(p[0]), a.1.max(p[0])));
+    assert!(mx - mn > 0.2, "bump has curvature {mn} {mx}");
+    assert!(diff(&o["bump"], &o["bumpdx"]) > 0.01, "normal format changes the result");
+}
+
+#[test]
+fn phase5_voronoi_cells_grunge_properties() {
+    let run = |body: &str| Graph::parse(&format!("size 64\n{body}")).unwrap().evaluate(None).unwrap();
+    let mean = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| p[0]).sum::<f32>() / t.px.len() as f32;
+    let diff = |a: &materialcraft::tex::Tex, b: &materialcraft::tex::Tex| a.px.iter().zip(&b.px).map(|(p, q)| (p[0] - q[0]).abs()).sum::<f32>() / a.px.len() as f32;
+    let distinct = |t: &materialcraft::tex::Tex| t.px.iter().map(|p| (p[0] * 1000.0).round() as i32).collect::<std::collections::BTreeSet<_>>().len();
+    // Voronoi: defaults reproduce the previous node
+    let o = run("node 1 voronoi scale=6 seed=4 mode=0\nnode 2 voronoi scale=6 seed=4 mode=1\nnode 3 voronoi scale=6 seed=4 mode=2\nnode 4 voronoi scale=6 seed=4 mode=3\noutput a 1\noutput b 2\noutput c 3\noutput d 4\n");
+    for y in (0..64i64).step_by(7) {
+        for x in (0..64i64).step_by(5) {
+            let (u, v) = ((x as f32 + 0.5) / 64.0, (y as f32 + 0.5) / 64.0);
+            let (a, b, c) = noise::voronoi(u, v, 6, 6, 4, 1.0);
+            assert!((o["a"].at(x, y)[0] - a).abs() < 1e-4 && (o["b"].at(x, y)[0] - c).abs() < 1e-4, "f1 / id changed");
+            assert!((o["c"].at(x, y)[0] - ((b - a) * 4.0).clamp(0.0, 1.0)).abs() < 1e-4 && (o["d"].at(x, y)[0] - b).abs() < 1e-4, "edge / f2 changed");
+        }
+    }
+    // metrics, distortion, aspect, styles, invert, colour seed
+    let o = run("node 1 voronoi scale=5 seed=2\nnode 2 voronoi scale=5 seed=2 distance_mode=1\nnode 3 voronoi scale=5 seed=2 distance_mode=2\nnode 4 voronoi scale=5 seed=2 distance_mode=3 minkowski=2\nnode 5 voronoi scale=5 seed=2 distortion=1\nnode 6 voronoi scale=5 seed=2 aspect=2\nnode 7 voronoi scale=5 seed=2 invert=1\nnode 8 voronoi scale=5 seed=2 mode=1\nnode 9 voronoi scale=5 seed=2 mode=1 color_seed_mode=1 color_seed=77\nnode 10 voronoi scale=5 seed=2 color_seed_mode=1 color_seed=77\nnode 11 voronoi scale=5 seed=2 offset_x=0.5\noutput e 1\noutput m 2\noutput c 3\noutput k 4\noutput dist 5\noutput asp 6\noutput inv 7\noutput id 8\noutput id2 9\noutput f1b 10\noutput off 11\n");
+    assert!(diff(&o["e"], &o["m"]) > 0.02 && diff(&o["e"], &o["c"]) > 0.02, "metrics differ");
+    assert!(diff(&o["e"], &o["k"]) < 1e-3, "minkowski 2 is euclidean");
+    assert!(mean(&o["c"]) <= mean(&o["e"]) + 1e-4 && mean(&o["m"]) >= mean(&o["e"]) - 1e-4, "chebyshev <= euclid <= manhattan");
+    assert!(diff(&o["e"], &o["dist"]) > 0.02 && diff(&o["e"], &o["asp"]) > 0.02 && diff(&o["e"], &o["off"]) > 0.02);
+    assert!((mean(&o["inv"]) + mean(&o["e"]) - 1.0).abs() < 1e-3, "invert");
+    assert!(diff(&o["id"], &o["id2"]) > 0.05 && diff(&o["e"], &o["f1b"]) < 1e-6, "manual colour seed re-rolls colours, not cells");
+    for style in 4..=6 {
+        let o = run(&format!("node 1 voronoi scale=5 mode={style}\nnode 2 voronoi scale=5 mode=2 rounded=1 edge_thickness=0.4\noutput a 1\noutput b 2\n"));
+        assert!(o["a"].px.iter().all(|p| p[0].is_finite() && (0.0..=1.0).contains(&p[0])) && distinct(&o["a"]) > 50, "style {style}");
+        assert!(o["b"].px.iter().all(|p| p[0].is_finite()));
+    }
+    // Voronoi Fractal
+    let o = run("node 1 voronoi scale=3 seed=1\nnode 2 voronoi_fractal scale=3 seed=1 min_level=0 max_level=0\nnode 3 voronoi_fractal scale=3 seed=1 max_level=3\nnode 4 voronoi_fractal scale=3 seed=1 max_level=3 blend=1\nnode 5 voronoi_fractal scale=3 seed=1 max_level=3 blend=2\noutput a 1\noutput one 2\noutput add 3\noutput max 4\noutput min 5\n");
+    assert!(diff(&o["a"], &o["one"]) < 1e-5, "one level is a plain voronoi");
+    assert!(diff(&o["a"], &o["add"]) > 0.02 && diff(&o["add"], &o["max"]) > 0.02 && diff(&o["max"], &o["min"]) > 0.02, "levels and blend modes");
+    assert!(mean(&o["max"]) >= mean(&o["min"]));
+    // Cells per-variant properties
+    let o = run("node 1 cells variant=0 scale=6 seed=3\nnode 2 cells variant=0 scale=6 seed=3 luminance_random=1\nnode 3 cells variant=2 scale=6 seed=3\nnode 4 cells variant=2 scale=6 seed=3 edge_width=0.8\nnode 5 cells variant=3 scale=6 seed=3\nnode 6 cells variant=3 scale=6 seed=3 hardness=8\nnode 7 color gray=1 v=0.3\nnode 8 cells variant=1 scale=6 seed=3 color_source=2 color=@7\nnode 9 cells variant=1 scale=6 seed=3 color_source=1 pseudorandom_seed=5\nnode 10 cells variant=1 scale=6 seed=3\noutput l0 1\noutput l1 2\noutput e0 3\noutput e1 4\noutput h0 5\noutput h1 6\noutput img 8\noutput ps 9\noutput rnd 10\n");
+    assert!(diff(&o["l0"], &o["l1"]) > 0.05 && diff(&o["e0"], &o["e1"]) > 0.02 && diff(&o["h0"], &o["h1"]) > 0.02);
+    assert!(o["img"].px.iter().all(|p| (p[0] - 0.3).abs() < 1e-3), "image colour source: every cell takes the image value");
+    assert!(diff(&o["ps"], &o["rnd"]) > 0.05 && distinct(&o["ps"]) > 10, "pseudorandom source");
+    // Grunge
+    let o = run("node 1 grunge variant=0 seed=2\nnode 2 grunge variant=0 seed=2 balance=0.7\nnode 3 grunge variant=0 seed=2 dirt_specks_opacity=1\nnode 4 grunge variant=1 seed=2\nnode 5 grunge variant=1 seed=2 scratch_width=0.8\nnode 6 grunge variant=2 seed=2\nnode 7 grunge variant=2 seed=2 coverage=0.7 details=40\nnode 8 grunge variant=0 seed=2 scratches_opacity=1\noutput c 1\noutput bal 2\noutput specks 3\noutput s0 4\noutput s1 5\noutput p0 6\noutput p1 7\noutput scr 8\n");
+    assert!(mean(&o["bal"]) > mean(&o["c"]) + 0.05, "balance brightens");
+    assert!(mean(&o["specks"]) < mean(&o["c"]) && mean(&o["scr"]) > mean(&o["c"]), "concrete specks darken, scratches add");
+    assert!(mean(&o["s1"]) > mean(&o["s0"]), "wider scratches cover more");
+    assert!(diff(&o["p0"], &o["p1"]) > 0.01, "spots details / coverage");
+}

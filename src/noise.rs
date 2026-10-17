@@ -349,3 +349,84 @@ impl Disorder {
 pub fn tile_seed(seed: u32, tx: i32, ty: i32) -> u32 {
     hash2(tx, ty, seed.wrapping_add(0x7157))
 }
+
+/// Distance metrics of the Voronoi node.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Metric {
+    Euclidean,
+    Manhattan,
+    Chebyshev,
+    Minkowski(f32),
+}
+
+impl Metric {
+    pub fn from_index(i: u32, p: f32) -> Metric {
+        match i {
+            1 => Metric::Manhattan,
+            2 => Metric::Chebyshev,
+            3 => Metric::Minkowski(p.clamp(0.25, 16.0)),
+            _ => Metric::Euclidean,
+        }
+    }
+    #[inline]
+    fn dist(self, dx: f32, dy: f32) -> f32 {
+        let (ax, ay) = (dx.abs(), dy.abs());
+        match self {
+            Metric::Euclidean => (dx * dx + dy * dy).sqrt(),
+            Metric::Manhattan => ax + ay,
+            Metric::Chebyshev => ax.max(ay),
+            Metric::Minkowski(p) => (ax.powf(p) + ay.powf(p)).powf(1.0 / p),
+        }
+    }
+}
+
+/// Tileable Voronoi with a selectable distance metric. `id_seed` seeds the random cell values (so the colours can
+/// be re-rolled without moving the cells). Distances are normalised like [`voronoi_ext`].
+pub fn voronoi_gen(u: f32, v: f32, px: i32, py: i32, seed: u32, id_seed: u32, jitter: f32, metric: Metric) -> Vor {
+    let (px, py) = (px.max(1), py.max(1));
+    let (x, y) = (u * px as f32, v * py as f32);
+    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
+    let mut r = Vor { f1: f32::MAX, f2: f32::MAX, id1: 0.0, id2: 0.0, dx: 0.0, dy: 0.0 };
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (cx, cy) = (ix + dx, iy + dy);
+            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5) * jitter;
+            let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5) * jitter;
+            let d = metric.dist(fx - x, fy - y);
+            let id = rnd(wx, wy, id_seed.wrapping_add(999));
+            if d < r.f1 {
+                r.f2 = r.f1;
+                r.id2 = r.id1;
+                r.f1 = d;
+                r.id1 = id;
+                r.dx = fx - x;
+                r.dy = fy - y;
+            } else if d < r.f2 {
+                r.f2 = d;
+                r.id2 = id;
+            }
+        }
+    }
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    r.f1 = (r.f1 * k).clamp(0.0, 1.0);
+    r.f2 = (r.f2 * k).clamp(0.0, 1.0);
+    r
+}
+
+/// Voronoi "Style" (Designer): 0 F1, 1 random colour, 2 edge, 3 F2, 4 F2-F1, 5 F1*F2, 6 F1/F2.
+/// `thick` is the edge thickness, `round` rounds the edge profile (0 = linear).
+pub fn voronoi_style(r: &Vor, style: u32, thick: f32, round: f32) -> f32 {
+    match style {
+        1 => r.id1,
+        2 => {
+            let e = ((r.f2 - r.f1) / thick.max(1e-3)).clamp(0.0, 1.0);
+            e + (e * e * (3.0 - 2.0 * e) - e) * round.clamp(0.0, 1.0)
+        }
+        3 => r.f2,
+        4 => ((r.f2 - r.f1) * 2.0).clamp(0.0, 1.0),
+        5 => (r.f1 * r.f2 * 3.0).clamp(0.0, 1.0),
+        6 => (r.f1 / r.f2.max(1e-4)).clamp(0.0, 1.0),
+        _ => r.f1,
+    }
+}

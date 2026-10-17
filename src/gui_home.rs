@@ -379,7 +379,7 @@ fn size_handle(ui: &mut egui::Ui, id: &str, panel: Rect, edge: u8) -> f32 {
 
 fn lib_group(kind: &str) -> (&'static str, &'static str) {
     match kind {
-        "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" => ("Texture generators", "Noises"),
+        "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" => ("Texture generators", "Noises"),
         "triangle_grid" | "starburst" | "gradient_reflected" => ("Texture generators", "Patterns"),
         "color" | "gradient" | "gradient_axial" | "gradient_circular" | "checker" | "bricks" | "stripes" | "weave" | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" => ("Texture generators", "Patterns"),
         "shape" | "circle" | "rect" | "polygon" | "star" => ("Texture generators", "Shapes"),

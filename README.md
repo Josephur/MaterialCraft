@@ -43,9 +43,9 @@ EXR / HDR output, path-traced 3D rendering, custom mesh import in the 3D viewer,
 See ROADMAP.md for the complete list.
 
 
-## Nodes (120)
+## Nodes (121)
 Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
-BnW spots, crystal, directional noise, grunge, plasma, voronoi, stripes, weave, bricks, checker, gradients, star, SDF shapes.
+BnW spots, crystal, directional noise, grunge, plasma, voronoi, voronoi fractal, stripes, weave, bricks, checker, gradients, star, SDF shapes.
 Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /
 slope warps, blur and blur HQ, levels, histogram scan / range, bevel, distance, gradient map, uniform color, HSL, color match,
 make-it-tile photo / patch and more. Material: normal, ambient occlusion, curvature (smooth), height blend, edge wear, dirt, dust.
