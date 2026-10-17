@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Mesh map baking: high-poly -> low-poly textures (normal, world normal, position, AO,
 //! curvature, thickness, ID). OBJ input, BVH ray tracing, multi-threaded.
 use crate::noise::rnd;

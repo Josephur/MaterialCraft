@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! MaterialCraft visual editor. Run: cargo run --release --features gui --bin materialcraft-gui
 use eframe::egui::{
@@ -116,6 +117,10 @@ enum Act {
     SwitchPkg(usize),
     SavePkg(usize),
     ClosePkg(usize),
+    /// Pick a package file and use one of its graphs as a live-linked node.
+    LinkPackage,
+    /// Re-read every live link of the current graph from disk.
+    RefreshLinks,
 }
 
 /// Drag payload: a graph of an open package (package index, graph label, graph name or None for the main graph).
@@ -134,6 +139,8 @@ fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut g = Graph::parse_unchecked(&text).map_err(|e| e.to_string())?;
     g.migrate_outputs();
+    // live links are read now (problems show up when the package is edited or evaluated)
+    let _ = g.resolve_links(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
     auto_layout_if_unplaced(&mut g);
     if !g.meta.get("identifier").map(|s| !s.is_empty()).unwrap_or(false) {
         g.meta.insert("identifier".into(), path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
@@ -169,6 +176,7 @@ struct ExportUi {
     prefix: String,
     sizes: [bool; 6],
     depth16: bool,
+    depth32: bool,
     fmt: Format,
     quality: u8,
     skip: BTreeSet<String>,
@@ -185,6 +193,8 @@ struct BakeUi {
 }
 
 struct App {
+    was_focused: bool,
+    gpu_eval: bool,
     g: Graph,
     parents: Vec<(Graph, String)>,
     undo: Vec<Graph>,
@@ -291,6 +301,8 @@ impl App {
         let favorites: BTreeSet<String> = settings.iter().find_map(|l| l.strip_prefix("favorites=")).map(|v| v.split(',').filter(|x| !x.is_empty()).map(String::from).collect()).unwrap_or_default();
         let recent: Vec<PathBuf> = read_lines("recent.txt").into_iter().map(PathBuf::from).collect();
         App {
+            was_focused: true,
+            gpu_eval: true,
             parents: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -342,7 +354,7 @@ impl App {
             node_cache: std::sync::Arc::new(NodeCache::with_default_budget()),
             lib_search: String::new(),
             text_focus: false,
-            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
+            export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
@@ -356,7 +368,7 @@ impl App {
             banner_rx: Some(spawn_banner()),
             lib_thumbs: HashMap::new(),
             lib_rx: Some(spawn_library_thumbs()),
-            lib_cat: "Texture generators/Patterns".into(),
+            lib_cat: "Generators/Patterns".into(),
             favorites,
             show: [true; 5],
             modified: false,
@@ -386,6 +398,75 @@ impl App {
         };
         let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into());
         self.import_graph_value(other, stem, at, graph);
+    }
+
+    /// Folder links of the current package are relative to (the package's own folder, or the working folder when unsaved).
+    fn link_base(&self) -> PathBuf {
+        self.file.as_ref().and_then(|f| f.parent().map(|p| p.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Pick a package file and use its main graph as a live-linked node (the file is read from disk, never copied).
+    fn link_package(&mut self) {
+        if !self.parents.is_empty() {
+            return self.status("Links belong to the package: leave the nested graph first", false);
+        }
+        let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() else { return };
+        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "linked".into());
+        let base_name: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+        let mut name = base_name.clone();
+        let mut i = 2;
+        while self.g.subgraphs.contains_key(&name) || self.g.links.iter().any(|l| l.name == name) {
+            name = format!("{base_name}_{i}");
+            i += 1;
+        }
+        // store the path relative to this package when it has a file, so the pair can be moved together
+        let base = self.link_base();
+        let path = match p.strip_prefix(&base) {
+            Ok(r) if self.file.is_some() => r.to_string_lossy().replace('\\', "/"),
+            _ => p.to_string_lossy().replace('\\', "/"),
+        };
+        self.snap();
+        self.g.links.push(materialcraft::graph::Link { name: name.clone(), path, graph: None });
+        let issues = self.g.resolve_links(&base);
+        if self.g.links.last().map(|l| l.name != name).unwrap_or(true) || !self.g.is_linked(&name) {
+            self.g.links.pop();
+            self.undo.pop();
+            let _ = self.g.resolve_links(&base);
+            return self.status(format!("Cannot link {}: {}", p.display(), issues.join("; ")), false);
+        }
+        let pos = self.view_center_world();
+        self.add_node_at("subgraph", Some(&name), pos);
+        self.undo.pop();
+        self.dirty = true;
+        self.modified = true;
+        self.status(format!("Linked '{name}' - it follows the file on disk. Every node that uses it is an instance."), true);
+    }
+
+    /// Re-read the live links of the current package from disk.
+    fn refresh_links(&mut self, verbose: bool) {
+        if !self.parents.is_empty() {
+            return;
+        }
+        if self.g.links.is_empty() {
+            if verbose {
+                self.status("This package has no live links (File > Link package as node...)", true);
+            }
+            return;
+        }
+        let before: Vec<String> = self.g.managed.iter().map(|k| self.g.subgraphs.get(k).map(|s| s.to_text()).unwrap_or_default()).collect();
+        let issues = self.g.resolve_links(&self.link_base());
+        let after: Vec<String> = self.g.managed.iter().map(|k| self.g.subgraphs.get(k).map(|s| s.to_text()).unwrap_or_default()).collect();
+        if before != after {
+            self.dirty = true;
+        }
+        if !issues.is_empty() {
+            self.dirty = true;
+            self.status(issues.join("; "), false);
+        } else if verbose {
+            self.status(if before != after { "Linked packages reloaded - changes applied" } else { "Linked packages are up to date" }.to_string(), true);
+        } else if before != after {
+            self.status("A linked package changed on disk - reloaded", true);
+        }
     }
 
     /// Import a graph of an open package as a node.
@@ -1091,7 +1172,7 @@ impl App {
             return self.status("Select at least one output to export.", false);
         }
         let fmt = self.export.fmt;
-        let depth = if fmt != Format::Jpeg && (self.export.depth16 || self.g.meta.get("output_format").map(|f| f == "16" && false).unwrap_or(false)) { 16 } else { 8 };
+        let depth = if fmt.has_float32() && self.export.depth32 { 32 } else if fmt != Format::Jpeg && (self.export.depth16 || fmt == Format::Exr) { 16 } else { 8 };
         let mut count = 0;
         for &s in &sizes {
             match self.g.evaluate(Some(s)) {
@@ -1147,7 +1228,7 @@ impl App {
     // ------------------------------------------------------------ background evaluation
     /// First, cheap resolution of a progressive preview: a tiny pass shows the change at once, then every pass doubles
     /// the size until the chosen preview size is reached.
-    /// The size a node will have in the final result (what Designer shows under a node): its size in the pass on screen,
+    /// The size a node will have in the final result (shown under a node): its size in the pass on screen,
     /// scaled up to the graph's own size.
     fn nominal_node_size(&self, id: u32) -> usize {
         match (self.node_sizes.get(&id), self.pass_size) {
@@ -1273,7 +1354,7 @@ impl App {
                     self.refine_size = Some((r.size * 2).min(full));
                     self.refine = true;
                 }
-                // like Designer's 2D view: zoomed in, every texel is a crisp square; zoomed out, a mip chain keeps it smooth
+                // zoomed in, every texel is a crisp square; zoomed out, a mip chain keeps it smooth
                 let opts = egui::TextureOptions {
                     magnification: egui::TextureFilter::Nearest,
                     minification: egui::TextureFilter::Linear,
@@ -1433,9 +1514,9 @@ fn apply_theme(ctx: &egui::Context) {
     v.widgets.inactive.weak_bg_fill = Color32::from_rgb(62, 62, 62);
     v.widgets.hovered.bg_fill = Color32::from_rgb(88, 88, 88);
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(84, 84, 84);
-    v.widgets.active.bg_fill = Color32::from_rgb(235, 130, 20);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(235, 130, 20);
-    v.selection.bg_fill = Color32::from_rgb(220, 120, 20);
+    v.widgets.active.bg_fill = Color32::from_rgb(40, 170, 145);
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(40, 170, 145);
+    v.selection.bg_fill = Color32::from_rgb(35, 150, 130);
     v.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
     v.window_rounding = Rounding::same(3.0);
     v.menu_rounding = Rounding::same(3.0);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use materialcraft::graph::{Graph, EXAMPLE};
 use materialcraft::render3d::{render, Maps, View};
 use materialcraft::tex::Tex;

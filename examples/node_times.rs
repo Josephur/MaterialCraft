@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use materialcraft::graph::{demo_graph_for, Graph, SPECS};
 use std::time::Instant;
 fn main() {

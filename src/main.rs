@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use materialcraft::bake::{self, BakeSettings};
 use materialcraft::graph::{Graph, EXAMPLE, SPECS};
 use materialcraft::export::{self, Format};
@@ -11,8 +12,8 @@ use std::process::ExitCode;
 const HELP: &str = "materialcraft - procedural material authoring (pure Rust)
 
 USAGE:
-  materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16]
-                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff] [--quality 1-100] [--only basecolor,normal]
+  materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16|32]
+                  [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff|exr|hdr] [--quality 1-100] [--only basecolor,normal]
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
@@ -29,8 +30,13 @@ fn write_png(path: &Path, t: &Tex, depth: u8) -> Result<(), String> {
 }
 
 fn load(path: &str) -> Result<Graph, String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    Graph::parse(&text).map_err(|e| e.to_string())
+    // live links are read relative to the file; a link that cannot be read is reported and the graph still loads
+    let (g, issues) = Graph::load_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+    for i in &issues {
+        eprintln!("warning: {i}");
+    }
+    g.validate().map_err(|e| e.to_string())?;
+    Ok(g)
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -43,7 +49,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("check") => {
             let g = load(args.get(1).ok_or("usage: materialcraft check <graph.mcg>")?)?;
-            println!("OK: {} nodes, {} subgraphs, {} outputs, {}x{}", g.nodes.len(), g.subgraphs.len(), g.outputs.len(), g.size, g.size);
+            println!("OK: {} nodes, {} subgraphs, {} outputs, {}x{}", g.nodes.len(), g.subgraphs.len(), g.outputs.len(), g.size, if g.is_square() { g.size } else { g.height });
             Ok(())
         }
         Some("params") => {
@@ -131,7 +137,8 @@ fn run(args: &[String]) -> Result<(), String> {
                         depth = match args.get(i).map(|s| s.as_str()) {
                             Some("8") => 8,
                             Some("16") => 16,
-                            _ => return Err("--depth must be 8 or 16".into()),
+                            Some("32") => 32,
+                            _ => return Err("--depth must be 8, 16 or 32".into()),
                         };
                     }
                     "--param" => {
@@ -146,7 +153,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     }
                     "--format" => {
                         i += 1;
-                        fmt = Format::parse(args.get(i).ok_or("--format needs png, jpg or tiff")?).ok_or("--format must be png, jpg or tiff")?;
+                        fmt = Format::parse(args.get(i).ok_or("--format needs png, jpg, tiff, exr or hdr")?).ok_or("--format must be png, jpg, tiff, exr or hdr")?;
                     }
                     "--quality" => {
                         i += 1;

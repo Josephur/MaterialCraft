@@ -1,4 +1,5 @@
-//! Scatter nodes with the Designer property set: Tile Sampler, Tile Generator, Splatter, Splatter Circular.
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Scatter nodes: Tile Sampler, Tile Generator, Splatter, Splatter Circular.
 //! Every new property defaults to the previous behaviour, so graphs saved before this module render unchanged.
 use crate::noise::rnd;
 use crate::tex::{lum, Tex};

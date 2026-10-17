@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dependency-free PNG encoder (8/16-bit, RGB or RGBA, stored deflate).
 use std::sync::OnceLock;
 

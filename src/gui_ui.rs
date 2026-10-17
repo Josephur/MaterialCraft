@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // ======================================================================= UI (included into gui.rs)
 
 struct NodeSnap {
@@ -114,7 +115,7 @@ impl App {
             painter.rect_filled(r, Rounding::same(4.0 * z), base.gamma_multiply(0.16));
             let title = Rect::from_min_size(r.min, vec2(r.width(), 22.0 * z));
             painter.rect_filled(title, Rounding { nw: 4.0 * z, ne: 4.0 * z, sw: 0.0, se: 0.0 }, base.gamma_multiply(0.5));
-            painter.rect_stroke(r, Rounding::same(4.0 * z), Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(255, 160, 40) } else { base.gamma_multiply(0.8) }));
+            painter.rect_stroke(r, Rounding::same(4.0 * z), Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { base.gamma_multiply(0.8) }));
             painter.text(title.left_center() + vec2(8.0 * z, 0.0), Align2::LEFT_CENTER, &c.text, FontId::proportional(13.0 * z), Color32::WHITE);
             let tr = ui.interact(title, Id::new(("cmt", ci)), Sense::click_and_drag());
             if tr.drag_started() {
@@ -167,7 +168,14 @@ impl App {
                 pos: n.pos,
                 graph_name: n.strs.get("graph").cloned(),
                 dot: n.kind == "dot",
-                outs: n.strs.get("graph").filter(|_| n.kind == "subgraph").and_then(|g| self.g.subgraphs.get(g)).map(|sg| sg.output_idents()).filter(|o| o.len() >= 2).unwrap_or_default(),
+                outs: n
+                    .strs
+                    .get("graph")
+                    .filter(|_| n.kind == "subgraph")
+                    .and_then(|g| self.g.subgraphs.get(g))
+                    .map(|sg| sg.output_idents())
+                    .filter(|o| o.len() >= 2)
+                    .unwrap_or_else(|| materialcraft::graph::node_outputs(&n.kind).iter().map(|s| s.to_string()).collect()),
                 in_out: n.in_out.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             })
             .collect();
@@ -196,11 +204,14 @@ impl App {
             for (slot, src) in &s.ins {
                 if let (Some(i), Some(a)) = (s.slots.iter().position(|x| x.0 == slot), src_port(*src, s.in_out.iter().find(|(k, _)| k == slot).map(|(_, v)| v.as_str()))) {
                     let hot = self.sel.contains(&s.id) || self.sel.contains(src);
-                    link(&painter, a, in_port(s.pos, i, n, s.dot, body_of(s)), if hot { Color32::from_rgb(255, 170, 60) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
+                    link(&painter, a, in_port(s.pos, i, n, s.dot, body_of(s)), if hot { Color32::from_rgb(90, 215, 190) } else { Color32::from_rgb(185, 185, 185) }, 1.8);
                 }
             }
         }
 
+        // pin type of every node's output: grayscale sockets are drawn gray, colour sockets blue
+        let pins = materialcraft::graph::pin_types(&self.g);
+        let pin_fill = |p: materialcraft::graph::Pin| if p == materialcraft::graph::Pin::Color { Color32::from_rgb(110, 190, 255) } else { Color32::from_rgb(225, 225, 225) };
         let out_names: Vec<&'static str> = OUTPUT_NAMES.to_vec();
         let mut ports: Vec<(u32, &'static str, Pos2)> = Vec::new();
         let mut out_ports: Vec<(u32, Option<String>, Pos2)> = Vec::new();
@@ -219,7 +230,7 @@ impl App {
             let selected = self.sel.contains(&id);
             let err = self.node_err.get(&id).cloned();
             if s.dot {
-                let sel_col = if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_gray(150) };
+                let sel_col = if selected { Color32::from_rgb(60, 200, 170) } else { Color32::from_gray(150) };
                 painter.circle(card.center(), 9.0 * z, Color32::from_rgb(38, 38, 38), Stroke::new(if selected { 2.4_f32 } else { 1.3_f32 }, sel_col));
                 painter.circle_filled(card.center(), 3.2 * z, Color32::from_gray(200));
             } else {
@@ -250,7 +261,7 @@ impl App {
                 painter.rect_filled(th, 0.0, Color32::from_rgba_unmultiplied(170, 30, 30, 150));
                 painter.text(th.center(), Align2::CENTER_CENTER, "!", FontId::proportional(30.0 * z), Color32::WHITE);
             }
-            painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(if selected { 2.4_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(255, 160, 40) } else { Color32::from_rgb(14, 14, 14) }));
+            painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(if selected { 2.4_f32 } else { 1.0_f32 }, if selected { Color32::from_rgb(60, 200, 170) } else { Color32::from_rgb(14, 14, 14) }));
             if self.active == Some(id) && !selected {
                 painter.rect_stroke(card, Rounding::same(3.0 * z), Stroke::new(1.5_f32, Color32::from_rgb(150, 150, 150)));
             }
@@ -272,11 +283,11 @@ impl App {
             }
             }
 
-            // a node with its own Output Size shows it under the card, like Designer
+            // a node with its own Output Size shows its size under the card
             if s.kind != "output" && !matches!(s.kind.as_str(), "comment" | "frame" | "dot") {
                 let ns = self.nominal_node_size(id);
                 if ns != self.g.size {
-                    painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{0}x{0}", ns), FontId::proportional(10.0 * z), Color32::from_rgb(255, 190, 110));
+                    painter.text(card.center_bottom() + vec2(0.0, 3.0) * z, Align2::CENTER_TOP, format!("{}x{}", ns, (ns as f64 * self.g.height_for(self.g.size) as f64 / self.g.size.max(1) as f64).round() as usize), FontId::proportional(10.0 * z), Color32::from_rgb(140, 230, 210));
                 }
             }
 
@@ -376,7 +387,13 @@ impl App {
                     let op = out_port_i(s.pos, oi, s.outs.len(), body_of(s));
                     out_ports.push((id, Some(oname.clone()), op));
                     let used = used_ports.contains(&(id, oname.clone()));
-                    painter.circle(op, 4.8 * z, if used { Color32::from_rgb(240, 170, 50) } else { Color32::from_rgb(200, 200, 200) }, Stroke::new(1.0_f32, Color32::BLACK));
+                    let opin = match self.g.nodes.get(&id) {
+                        Some(nd) if materialcraft::graph::node_outputs(&nd.kind).contains(&oname.as_str()) => {
+                            materialcraft::graph::output_pin(&nd.kind, Some(oname.as_str()), pins.get(&id) == Some(&materialcraft::graph::Pin::Color), nd)
+                        }
+                        _ => pins.get(&id).copied().unwrap_or(materialcraft::graph::Pin::Gray),
+                    };
+                    painter.circle(op, 4.8 * z, if used { Color32::from_rgb(70, 210, 180) } else { pin_fill(opin) }, Stroke::new(1.0_f32, Color32::BLACK));
                     if z >= 0.45 {
                         painter.text(op + vec2(9.0 * z, 0.0), Align2::LEFT_CENTER, usage_label(oname), FontId::proportional(10.5 * z.max(0.7)), Color32::from_gray(175));
                     }
@@ -389,7 +406,7 @@ impl App {
             } else if s.kind != "output" {
                 let op = out_port(s.pos, s.dot, body_of(s));
                 out_ports.push((id, None, op));
-                painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, Color32::from_rgb(235, 235, 235), Stroke::new(1.0_f32, Color32::BLACK));
+                painter.circle(op, if s.dot { 3.5 } else { 4.8 } * z, pin_fill(pins.get(&id).copied().unwrap_or(materialcraft::graph::Pin::Gray)), Stroke::new(1.0_f32, Color32::BLACK));
                 let pr = ui.interact(Rect::from_center_size(op, Vec2::splat(14.0 * z)), Id::new(("out", id)), Sense::drag());
                 if pr.drag_started() {
                     self.connecting = Some(id);
@@ -400,7 +417,7 @@ impl App {
             for (i, (slot, required)) in s.slots.iter().enumerate() {
                 let ip = in_port(s.pos, i, n, s.dot, body_of(s));
                 ports.push((id, *slot, ip));
-                painter.circle(ip, 4.5 * z, if s.kind == "output" { Color32::from_rgb(240, 170, 50) } else if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2_f32, Color32::from_rgb(190, 190, 190)));
+                painter.circle(ip, 4.5 * z, if s.kind == "output" { Color32::from_rgb(70, 210, 180) } else if *required { Color32::from_rgb(210, 210, 210) } else { Color32::from_rgb(60, 60, 60) }, Stroke::new(1.2_f32, Color32::from_rgb(190, 190, 190)));
                 let ir = ui.interact(Rect::from_center_size(ip, Vec2::splat(14.0 * z)), Id::new(("in", id, i)), Sense::drag());
                 if ir.drag_started() {
                     let had = self.g.nodes.get(&id).and_then(|nd| nd.ins.get(*slot).copied());
@@ -427,7 +444,7 @@ impl App {
         // connection drag
         if let Some(src) = self.connecting {
             if let (Some(pt), Some(a)) = (pointer, src_port(src, self.connecting_out.as_deref())) {
-                link(&painter, a, pt, Color32::from_rgb(255, 190, 70), 2.0);
+                link(&painter, a, pt, Color32::from_rgb(110, 225, 200), 2.0);
             }
             if released {
                 if let Some(pt) = pointer {
@@ -450,7 +467,7 @@ impl App {
         if let Some((dst, slot)) = self.connecting_in.clone() {
             let target = ports.iter().find(|(i, s, _)| *i == dst && *s == slot.as_str()).map(|p| p.2);
             if let (Some(pt), Some(ip)) = (pointer, target) {
-                link(&painter, pt, ip, Color32::from_rgb(255, 190, 70), 2.0);
+                link(&painter, pt, ip, Color32::from_rgb(110, 225, 200), 2.0);
             }
             if released {
                 if let Some(pt) = pointer {
@@ -470,7 +487,7 @@ impl App {
         if let Some(start) = self.rubber {
             if let Some(pt) = pointer {
                 let r = Rect::from_two_pos(start, pt);
-                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(255, 160, 40, 28), Stroke::new(1.0_f32, Color32::from_rgb(255, 160, 40)));
+                painter.rect(r, 0.0, Color32::from_rgba_unmultiplied(60, 200, 170, 28), Stroke::new(1.0_f32, Color32::from_rgb(60, 200, 170)));
                 if released {
                     for (s, c) in snaps.iter().zip(&cards) {
                         if r.intersects(*c) {
@@ -555,6 +572,9 @@ impl App {
             }
             Act::Comment => self.add_comment(),
             Act::Subgraph => self.make_subgraph(),
+            Act::EnterSub(n) if self.g.is_linked(&n) => {
+                self.status(format!("'{n}' is a live link to another package and is read-only here - open that package to edit it"), false);
+            }
             Act::EnterSub(n) => {
                 if self.parents.iter().any(|(_, name)| *name == n) {
                     return;
@@ -601,6 +621,8 @@ impl App {
                 });
                 self.import_from_pkg(i, gn, at);
             }
+            Act::LinkPackage => self.link_package(),
+            Act::RefreshLinks => self.refresh_links(true),
             Act::NewPackage => self.open_new_dialog(None),
             Act::NewGraphIn(i) => self.open_new_dialog(Some(i)),
             Act::SwitchPkg(i) => self.switch_pkg(i),
@@ -763,14 +785,21 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("Format");
                     egui::ComboBox::from_id_salt("exp_fmt").selected_text(self.export.fmt.name()).show_ui(ui, |ui| {
-                        for f in [Format::Png, Format::Jpeg, Format::Tiff] {
+                        for f in [Format::Png, Format::Jpeg, Format::Tiff, Format::Exr, Format::Hdr] {
                             ui.selectable_value(&mut self.export.fmt, f, f.name());
                         }
                     });
                     if self.export.fmt == Format::Jpeg {
                         ui.add(egui::Slider::new(&mut self.export.quality, 1..=100).text("quality"));
+                    } else if self.export.fmt == Format::Hdr {
+                        ui.label("32-bit RGBE");
+                    } else if self.export.fmt == Format::Exr {
+                        ui.checkbox(&mut self.export.depth32, "32-bit float (otherwise 16-bit half)");
                     } else {
                         ui.checkbox(&mut self.export.depth16, "16-bit");
+                        if self.export.fmt.has_float32() {
+                            ui.checkbox(&mut self.export.depth32, "32-bit float");
+                        }
                     }
                 });
                 ui.label("Resolutions (one sub-folder each when several are selected):");

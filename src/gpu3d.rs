@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! GPU PBR viewport (OpenGL 3.3 core through glow / egui_glow paint callbacks).
 //!
 //! Every shape is a tessellated triangle mesh. The height map displaces the vertices in the vertex shader (true

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // ======================================================================= Node properties (included into gui.rs)
 
 #[derive(Clone, Copy)]
@@ -160,7 +161,7 @@ fn p_dis() -> PD {
 /// Editable parameters of each node type (defaults match the engine).
 fn pdefs(kind: &str) -> Vec<PD> {
     let mut v = pdefs_base(kind);
-    // Designer's shared noise block: Disorder, Disorder speed, Disorder anisotropy (+ angle), Tile offset
+    // shared noise block: Disorder, Disorder speed, Disorder anisotropy (+ angle), Tile offset
     let (aniso, tile, speed, dis) = match kind {
         "gaussian_noise" | "clouds" | "bnw_spots" | "gaussian_spots" | "directional_noise" | "cells" | "fbm" => (true, true, true, true),
         "perlin" => (false, true, true, true),
@@ -741,7 +742,7 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
                 grabbed = true;
             }
         }
-        let edge = if sel == i { Color32::from_rgb(255, 170, 60) } else { Color32::from_gray(200) };
+        let edge = if sel == i { Color32::from_rgb(90, 215, 190) } else { Color32::from_gray(200) };
         painter.add(egui::Shape::convex_polygon(vec![pos2(x, bar.max.y + 1.0), pos2(x - 5.0, bar.max.y + 8.0), pos2(x + 5.0, bar.max.y + 8.0)], edge, Stroke::NONE));
         let sq = Rect::from_center_size(pos2(x, bar.max.y + 15.0), vec2(11.0, 9.0));
         painter.rect_filled(sq, 1.0, c32(stops[i].1));
@@ -906,7 +907,7 @@ impl App {
             });
         }
 
-        // ---- output size (like Designer: relative to input / relative to parent / absolute, plus a power-of-two modifier)
+        // ---- output size (relative to input / relative to parent / absolute, plus a power-of-two modifier)
         if !matches!(kind.as_str(), "comment" | "frame" | "dot") {
             egui::CollapsingHeader::new(egui::RichText::new("OUTPUT SIZE").strong()).default_open(true).show(ui, |ui| {
                 let mode = get("osize_mode", 0.0).round() as i32;
@@ -946,6 +947,24 @@ impl App {
                     ui.small(format!("Result: {0} x {0}  (graph {1} x {1})", shown, parent));
                 }
                 ui.small("A lower size computes faster: give heavy nodes (AO, blurs, noises) a smaller size.");
+                // Output Format: precision of this node's result (the default keeps full 32-bit float)
+                let fnames = ["32 bits float (default)", "8 bits integer", "16 bits integer", "16 bits float"];
+                let cur = match get("ofmt", 0.0).round() as i32 {
+                    1 => 1,
+                    2 => 2,
+                    3 => 3,
+                    _ => 0,
+                };
+                ui.horizontal(|ui| {
+                    row_label(ui, "Output format");
+                    egui::ComboBox::from_id_salt(("ofmt", id)).selected_text(fnames[cur]).show_ui(ui, |ui| {
+                        for (i, n) in fnames.iter().enumerate() {
+                            if ui.selectable_label(cur == i, *n).clicked() {
+                                nums.push(("ofmt".into(), i as f32));
+                            }
+                        }
+                    });
+                });
             });
         }
 
@@ -1247,9 +1266,9 @@ impl App {
     }
 }
 
-/// Starting values a node gets when it is created in the editor, chosen to match the defaults Designer's own
-/// library nodes start with. They are written into the node, so graphs saved earlier (which rely on the
-/// engine's own fallbacks) keep rendering exactly as before.
+/// Starting values a node gets when it is created in the editor (sensible starting points for a new node).
+/// They are written into the node, so graphs saved earlier (which rely on the engine's own fallbacks) keep
+/// rendering exactly as before.
 pub fn new_node_defaults(kind: &str) -> &'static [(&'static str, f32)] {
     match kind {
         "polygon" => &[("sides", 6.0)],

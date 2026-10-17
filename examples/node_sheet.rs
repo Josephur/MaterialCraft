@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Dev helper: renders every node type's demo graph to out_dir/<kind>.png (for a visual contact sheet).
 use materialcraft::graph::{demo_graph_for, Graph, SPECS};
 fn main() {
@@ -12,3 +13,4 @@ fn main() {
         std::fs::write(format!("{dir}/{}.png", sp.kind), materialcraft::png::encode(t.w, t.h, &t.px, 8)).unwrap();
     }
 }
+
