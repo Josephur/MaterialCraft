@@ -23,6 +23,11 @@ mod logo_data {
 const CARD: f32 = 92.0;
 const BAR: f32 = 16.0;
 const CARD_H: f32 = BAR + CARD;
+
+/// Height of a node card's body: the square thumbnail, or taller when many input sockets (or outputs) need room.
+fn card_body(n_slots: usize, n_outs: usize) -> f32 {
+    CARD.max(15.0 * (n_slots as f32 + 1.0)).max(if n_outs >= 2 { 20.0 * n_outs as f32 } else { 0.0 })
+}
 const OUTPUT_NAMES: [&str; 11] = ["basecolor", "normal", "roughness", "metallic", "height", "ambient_occlusion", "opacity", "emissive", "diffuse", "specular", "glossiness"];
 const COMMENT_COLORS: [[u8; 3]; 6] = [[90, 140, 200], [200, 160, 60], [90, 180, 110], [190, 90, 90], [150, 100, 200], [150, 150, 150]];
 
@@ -877,7 +882,7 @@ impl App {
             for id in &self.sel {
                 if let Some(n) = self.g.nodes.get(id) {
                     mn = [mn[0].min(n.pos[0]), mn[1].min(n.pos[1])];
-                    mx = [mx[0].max(n.pos[0] + CARD), mx[1].max(n.pos[1] + CARD_H)];
+                    mx = [mx[0].max(n.pos[0] + CARD), mx[1].max(n.pos[1] + BAR + card_body(slots(&n.kind).len(), 0))];
                 }
             }
             c.pos = [mn[0] - 24.0, mn[1] - 44.0];
@@ -974,7 +979,7 @@ impl App {
         let (mut mn, mut mx) = ([f32::MAX; 2], [f32::MIN; 2]);
         for n in self.g.nodes.values() {
             mn = [mn[0].min(n.pos[0]), mn[1].min(n.pos[1])];
-            mx = [mx[0].max(n.pos[0] + CARD), mx[1].max(n.pos[1] + CARD_H)];
+            mx = [mx[0].max(n.pos[0] + CARD), mx[1].max(n.pos[1] + BAR + card_body(slots(&n.kind).len(), 0))];
         }
         let c = self.canvas_rect;
         let z = ((c.width() - 80.0) / (mx[0] - mn[0]).max(1.0)).min((c.height() - 80.0) / (mx[1] - mn[1]).max(1.0)).clamp(0.3, 1.2);

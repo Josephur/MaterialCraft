@@ -311,3 +311,41 @@ impl GradGrid {
     }
 }
 
+
+/// Designer's shared "Disorder" block of the noise nodes: the sampling position is displaced by a smooth, tileable random
+/// field. `disorder` is the amount, `speed` the distance it moves per unit of disorder, `aniso` (0..1) narrows the displacement
+/// to one direction and `angle_turns` sets that direction.
+#[derive(Clone, Copy)]
+pub struct Disorder {
+    amp: f32,
+    seed: u32,
+    aniso: f32,
+    cs: f32,
+    sn: f32,
+}
+
+impl Disorder {
+    pub fn new(seed: u32, disorder: f32, speed: f32, aniso: f32, angle_turns: f32) -> Disorder {
+        let (sn, cs) = (angle_turns * TAU).sin_cos();
+        Disorder { amp: disorder.max(0.0) * speed.max(0.0) * 0.3, seed, aniso: aniso.clamp(0.0, 1.0), cs, sn }
+    }
+    pub fn warp(&self, u: f32, v: f32) -> (f32, f32) {
+        if self.amp <= 0.0 {
+            return (u, v);
+        }
+        let mut dx = (perlin(u, v, 3, 3, self.seed.wrapping_add(101)) - 0.5) * self.amp;
+        let mut dy = (perlin(u, v, 3, 3, self.seed.wrapping_add(202)) - 0.5) * self.amp;
+        if self.aniso > 0.0 {
+            // project onto the chosen direction (the factor restores the length lost by the projection)
+            let along = (dx * self.cs + dy * self.sn) * std::f32::consts::SQRT_2;
+            dx += (along * self.cs - dx) * self.aniso;
+            dy += (along * self.sn - dy) * self.aniso;
+        }
+        (u + dx, v + dy)
+    }
+}
+
+/// Seed of another tile of the infinite noise plane (Designer's Tile offset, integer part).
+pub fn tile_seed(seed: u32, tx: i32, ty: i32) -> u32 {
+    hash2(tx, ty, seed.wrapping_add(0x7157))
+}

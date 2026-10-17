@@ -76,7 +76,7 @@ fn fft2(a: &mut Vec<[f32; 2]>, n: usize, inverse: bool) {
 }
 
 /// Integrate a tangent-space normal map back into a height map (periodic Poisson solve in the Fourier domain).
-fn normal_to_height(nm: &Tex, directx: bool) -> Tex {
+fn normal_to_height(nm: &Tex, directx: bool, relief: f32, opacity: f32) -> Tex {
     let n = nm.w.next_power_of_two().min(4096).max(2);
     let src = if nm.w == n && nm.h == n { nm.clone() } else { ops::resize(nm, n) };
     let mut gx = vec![[0.0f32; 2]; n * n];
@@ -101,14 +101,16 @@ fn normal_to_height(nm: &Tex, directx: bool) -> Tex {
             let i = ky * n + kx;
             // h = -i (sx gx + sy gy) / (sx^2 + sy^2)
             let (re, im) = (sx * gx[i][0] + sy * gy[i][0], sx * gx[i][1] + sy * gy[i][1]);
-            h[i] = [im / d, -re / d];
+            // relief balance: 0.5 = plain integration, above favours large shapes, below favours fine detail
+            let wgt = if (relief - 0.5).abs() > 1e-4 { d.powf(0.5 - relief) } else { 1.0 };
+            h[i] = [im / d * wgt, -re / d * wgt];
         }
     }
     fft2(&mut h, n, true);
     let vals: Vec<f32> = h.iter().map(|c| c[0] / (n * n) as f32).collect();
     let (mn, mx) = vals.iter().fold((f32::MAX, f32::MIN), |a, v| (a.0.min(*v), a.1.max(*v)));
     let k = if mx - mn > 1e-9 { 1.0 / (mx - mn) } else { 0.0 };
-    let out = Tex { w: n, h: n, px: vals.iter().map(|v| { let g = if k > 0.0 { (v - mn) * k } else { 0.5 }; [g, g, g, 1.0] }).collect() };
+    let out = Tex { w: n, h: n, px: vals.iter().map(|v| { let g = if k > 0.0 { (v - mn) * k } else { 0.5 }; let g = 0.5 + (g - 0.5) * opacity; [g, g, g, 1.0] }).collect() };
     if nm.w == n && nm.h == n {
         out
     } else {
@@ -124,6 +126,7 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
     let rs = s as f32 / 512.0;
     let per = |k: &str, d: f32| f(k, d).round().clamp(1.0, 256.0) as i32;
     let (con, inv) = (f("contrast", 1.0), f("invert", 0.0) > 0.5);
+    let dz = noise::Disorder::new(seed, f("disorder", 0.0), f("disorder_speed", 1.0), f("anisotropy", 0.0), f("anisotropy_angle", 0.0));
     let fin = |t: Tex| -> Tex {
         if (con - 1.0).abs() > 1e-4 || inv {
             ops::contrast_invert(&t, con, inv)
@@ -176,27 +179,55 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let t = need("in")?;
             let (axis, c) = (f("axis", 0.0) as u32, f("offset", 0.0));
             let sg = if f("flip", 0.0) > 0.5 { -1.0 } else { 1.0 };
+            let tm = f("transfer", 0.0).round() as u32; // 0 copy, 1 add, 2 subtract, 3 multiply, 4 add sub, 5 max, 6 min
             let fold = move |p: f32| 0.5 + c + sg * ops::wrapd(p - 0.5 - c).abs();
+            let diag = move |u: f32, v: f32| {
+                // mirror across the line u = v
+                let (x, y) = (ops::wrapd(u - v), u + v);
+                let x = x.abs() * sg;
+                ((y + x) * 0.5, (y - x) * 0.5)
+            };
             Tex::from_fn(t.w, t.h, |u, v| {
                 let (a, b) = match axis {
                     0 => (fold(u), v),
                     1 => (u, fold(v)),
                     2 => (fold(u), fold(v)),
-                    _ => {
-                        // diagonal: mirror across the line u = v
-                        let (x, y) = (ops::wrapd(u - v), u + v);
+                    3 => diag(u, v),
+                    4 => {
+                        // anti-diagonal: mirror across the line u + v = 0 (mod 1)
+                        let (x, y) = (ops::wrapd(u + v), u - v);
                         let x = x.abs() * sg;
-                        ((y + x) * 0.5, (y - x) * 0.5)
+                        ((y + x) * 0.5, (x - y) * 0.5)
                     }
+                    _ => diag(fold(u), fold(v)), // 8-fold: both axes plus the diagonal
                 };
-                t.sample(a, b)
+                let m = t.sample(a, b);
+                if tm == 0 {
+                    return m;
+                }
+                let o = t.sample(u, v);
+                let mut r = o;
+                for k in 0..3 {
+                    r[k] = match tm {
+                        1 => o[k] + m[k],
+                        2 => o[k] - m[k],
+                        3 => o[k] * m[k],
+                        4 => o[k] + (m[k] - 0.5) * 2.0,
+                        5 => o[k].max(m[k]),
+                        _ => o[k].min(m[k]),
+                    }
+                    .clamp(0.0, 1.0);
+                }
+                r
             })
         }
         "skew" => {
             let t = need("in")?;
             // whole numbers keep the lattice periodic: the skewed texture still tiles
             let (kx, ky) = (f("skew_x", 1.0).round().clamp(-32.0, 32.0), f("skew_y", 0.0).round().clamp(-32.0, 32.0));
-            Tex::from_fn(t.w, t.h, |u, v| t.sample_cubic(u + kx * v, v + ky * u))
+            // align = the line the shear pivots around: 0 centre, 1 top left (default), 2 bottom right
+            let o = match f("align", 1.0).round() as u32 { 0 => 0.5, 2 => 1.0, _ => 0.0 };
+            Tex::from_fn(t.w, t.h, |u, v| t.sample_cubic(u + kx * (v - o), v + ky * (u - o)))
         }
         // ------------------------------------------------ adjustments
         "auto_levels" => {
@@ -293,6 +324,7 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let (var, p) = (f("variant", 0.0) as u32, per("scale", 8.0));
             let jitter = f("jitter", 1.0).clamp(0.0, 1.0);
             fin(Tex::gray_fn(s, s, move |u, v| {
+                let (u, v) = dz.warp(u, v);
                 let vr = noise::voronoi_ext(u, v, p, p, seed, jitter);
                 match var {
                     0 => 1.0 - vr.f1,
@@ -315,6 +347,7 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                 .collect();
             let norm: f32 = grids.iter().map(|g| g.1).sum::<f32>().max(1e-6);
             fin(Tex::gray_fn(s, s, move |u, v| {
+                let (u, v) = dz.warp(u, v);
                 let mut acc = 0.0;
                 for (g, a) in &grids {
                     let x = g.sample(u, v);
@@ -332,6 +365,7 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let (warp, w) = (f("warp", 0.3).clamp(0.0, 4.0), per("warp_scale", 4.0));
             let shape = f("shape", 0.0) as u32;
             fin(Tex::gray_fn(s, s, move |u, v| {
+                let (u, v) = dz.warp(u, v);
                 let ph = (a as f32 * u + b as f32 * v) + (noise::perlin(u, v, w, w, seed) - 0.5) * warp;
                 let x = ph - ph.floor();
                 match shape {
@@ -346,6 +380,7 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let p = per("scale", 8.0);
             let (size, var) = (f("size", 0.5).clamp(0.05, 1.0), f("size_variation", 0.5).clamp(0.0, 1.0));
             fin(Tex::gray_fn(s, s, move |u, v| {
+                let (u, v) = dz.warp(u, v);
                 // spots() blends smoothly from 1 to 0 between the inner and outer radius, i.e. a gaussian-like bump
                 noise::spots(u, v, p, p, seed, |id| {
                     let r = size * 0.55 * (1.0 - var + var * id);
@@ -356,8 +391,8 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         // ------------------------------------------------ normals and surface
         "normal_invert" => {
             let t = need("in")?;
-            let (ix, iy) = (f("invert_x", 0.0) > 0.5, f("invert_y", 1.0) > 0.5);
-            t.map(|p| [if ix { 1.0 - p[0] } else { p[0] }, if iy { 1.0 - p[1] } else { p[1] }, p[2], p[3]])
+            let (ix, iy, iz, ia) = (f("invert_x", 0.0) > 0.5, f("invert_y", 1.0) > 0.5, f("invert_z", 0.0) > 0.5, f("invert_a", 0.0) > 0.5);
+            t.map(|p| [if ix { 1.0 - p[0] } else { p[0] }, if iy { 1.0 - p[1] } else { p[1] }, if iz { 1.0 - p[2] } else { p[2] }, if ia { 1.0 - p[3] } else { p[3] }])
         }
         "normal_normalize" => need("in")?.map(|p| {
             let (x, y, z) = ((p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0, (p[2] - 0.5) * 2.0);
@@ -366,13 +401,19 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         }),
         "normal_vector_rotation" => {
             let t = need("in")?;
-            let (sn, cs) = (f("angle", 0.0) * TAU).sin_cos();
-            t.map(|p| {
-                let (x, y) = ((p[0] - 0.5) * 2.0, (p[1] - 0.5) * 2.0);
-                [(cs * x - sn * y) * 0.5 + 0.5, (sn * x + cs * y) * 0.5 + 0.5, p[2], p[3]]
+            let (ang, gs) = (f("angle", 0.0) * TAU, if f("directx", 0.0) > 0.5 { -1.0f32 } else { 1.0 });
+            let rot = opt("rotation");
+            Tex::from_fn(t.w, t.h, |u, v| {
+                let p = t.sample(u, v);
+                // the optional rotation map scales the angle per pixel
+                let a = ang * rot.map(|m| lum(m.sample(u, v))).unwrap_or(1.0);
+                let (sn, cs) = a.sin_cos();
+                let (x, y) = ((p[0] - 0.5) * 2.0, gs * (p[1] - 0.5) * 2.0);
+                let (rx, ry) = (cs * x - sn * y, sn * x + cs * y);
+                [rx * 0.5 + 0.5, gs * ry * 0.5 + 0.5, p[2], p[3]]
             })
         }
-        "normal_to_height" => normal_to_height(need("in")?, f("directx", 0.0) > 0.5),
+        "normal_to_height" => normal_to_height(need("in")?, f("directx", 0.0) > 0.5, f("relief_balance", 0.5).clamp(0.0, 1.0), f("opacity", 1.0).clamp(0.0, 1.0)),
         "sobel" => {
             let t = need("in")?;
             let k = f("intensity", 1.0).clamp(0.0, 64.0) * (t.w as f32 / 512.0).max(0.25);
@@ -390,9 +431,12 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let t = need("in")?;
             let (w, inten) = (f("width", 8.0).clamp(0.0, 128.0) * rs, f("intensity", 1.0).clamp(0.0, 8.0));
             let b = ops::blur(t, w);
+            // clear amount cuts the faint tail of the glow off; the colour tints it (white = unchanged)
+            let (clear, gc) = (f("clear", 0.0).clamp(0.0, 0.99), [f("glow_r", 1.0), f("glow_g", 1.0), f("glow_b", 1.0)]);
             Tex::from_fn(t.w, t.h, |u, v| {
                 let (p, q) = (t.sample(u, v), b.sample(u, v));
-                [(p[0] + q[0] * inten).clamp(0.0, 1.0), (p[1] + q[1] * inten).clamp(0.0, 1.0), (p[2] + q[2] * inten).clamp(0.0, 1.0), p[3]]
+                let cut = |x: f32| ((x - clear) / (1.0 - clear)).max(0.0);
+                [(p[0] + cut(q[0]) * gc[0] * inten).clamp(0.0, 1.0), (p[1] + cut(q[1]) * gc[1] * inten).clamp(0.0, 1.0), (p[2] + cut(q[2]) * gc[2] * inten).clamp(0.0, 1.0), p[3]]
             })
         }
         "mosaic" => {
@@ -407,8 +451,11 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let shifted = Tex::from_fn(t.w, t.h, |u, v| t.sample(u - cs * dist, v - sn * dist));
             let sh = ops::blur(&shifted, f("blur", 6.0).clamp(0.0, 128.0) * rs);
             let op = f("opacity", 0.8).clamp(0.0, 1.0);
+            let spread = f("spread", 0.0).clamp(0.0, 1.0);
             Tex::from_fn(t.w, t.h, |u, v| {
-                let m = lum(t.sample(u, v)).max(lum(sh.sample(u, v)) * op).clamp(0.0, 1.0);
+                // spread raises the blur cut-off so the shadow stays solid for longer
+                let sv = (lum(sh.sample(u, v)) / (1.0 - spread * 0.99)).min(1.0);
+                let m = lum(t.sample(u, v)).max(sv * op).clamp(0.0, 1.0);
                 [m, m, m, 1.0]
             })
         }
@@ -425,25 +472,61 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         }
         "multi_directional_warp" => {
             let (t, m) = (need("in")?, need("warp")?);
-            let (k, n, a0) = (f("intensity", 0.1).clamp(-2.0, 2.0), f("directions", 8.0).round().clamp(1.0, 16.0) as usize, f("angle", 0.0));
-            Tex::from_fn(t.w, t.h, |u, v| {
-                let d = (lum(m.sample(u, v)) - 0.5) * 2.0 * k;
-                let mut acc = [0.0f32; 4];
+            let (k, a0) = (f("intensity", 0.1).clamp(-2.0, 2.0), f("angle", 0.0));
+            // Directions as in Designer: 0 = 1 (the angle and its opposite), 1 = 2 (plus the perpendicular axis), 2 = 4 (plus the 45 degree
+            // steps). Larger values from older graphs keep meaning "that many samples".
+            let dv = f("directions", 2.0).round().max(0.0) as usize;
+            let n = if dv <= 2 { 2 * [1usize, 2, 4][dv] } else { dv.min(16) };
+            let mode = f("mode", 0.0).round() as u32; // 0 average, 1 max, 2 min, 3 chain
+            if mode == 3 {
+                // each direction warps the result of the previous one
+                let mut cur = t.clone();
                 for i in 0..n {
                     let a = (a0 + i as f32 / n as f32) * TAU;
-                    let p = t.sample(u + a.cos() * d, v + a.sin() * d);
-                    for c in 0..4 {
-                        acc[c] += p[c] / n as f32;
-                    }
+                    let src = cur.clone();
+                    cur = Tex::from_fn(t.w, t.h, |u, v| {
+                        let d = (lum(m.sample(u, v)) - 0.5) * 2.0 * k / n as f32;
+                        src.sample(u + a.cos() * d, v + a.sin() * d)
+                    });
                 }
-                acc
-            })
+                cur
+            } else {
+                Tex::from_fn(t.w, t.h, |u, v| {
+                    let d = (lum(m.sample(u, v)) - 0.5) * 2.0 * k;
+                    let mut acc = if mode == 1 { [f32::MIN; 4] } else if mode == 2 { [f32::MAX; 4] } else { [0.0f32; 4] };
+                    for i in 0..n {
+                        let a = (a0 + i as f32 / n as f32) * TAU;
+                        let p = t.sample(u + a.cos() * d, v + a.sin() * d);
+                        for c in 0..4 {
+                            match mode {
+                                1 => acc[c] = acc[c].max(p[c]),
+                                2 => acc[c] = acc[c].min(p[c]),
+                                _ => acc[c] += p[c] / n as f32,
+                            }
+                        }
+                    }
+                    acc
+                })
+            }
         }
         "normal_combine" => {
-            // reoriented normal mapping: the detail normal is rotated into the surface of the base normal
+            // technique 0 whiteout, 1 channel mixer (partial derivatives added), 2 detail oriented (reoriented normal mapping:
+            // the detail normal is rotated into the surface of the base normal)
             let (b, d) = (need("base")?, need("detail")?);
+            let tech = f("technique", 2.0).round() as u32;
             Tex::from_fn(b.w, b.h, |u, v| {
                 let (pb, pd) = (b.sample(u, v), d.sample(u, v));
+                if tech < 2 {
+                    let (bx, by, bz) = ((pb[0] - 0.5) * 2.0, (pb[1] - 0.5) * 2.0, ((pb[2] - 0.5) * 2.0).max(0.05));
+                    let (dx, dy, dz) = ((pd[0] - 0.5) * 2.0, (pd[1] - 0.5) * 2.0, ((pd[2] - 0.5) * 2.0).max(0.05));
+                    let r = if tech == 0 {
+                        [bx + dx, by + dy, bz * dz]
+                    } else {
+                        [bx / bz + dx / dz, by / bz + dy / dz, 1.0]
+                    };
+                    let l = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt().max(1e-6);
+                    return [r[0] / l * 0.5 + 0.5, r[1] / l * 0.5 + 0.5, r[2] / l * 0.5 + 0.5, 1.0];
+                }
                 let tt = [(pb[0] - 0.5) * 2.0, (pb[1] - 0.5) * 2.0, (pb[2] - 0.5) * 2.0 + 1.0];
                 let uu = [-(pd[0] - 0.5) * 2.0, -(pd[1] - 0.5) * 2.0, (pd[2] - 0.5) * 2.0];
                 let dot = tt[0] * uu[0] + tt[1] * uu[1] + tt[2] * uu[2];
@@ -497,6 +580,8 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let outside = ops::distance_field(&inv, t.w, t.h);
             let stroke = kind == "shape_stroke";
             let (off, soft, inten) = (f("offset", 0.0).clamp(-1.0, 1.0), f("softness", 0.5).clamp(0.0, 1.0), f("intensity", 1.0).clamp(0.0, 4.0));
+            let (opacity, spread) = (f("opacity", 1.0).clamp(0.0, 1.0), f("spread", 0.0).clamp(0.0, 1.0));
+            let col = [f("color_r", 1.0), f("color_g", 1.0), f("color_b", 1.0)];
             let px = (0..mask.len())
                 .map(|i| {
                     // signed distance in pixels: positive outside the shape
@@ -509,8 +594,9 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                     } else {
                         (1.0 - (sd / w).clamp(0.0, 1.0)).powf(1.0 + soft * 3.0) * inten
                     };
-                    let g = g.clamp(0.0, 1.0);
-                    [g, g, g, 1.0]
+                    let g = if stroke { g } else { g / (1.0 - spread * 0.99) };
+                    let g = g.clamp(0.0, 1.0) * opacity;
+                    [g * col[0], g * col[1], g * col[2], 1.0]
                 })
                 .collect();
             Tex { w: t.w, h: t.h, px }

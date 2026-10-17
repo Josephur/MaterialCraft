@@ -342,6 +342,14 @@ pub fn adjust(t: &Tex, brightness: f32, contrast: f32) -> Tex {
     })
 }
 
+/// Cyclic shift by a fraction of the tile (output pixel (x, y) reads input pixel (x + fx * w, y + fy * h)).
+pub fn roll(t: &Tex, fx: f32, fy: f32) -> Tex {
+    let (w, h) = (t.w, t.h);
+    let sx = ((fx * w as f32).round() as i64).rem_euclid(w as i64) as usize;
+    let sy = ((fy * h as f32).round() as i64).rem_euclid(h as i64) as usize;
+    Tex { w, h, px: (0..w * h).map(|i| t.px[((i / w + sy) % h) * w + (i % w + sx) % w]).collect() }
+}
+
 pub fn invert(t: &Tex) -> Tex {
     t.map(|p| [1.0 - p[0], 1.0 - p[1], 1.0 - p[2], p[3]])
 }
@@ -349,6 +357,27 @@ pub fn invert(t: &Tex) -> Tex {
 pub fn threshold(t: &Tex, th: f32, soft: f32) -> Tex {
     t.map(|p| {
         let g = sm(th - soft * 0.5, th + soft * 0.5, lum(p));
+        [g, g, g, 1.0]
+    })
+}
+
+/// Designer's Threshold: mode 0 greater, 1 greater or equal, 2 lower, 3 lower or equal. With softness > 0 the
+/// edge is smoothed and the comparison direction is all that remains of the mode.
+pub fn threshold_mode(t: &Tex, th: f32, soft: f32, mode: u32) -> Tex {
+    t.map(move |p| {
+        let l = lum(p);
+        let g = if soft > 1e-6 {
+            let g = sm(th - soft * 0.5, th + soft * 0.5, l);
+            if mode >= 2 { 1.0 - g } else { g }
+        } else {
+            let on = match mode {
+                0 => l > th,
+                1 => l >= th,
+                2 => l < th,
+                _ => l <= th,
+            };
+            if on { 1.0 } else { 0.0 }
+        };
         [g, g, g, 1.0]
     })
 }
@@ -483,21 +512,48 @@ fn bm(mode: u32, f: f32, b: f32) -> f32 {
         14 => f + b - 2.0 * f * b,
         15 => if f <= 0.001 { b } else { b / f },
         16 => b + 2.0 * f - 1.0,
+        20 => b + (f - 0.5) * 2.0,
         _ => f,
     }
 }
 
-/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light,17 color,18 luminosity,19 dissolve.
+/// Modes: 0 copy,1 add,2 sub,3 multiply,4 screen,5 overlay,6 max,7 min,8 difference,9 soft light,10 color dodge,11 color burn,12 linear burn,13 hard light,14 exclusion,15 divide,16 linear light,17 color,18 luminosity,19 dissolve,20 add sub,21 switch (copy).
 pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) -> Tex {
+    blend_ex(fg, bg, mask, mode, opacity, 1, [0.0, 0.0, 1.0, 1.0])
+}
+
+/// Blend with Designer's alpha handling and cropping area. `alpha_mode`: 0 use source alpha, 1 ignore alpha, 2 straight alpha
+/// blending, 3 premultiplied alpha blending. `crop` = [x0, y0, x1, y1] in 0..1; outside it only the background shows.
+pub fn blend_ex(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32, alpha_mode: u32, crop: [f32; 4]) -> Tex {
     let mut out = bg.clone();
-    let ow = out.w;
+    let (ow, oh) = (out.w, out.h);
+    let cropped = crop != [0.0, 0.0, 1.0, 1.0];
     crate::tex::par_rows(&mut out.px, ow, |start, chunk| {
       for (j, dst) in chunk.iter_mut().enumerate() {
         let i = start + j;
         let f = fg.px.get(i).copied().unwrap_or([0.0; 4]);
         let b = bg.px[i];
-        let m = mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0) * opacity;
-        if mode >= 17 {
+        let mut m = mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0) * opacity;
+        if cropped {
+            let (px, py) = (((i % ow) as f32 + 0.5) / ow as f32, ((i / ow) as f32 + 0.5) / oh as f32);
+            if px < crop[0] || px > crop[2] || py < crop[1] || py > crop[3] {
+                m = 0.0;
+            }
+        }
+        // alpha: 1 leaves the background alpha alone, the others let the foreground alpha act as extra opacity
+        let m_plain = m;
+        match alpha_mode {
+            0 => {
+                dst[3] = b[3] + (f[3] - b[3]) * m_plain;
+                m *= f[3];
+            }
+            2 | 3 => {
+                dst[3] = f[3] * m_plain + b[3] * (1.0 - f[3] * m_plain);
+                m *= f[3];
+            }
+            _ => {}
+        }
+        if (17..=19).contains(&mode) {
             // 17 color (hue+saturation of the foreground, brightness of the background), 18 luminosity, 19 dissolve
             let set_lum = |c: [f32; 4], l: f32| {
                 let d = l - lum(c);
@@ -563,6 +619,62 @@ pub fn mirror(t: &Tex, axis: u32) -> Tex {
     o
 }
 
+/// Designer's Mirror: `axis` 0 mirrors across a vertical axis, 1 across a horizontal axis, 2 both, 3 corner.
+/// `ox`/`oy` are the axis positions (0..1); `inv_*` copy the other side; `corner` 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
+pub fn mirror_ex(t: &Tex, axis: u32, ox: f32, oy: f32, inv_x: bool, inv_y: bool, corner: u32) -> Tex {
+    let (w, h) = (t.w as i64, t.h as i64);
+    // pixel on the source side stays, the other side reads the reflected pixel
+    let fold = |x: i64, n: i64, o: f32, inv: bool| -> i64 {
+        let ax = o.clamp(0.0, 1.0) * n as f32;
+        let xc = x as f32 + 0.5;
+        let source = if inv { xc >= ax } else { xc < ax };
+        if source { x } else { ((2.0 * ax - xc - 0.5).round() as i64).rem_euclid(n) }
+    };
+    let (do_x, do_y, ix, iy, ox, oy) = match axis {
+        0 => (true, false, inv_x, false, ox, 0.5),
+        1 => (false, true, false, inv_y, 0.5, oy),
+        2 => (true, true, inv_x, inv_y, ox, oy),
+        _ => (true, true, corner == 1 || corner == 3, corner == 2 || corner == 3, 0.5, 0.5),
+    };
+    let mut o = t.clone();
+    for y in 0..h {
+        let sy = if do_y { fold(y, h, oy, iy) } else { y };
+        for x in 0..w {
+            let sx = if do_x { fold(x, w, ox, ix) } else { x };
+            o.px[(y * w + x) as usize] = t.at(sx, sy);
+        }
+    }
+    o
+}
+
+/// Sampling used by the warps: 0 bilinear, 1 nearest, 2 bicubic.
+fn samp(t: &Tex, mode: u32, u: f32, v: f32) -> [f32; 4] {
+    match mode {
+        0 => t.sample(u, v),
+        1 => t.at((u.rem_euclid(1.0) * t.w as f32) as i64, (v.rem_euclid(1.0) * t.h as f32) as i64),
+        _ => t.sample_cubic(u, v),
+    }
+}
+
+pub fn warp_ex(t: &Tex, w: &Tex, intensity: f32, filtering: u32) -> Tex {
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let x = (u * w.w as f32) as i64;
+        let y = (v * w.h as f32) as i64;
+        let dx = w.gray_at(x + 1, y) - w.gray_at(x - 1, y);
+        let dy = w.gray_at(x, y + 1) - w.gray_at(x, y - 1);
+        samp(t, filtering, u + dx * intensity, v + dy * intensity)
+    })
+}
+
+/// `offset` is subtracted from the intensity map (0.5 = mid grey does not move the pixel).
+pub fn directional_warp_ex(t: &Tex, w: &Tex, angle: f32, intensity: f32, offset: f32, filtering: u32) -> Tex {
+    let (s, c) = (angle * TAU).sin_cos();
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let d = (lum(w.sample(u, v)) - offset) * intensity;
+        samp(t, filtering, u + c * d, v + s * d)
+    })
+}
+
 /// Displace by the gradient of `w` (slope warp).
 pub fn warp(t: &Tex, w: &Tex, intensity: f32) -> Tex {
     Tex::from_fn(t.w, t.h, |u, v| {
@@ -620,6 +732,23 @@ pub fn normal_blend(a: &Tex, b: &Tex) -> Tex {
         let z = (pa[2] - 0.5) * 2.0 * (pb[2] - 0.5) * 2.0;
         let l = (x * x + y * y + z * z).sqrt().max(1e-6);
         o.px[i] = [x / l * 0.5 + 0.5, y / l * 0.5 + 0.5, z / l * 0.5 + 0.5, 1.0];
+    }
+    o
+}
+
+/// Normal Blend with Designer's Opacity and optional Mask: `a` is the background, `b` the foreground.
+pub fn normal_blend_ex(a: &Tex, b: &Tex, opacity: f32, mask: Option<&Tex>) -> Tex {
+    let full = normal_blend(a, b);
+    let mut o = full.clone();
+    for i in 0..o.px.len() {
+        let k = (opacity * mask.and_then(|m| m.px.get(i)).map(|p| lum(*p)).unwrap_or(1.0)).clamp(0.0, 1.0);
+        if k >= 1.0 {
+            continue;
+        }
+        let (pa, pf) = (a.px[i], full.px[i]);
+        let v: Vec<f32> = (0..3).map(|c| (pa[c] - 0.5) * 2.0 * (1.0 - k) + (pf[c] - 0.5) * 2.0 * k).collect();
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+        o.px[i] = [v[0] / l * 0.5 + 0.5, v[1] / l * 0.5 + 0.5, v[2] / l * 0.5 + 0.5, 1.0];
     }
     o
 }
@@ -1133,6 +1262,11 @@ pub fn distance_field(mask: &[bool], w: usize, h: usize) -> Vec<f32> {
 }
 
 pub fn bevel(t: &Tex, dist_px: f32, smoothing: f32, thr: f32) -> Tex {
+    bevel_ex(t, dist_px, smoothing, thr, false)
+}
+
+/// `round` = circular (quarter-circle) profile, otherwise the linear ramp of an angular bevel.
+pub fn bevel_ex(t: &Tex, dist_px: f32, smoothing: f32, thr: f32, round: bool) -> Tex {
     let mask: Vec<bool> = t.px.iter().map(|p| lum(*p) > thr).collect();
     let d = distance_field(&mask, t.w, t.h);
     let px = d
@@ -1143,6 +1277,7 @@ pub fn bevel(t: &Tex, dist_px: f32, smoothing: f32, thr: f32) -> Tex {
                 return [0.0, 0.0, 0.0, 1.0];
             }
             let tt = (d / dist_px.max(1.0)).clamp(0.0, 1.0);
+            let tt = if round { (1.0 - (1.0 - tt) * (1.0 - tt)).sqrt() } else { tt };
             let g = tt + (tt * tt * (3.0 - 2.0 * tt) - tt) * smoothing.clamp(0.0, 1.0);
             [g, g, g, 1.0]
         })
@@ -1176,6 +1311,15 @@ pub fn vector_warp(t: &Tex, vecmap: &Tex, intensity: f32) -> Tex {
     Tex::from_fn(t.w, t.h, |u, v| {
         let m = vecmap.sample(u, v);
         t.sample_cubic(u + (m[0] - 0.5) * 2.0 * intensity, v + (m[1] - 0.5) * 2.0 * intensity)
+    })
+}
+
+/// Vector Warp with Designer's Vector Format: `directx` reads the green channel as pointing down.
+pub fn vector_warp_ex(t: &Tex, vecmap: &Tex, intensity: f32, directx: bool) -> Tex {
+    let gs = if directx { -1.0 } else { 1.0 };
+    Tex::from_fn(t.w, t.h, |u, v| {
+        let m = vecmap.sample(u, v);
+        t.sample_cubic(u + (m[0] - 0.5) * 2.0 * intensity, v + gs * (m[1] - 0.5) * 2.0 * intensity)
     })
 }
 
@@ -1357,10 +1501,15 @@ pub fn height_blend(bg: &Tex, fg: &Tex, mask: Option<&Tex>, opacity: f32, contra
 }
 
 pub fn make_tile_photo(t: &Tex, width: f32) -> Tex {
-    let w = width.clamp(0.1, 1.0);
-    let a = |x: f32| sm(0.0, w, 1.0 - (2.0 * x - 1.0).abs());
+    make_tile_photo_ex(t, width, width)
+}
+
+/// Separate horizontal and vertical transition reach (Designer's Mask Size H / V).
+pub fn make_tile_photo_ex(t: &Tex, width_h: f32, width_v: f32) -> Tex {
+    let (wh, wv) = (width_h.clamp(0.1, 1.0), width_v.clamp(0.1, 1.0));
+    let a = |x: f32, w: f32| sm(0.0, w, 1.0 - (2.0 * x - 1.0).abs());
     Tex::from_fn(t.w, t.h, |u, v| {
-        let (au, av) = (a(u), a(v));
+        let (au, av) = (a(u, wh), a(v, wv));
         let s = |du: f32, dv: f32| t.sample((u + du).rem_euclid(1.0), (v + dv).rem_euclid(1.0));
         let (c00, c10, c01, c11) = (s(0.0, 0.0), s(0.5, 0.0), s(0.0, 0.5), s(0.5, 0.5));
         let (w00, w10, w01, w11) = (au * av, (1.0 - au) * av, au * (1.0 - av), (1.0 - au) * (1.0 - av));

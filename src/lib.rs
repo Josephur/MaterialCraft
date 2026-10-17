@@ -12,6 +12,7 @@ pub mod nodes2;
 pub mod ops;
 pub mod png;
 pub mod render3d;
+pub mod scatter;
 pub mod tiff;
 pub mod tex;
 pub mod v3;
