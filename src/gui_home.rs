@@ -12,6 +12,8 @@ struct NewDlg {
     sel: usize,
     name: String,
     size: usize,
+    /// 0 = linked to the width (square), otherwise the separate height
+    height: usize,
     depth16: bool,
     /// Package the graph is added to; None = a new package.
     dest: Option<usize>,
@@ -50,8 +52,8 @@ const TEMPLATES: &[Template] = &[
     Template { name: "Generator (color)", desc: "A single color output called 'output'.", outs: &[("output", [0.6, 0.4, 0.3])] },
 ];
 
-fn template_graph(t: &Template, name: &str, size: usize, depth16: bool) -> Graph {
-    let mut g = Graph { size, ..Default::default() };
+fn template_graph(t: &Template, name: &str, size: usize, height: usize, depth16: bool) -> Graph {
+    let mut g = Graph { size, height: if height == size { 0 } else { height }, ..Default::default() };
     g.meta.insert("identifier".into(), name.to_string());
     g.meta.insert("output_format".into(), if depth16 { "16" } else { "8" }.into());
     for (i, (out, _)) in t.outs.iter().enumerate() {
@@ -539,13 +541,13 @@ impl App {
         if name.is_empty() {
             name = if self.new_dlg.dest.is_some() { "Material_Graph".into() } else { "Graph".into() };
         }
-        let g = template_graph(t, &name, self.new_dlg.size, self.new_dlg.depth16);
+        let g = template_graph(t, &name, self.new_dlg.size, self.new_dlg.height, self.new_dlg.depth16);
         self.new_dlg.open = false;
         match self.new_dlg.dest.filter(|_| self.screen == Screen::Editor) {
             Some(dest) => self.add_graph_to_pkg(dest, g, &name),
             None => {
                 let unsaved = if self.screen == Screen::Editor { self.unique_unsaved_name() } else { "Unsaved Package".to_string() };
-                self.add_pkg_active(Pkg { path: None, name: unsaved, g, modified: true });
+                self.add_pkg_active(Pkg { path: None, name: unsaved, g, modified: true, tabs: Vec::new() });
                 self.need_fit = true;
                 self.status(format!("Created package with '{name}' from template '{}'", t.name), true);
             }
@@ -853,11 +855,21 @@ impl App {
                                 ui.selectable_value(&mut self.new_dlg.size, s, format!("{s} px"));
                             }
                         });
-                        let (r, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::hover());
+                        let linked = self.new_dlg.height == 0;
+                        let (r, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), Sense::click());
                         ui.painter().rect_filled(r, 3.0, Color32::from_rgb(60, 60, 60));
-                        draw_icon(ui.painter(), r.center(), Ic::Link, Color32::WHITE);
-                        resp.on_hover_text("Width and height are linked (non-square graphs are not supported yet)");
-                        ui.add_enabled(false, egui::Button::new(format!("{} px", self.new_dlg.size)).min_size(vec2(150.0, 20.0)));
+                        draw_icon(ui.painter(), r.center(), Ic::Link, if linked { Color32::WHITE } else { Color32::from_gray(110) });
+                        if resp.on_hover_text(if linked { "Linked: the graph is square (click to set a separate height)" } else { "Unlinked: click to make the graph square again" }).clicked() {
+                            self.new_dlg.height = if linked { self.new_dlg.size } else { 0 };
+                        }
+                        let shown = if linked { self.new_dlg.size } else { self.new_dlg.height };
+                        ui.add_enabled_ui(!linked, |ui| {
+                            egui::ComboBox::from_id_salt("nd_h").width(150.0).selected_text(format!("{shown} px")).show_ui(ui, |ui| {
+                                for s in [128usize, 256, 512, 1024, 2048, 4096, 8192] {
+                                    ui.selectable_value(&mut self.new_dlg.height, s, format!("{s} px"));
+                                }
+                            });
+                        });
                     });
                     ui.add_space(8.0);
                     ui.strong("Output format");
@@ -1267,6 +1279,13 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.small(format!("{} x {} (RGBA, {}bpc)", self.tex2d_size.0, self.tex2d_size.1, if self.g.meta.get("output_format").map(|s| s == "16").unwrap_or(false) { 16 } else { 8 }));
+            if let Some((lo, hi)) = self.tex2d_range {
+                if lo <= hi {
+                    let hdr = hi > 1.0001 || lo < -0.0001;
+                    let txt = egui::RichText::new(format!("range {lo:.3} .. {hi:.3}")).small().color(if hdr { Color32::from_rgb(255, 190, 90) } else { Color32::from_gray(150) });
+                    ui.label(txt).on_hover_text(if hdr { "Values outside 0..1 (HDR). The view clips them; exports keep them in float formats (EXR, HDR, 32-bit TIFF)." } else { "Smallest and largest channel value of this result" });
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
                 let px = if self.tex2d_size.0 > 0 { img_size.x / self.tex2d_size.0 as f32 * 100.0 } else { 100.0 };
@@ -1522,6 +1541,17 @@ impl App {
                 }
             });
             ui.add_space(6.0);
+            ui.strong("Node Precision");
+            let prec = meta.get("ofmt").and_then(|s| s.parse::<usize>().ok()).unwrap_or(0).min(3);
+            let pnames = ["32 bits float", "8 bits integer", "16 bits integer", "16 bits float"];
+            egui::ComboBox::from_id_salt("nodeprec").width(220.0).selected_text(pnames[prec]).show_ui(ui, |ui| {
+                for (i, n) in pnames.iter().enumerate() {
+                    if ui.selectable_label(prec == i, *n).on_hover_text("Every node is rounded to this precision unless it sets its own Output Format").clicked() {
+                        if i == 0 { meta.remove("ofmt"); } else { meta.insert("ofmt".into(), i.to_string()); }
+                    }
+                }
+            });
+            ui.add_space(6.0);
             ui.strong("Tiling Mode");
             ui.add_enabled(false, egui::Button::new("H and V Tiling").min_size(vec2(220.0, 20.0)));
             ui.add_space(6.0);
@@ -1611,7 +1641,7 @@ impl App {
                         }
                     }
                     ui.separator();
-                    for (label, a) in [("Link package as node...", Act::LinkPackage), ("Refresh linked packages", Act::RefreshLinks), ("Import bitmap...", Act::ImportBitmap), ("Export textures...", Act::Export), ("Publish package (.mca)...", Act::Publish)] {
+                    for (label, a) in [("Link package as node...", Act::LinkPackage), ("Refresh linked packages", Act::RefreshLinks), ("Dependencies...", Act::ToggleDeps), ("Import bitmap...", Act::ImportBitmap), ("Export textures...", Act::Export), ("Publish package (.mca)...", Act::Publish)] {
                         if ui.button(label).clicked() {
                             acts.push(a);
                             ui.close_menu();
@@ -1735,6 +1765,30 @@ impl App {
                         }
                     });
                 });
+                // one tab per open graph of the active package: the main graph first, then every graph opened from it
+                let root_names: BTreeSet<String> = self.parents.first().map(|p| &p.0).unwrap_or(&self.g).subgraphs.keys().cloned().collect();
+                let open: Vec<String> = self.graph_tabs.iter().filter(|n| root_names.contains(*n)).cloned().collect();
+                if !open.is_empty() {
+                    let current = self.parents.last().map(|(_, n)| n.clone()).unwrap_or_default();
+                    egui::ScrollArea::horizontal().id_salt("gtabs_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for name in std::iter::once(String::new()).chain(open.iter().cloned()) {
+                                let active = current == name;
+                                let fill = if active { Color32::from_rgb(50, 62, 60) } else { Color32::from_rgb(36, 36, 36) };
+                                let label = if name.is_empty() { "Main graph".to_string() } else { name.clone() };
+                                let txt = egui::RichText::new(label).small().color(if active { ACCENT } else { Color32::from_gray(160) });
+                                if ui.add(egui::Button::new(txt).fill(fill).min_size(vec2(70.0, 18.0))).clicked() && !active {
+                                    acts.push(Act::OpenGraphTab(name.clone()));
+                                }
+                                if !name.is_empty() && ui.add(egui::Button::new(egui::RichText::new("x").small().color(Color32::from_gray(140))).fill(fill).min_size(vec2(16.0, 18.0))).on_hover_text("Close graph tab").clicked() {
+                                    acts.push(Act::CloseGraphTab(name.clone()));
+                                }
+                                ui.add_space(3.0);
+                            }
+                        });
+                    });
+                }
             });
         }
         egui::TopBottomPanel::top("toolbar").frame(egui::Frame::none().fill(Color32::from_rgb(38, 38, 38)).inner_margin(egui::Margin::symmetric(6.0, 1.0))).show(ctx, |ui| {
@@ -1763,7 +1817,11 @@ impl App {
                 ui.colored_label(if *ok { Color32::from_gray(170) } else { Color32::from_rgb(255, 120, 110) }, msg);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-                    ui.label(format!("MaterialCraft Engine: CPU ({threads} threads){}    Version: {}", if self.job.is_some() { "   computing..." } else { "" }, env!("CARGO_PKG_VERSION")));
+                    let engine = match materialcraft::gpu::adapter_name().filter(|_| self.gpu_eval) {
+                        Some(a) => format!("CPU ({threads} threads) + GPU compute: {a}"),
+                        None => format!("CPU ({threads} threads)"),
+                    };
+                    ui.label(format!("MaterialCraft Engine: {engine}{}    Version: {}", if self.job.is_some() { "   computing..." } else { "" }, env!("CARGO_PKG_VERSION")));
                 });
             });
         });

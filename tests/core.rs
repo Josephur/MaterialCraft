@@ -1459,3 +1459,170 @@ fn m0_live_links_follow_the_file_on_disk() {
     assert!(g3.resolve_links(&dir)[0].contains("no graph 'nope'"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn m0_remaining_multi_output_nodes() {
+    let g = Graph::parse(concat!(
+        "size 64\n",
+        "node 1 cells scale=4\nnode 2 voronoi scale=5\nnode 3 splatter count=6 scale=0.2 scale_var=0 rot_var=0\n",
+        "node 4 threshold in=@3 threshold=0.3\nnode 5 flood_fill in=@4\n",
+        "node 6 flood_fill_to_index in=@5\nnode 7 flood_fill_to_position in=@5\nnode 8 flood_fill_to_bbox_size in=@5\n",
+        "output cells_id 1.cell_id\noutput cells 1\noutput vor_id 2.cell_id\noutput vor_edge 2.edge\noutput vor 2\n",
+        "output spl 3\noutput spl_id 3.id\noutput spl_c 3.center\noutput spl_s 3.size\n",
+        "output idx 6\noutput pos 7\noutput posx 7.x\noutput bb 8\noutput bbw 8.width\n",
+    ))
+    .unwrap();
+    let r = g.evaluate(None).unwrap();
+    let distinct = |t: &materialcraft::tex::Tex| {
+        let mut v: Vec<u32> = t.px.iter().map(|p| (p[0] * 1000.0) as u32).collect();
+        v.sort();
+        v.dedup();
+        v.len()
+    };
+    assert!(distinct(&r["cells_id"]) >= 8 && distinct(&r["cells"]) > 2);
+    assert!(r["cells_id"].px != r["cells"].px, "the extra output must differ from the main one");
+    assert!(distinct(&r["vor_id"]) >= 8);
+    assert!(r["vor_id"].px != r["vor_edge"].px && r["vor_edge"].px != r["vor"].px);
+    assert!(distinct(&r["spl_id"]) >= 3, "each splat has its own id");
+    assert!(r["spl_c"].px.iter().any(|p| p[0] > 0.0 && p[1] > 0.0 && p[2] == 0.0));
+    assert!(r["spl_s"].px.iter().any(|p| p[0] > 0.1 && p[0] < 0.3), "splat size 0.2 shows up");
+    // flood-fill mappers: one number / centre / extent per region, background stays black
+    assert!(distinct(&r["idx"]) >= 3);
+    let top = r["idx"].px.iter().fold(0.0f32, |m, p| m.max(p[0]));
+    assert!((top - 1.0).abs() < 1e-5, "the last region is index 1");
+    assert!(r["pos"].px.iter().all(|p| p[0] >= 0.0 && p[0] < 1.0 && p[1] >= 0.0 && p[1] < 1.0));
+    let same_region_same_centre = {
+        // pixels sharing one index must share one centre
+        let mut seen: std::collections::HashMap<u32, (u32, u32)> = std::collections::HashMap::new();
+        r["idx"].px.iter().zip(&r["pos"].px).filter(|(i, _)| i[0] > 0.0).all(|(i, p)| {
+            let e = seen.entry((i[0] * 1e5) as u32).or_insert(((p[0] * 1e5) as u32, (p[1] * 1e5) as u32));
+            *e == ((p[0] * 1e5) as u32, (p[1] * 1e5) as u32)
+        })
+    };
+    assert!(same_region_same_centre);
+    assert!(r["bbw"].px.iter().any(|p| p[0] > 0.1 && p[0] < 0.4), "a 0.2-wide splat has a bounding box of that width");
+    assert_eq!(r["posx"].px.len(), 64 * 64);
+    assert!(r["posx"].px.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "named x output is gray");
+    assert!(materialcraft::graph::node_outputs("flood_fill_to_position").contains(&"x"));
+}
+
+#[test]
+fn m0_pin_type_rules() {
+    use materialcraft::graph::{connection_issues, Pin};
+    // images convert freely between gray and colour
+    assert!(Pin::Color.accepts(Pin::Gray) && Pin::Gray.accepts(Pin::Color));
+    // values widen but never narrow, and never mix with images
+    assert!(Pin::Float.accepts(Pin::Int) && Pin::Float3.accepts(Pin::Int3) && Pin::Int.accepts(Pin::Bool));
+    assert!(!Pin::Int.accepts(Pin::Float) && !Pin::Float2.accepts(Pin::Float) && !Pin::Bool.accepts(Pin::Int));
+    assert!(!Pin::Float.accepts(Pin::Gray) && !Pin::Gray.accepts(Pin::Float) && !Pin::Text.accepts(Pin::Float));
+    assert_eq!((Pin::Float3.lanes(), Pin::Int.lanes(), Pin::Gray.lanes(), Pin::Text.lanes()), (3, 1, 0, 0));
+    // every image graph is well typed
+    let g = Graph::parse("size 32\nnode 1 perlin\nnode 2 colorize in=@1\nnode 3 blend bg=@1 fg=@2\noutput o 3\n").unwrap();
+    assert!(connection_issues(&g).is_empty());
+}
+
+#[test]
+fn m0_graph_default_format_and_hdr_safe_filters() {
+    let base = "size 64\nnode 1 gradient mode=0\nnode 2 tint in=@1 r=1.37 g=0.3333 b=0.5\n";
+    let run = |meta: &str, extra: &str| {
+        let g = Graph::parse(&format!("{base}{meta}{extra}output o 2\n")).unwrap();
+        g.evaluate(None).unwrap().remove("o").unwrap()
+    };
+    let float = run("", "");
+    assert!(float.px.iter().any(|p| p[0] > 1.0));
+    // a graph-wide 8-bit default rounds every node
+    let eight = run("meta ofmt \"1\"\n", "");
+    assert!(eight.px.iter().all(|p| p[0] <= 1.0 && ((p[0] * 255.0).round() - p[0] * 255.0).abs() < 1e-3));
+    let g = Graph::parse(&format!("{base}meta ofmt \"1\"\noutput o 2\n")).unwrap();
+    assert_eq!(g.default_format(), 1);
+    // a node can opt back out (4 = force 32-bit float) or pick its own precision
+    let kept = Graph::parse("size 64\nmeta ofmt \"1\"\nnode 1 gradient mode=0 ofmt=4\nnode 2 tint in=@1 r=1.37 g=0.3333 b=0.5 ofmt=4\noutput o 2\n").unwrap().evaluate(None).unwrap().remove("o").unwrap();
+    assert!(kept.px.iter().any(|p| p[0] > 1.0));
+    // the default survives a save / load round trip and changes the cache identity
+    let again = Graph::parse(&g.to_text()).unwrap();
+    assert_eq!(again.default_format(), 1);
+    // filters that are linear keep values above 1 (HDR) instead of clamping
+    for k in ["sharpen", "adjust", "hsl"] {
+        let t = Graph::parse(&format!("size 64\nnode 1 gradient mode=0\nnode 2 tint in=@1 r=1.6 g=1.6 b=1.6\nnode 3 {k} in=@2\noutput o 3\n")).unwrap().evaluate(None).unwrap().remove("o").unwrap();
+        assert!(t.px.iter().any(|p| p[0] > 1.0), "{k} must not clamp HDR values");
+    }
+}
+
+#[test]
+fn m0_square_cells_follow_the_aspect_ratio() {
+    use materialcraft::noise;
+    let run = |extra: &str| {
+        let g = Graph::parse(&format!("size 64 32\nnode 1 perlin scale=8{extra}\noutput o 1\n")).unwrap();
+        g.evaluate(None).unwrap().remove("o").unwrap()
+    };
+    let stretched = run("");
+    let square = run(" square_cells=1");
+    assert_eq!((square.w, square.h), (64, 32));
+    // default: the same 8 x 8 lattice stretched over the 2:1 image; option: 8 x 4 lattice (square cells)
+    let want = |py: i32, t: &materialcraft::tex::Tex| t.px.iter().enumerate().all(|(i, p)| {
+        let (x, y) = (i % t.w, i / t.w);
+        (p[0] - noise::perlin((x as f32 + 0.5) / t.w as f32, (y as f32 + 0.5) / t.h as f32, 8, py, 0)).abs() < 1e-5
+    });
+    assert!(want(8, &stretched));
+    assert!(want(4, &square));
+    // voronoi and cells take the option too (they keep running and differ from the stretched version)
+    for k in ["voronoi", "cells", "fbm"] {
+        let a = Graph::parse(&format!("size 64 32\nnode 1 {k} scale=6\noutput o 1\n")).unwrap().evaluate(None).unwrap().remove("o").unwrap();
+        let b = Graph::parse(&format!("size 64 32\nnode 1 {k} scale=6 square_cells=1\noutput o 1\n")).unwrap().evaluate(None).unwrap().remove("o").unwrap();
+        assert!(a.px != b.px, "{k} must react to square_cells");
+    }
+    // tile nodes derive the vertical count from the horizontal one
+    let a = Graph::parse("size 64 32\nnode 1 tile_generator x_amount=4 y_amount=4\noutput o 1\n").unwrap().evaluate(None).unwrap().remove("o").unwrap();
+    let b = Graph::parse("size 64 32\nnode 1 tile_generator x_amount=4 y_amount=4 square_cells=1\noutput o 1\n").unwrap().evaluate(None).unwrap().remove("o").unwrap();
+    assert!(a.px != b.px);
+}
+
+#[test]
+fn m0_dependency_management() {
+    let dir = std::env::temp_dir().join(format!("mc_deps_{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::create_dir_all(dir.join("moved")).unwrap();
+    std::fs::write(dir.join("lib/pat.mcg"), "size 64\nnode 1 perlin scale=4\noutput o 1\n").unwrap();
+    let text = "size 64\nlink pat \"lib/pat.mcg\"\nnode 1 subgraph graph=\"pat\"\nnode 2 subgraph graph=\"pat\"\nnode 3 blend bg=@1 fg=@2\noutput o 3\n";
+    let mut g = Graph::parse(text).unwrap();
+    assert!(g.resolve_links(&dir).is_empty());
+    let info = &g.link_info["pat"];
+    assert!(info.found.as_ref().unwrap().ends_with("lib/pat.mcg") && info.issue.is_none());
+    assert_eq!(info.members, vec!["pat".to_string()]);
+
+    // the file moves: reported, then found again through a search folder
+    std::fs::rename(dir.join("lib/pat.mcg"), dir.join("moved/pat.mcg")).unwrap();
+    assert_eq!(g.resolve_links(&dir).len(), 1);
+    assert!(g.link_info["pat"].found.is_none() && g.link_info["pat"].issue.as_ref().unwrap().contains("cannot read"));
+    g.meta.insert("search_paths".into(), "elsewhere; moved".into());
+    assert_eq!(g.search_paths(), vec!["elsewhere".to_string(), "moved".to_string()]);
+    assert!(g.resolve_links(&dir).is_empty(), "found by name in a search folder");
+    assert!(g.link_info["pat"].found.as_ref().unwrap().ends_with("moved/pat.mcg"));
+    assert!(g.evaluate(None).is_ok());
+
+    // relink keeps the name, so both instances follow
+    std::fs::write(dir.join("moved/other.mcg"), "size 64\nnode 1 voronoi scale=3\noutput o 1\n").unwrap();
+    let before = g.evaluate(None).unwrap().remove("o").unwrap();
+    assert!(g.relink("pat", "moved/other.mcg", None));
+    assert!(g.resolve_links(&dir).is_empty());
+    assert!(before.px != g.evaluate(None).unwrap().remove("o").unwrap().px);
+
+    // breaking the link embeds a copy that is saved with the package and no longer follows the file
+    let n = g.break_link("pat").unwrap();
+    assert_eq!(n, 1);
+    assert!(g.links.is_empty() && !g.is_linked("pat") && g.subgraphs.contains_key("pat"));
+    let saved = g.to_text();
+    assert!(!saved.contains("link pat") && saved.contains("subgraph pat"), "{saved}");
+    std::fs::remove_file(dir.join("moved/other.mcg")).unwrap();
+    let mut again = Graph::parse(&saved).unwrap();
+    assert!(again.resolve_links(&dir).is_empty());
+    assert!(again.evaluate(None).is_ok(), "the embedded copy still works without the file");
+
+    // removing a link reports the instances that are left dangling
+    let mut h = Graph::parse("size 64\nlink pat \"moved/none.mcg\"\nnode 1 subgraph graph=\"pat\"\noutput o 1\n").unwrap();
+    let _ = h.resolve_links(&dir);
+    assert!(h.break_link("pat").is_err(), "an unresolved link cannot be embedded");
+    assert_eq!(h.remove_link("pat"), 1);
+    assert!(h.links.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -349,15 +349,23 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let (lum_rand, edge_w, hard) = (f("luminance_random", 0.0).clamp(0.0, 1.0), f("edge_width", 0.25).clamp(0.01, 1.0), f("hardness", 2.0).clamp(0.1, 16.0));
             let (src, pseed) = (f("color_source", 0.0) as u32, f("pseudorandom_seed", 0.0) as u32);
             let img = if src == 2 { opt("color") } else { None };
+            let extra = f("_out", 0.0).round() as i32;
+            let py = if f("square_cells", 0.0) > 0.5 { ((p as f32 * hs as f32 / s as f32).round().max(1.0)) as i32 } else { p };
             fin(Tex::gray_fn(s, hs, move |u, v| {
                 let (u, v) = dz.warp(u, v);
-                let vr = noise::voronoi_ext(u, v, p, p, seed, jitter);
+                let vr = noise::voronoi_ext(u, v, p, py, seed, jitter);
                 // cell value of Cells 4: random, pseudorandom (re-rolled with its own seed) or the input image at the cell centre
                 let cell_val = || match (src, img) {
                     (2, Some(t)) => lum(t.sample(u + vr.dx / p as f32, v + vr.dy / p as f32)),
                     (1, _) => noise::rnd((((u + vr.dx / p as f32) * p as f32).floor()) as i32, (((v + vr.dy / p as f32) * p as f32).floor()) as i32, pseed.wrapping_add(4242)),
                     _ => vr.id1,
                 };
+                match extra {
+                    1 => return vr.id1,
+                    2 => return vr.f1,
+                    3 => return smooth(0.0, edge_w, vr.f2 - vr.f1),
+                    _ => {}
+                }
                 match var {
                     0 => (1.0 - vr.f1) * (1.0 - lum_rand * vr.id1),
                     1 => cell_val(),

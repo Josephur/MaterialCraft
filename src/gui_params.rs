@@ -922,6 +922,12 @@ impl App {
                         }
                     });
                 });
+                if !self.g.is_square() && matches!(kind.as_str(), "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "cells" | "tile_sampler" | "tile_generator") {
+                    let mut sq = get("square_cells", 0.0) > 0.5;
+                    if ui.checkbox(&mut sq, "Square cells").on_hover_text("Keep the cells of this pattern square in a non-square graph (the vertical cell count follows the aspect ratio)").changed() {
+                        nums.push(("square_cells".into(), sq as i32 as f32));
+                    }
+                }
                 let parent = self.g.size;
                 if mode == 2 {
                     let e = get("osize_abs", 9.0).round().clamp(4.0, 13.0) as i32;
@@ -948,13 +954,8 @@ impl App {
                 }
                 ui.small("A lower size computes faster: give heavy nodes (AO, blurs, noises) a smaller size.");
                 // Output Format: precision of this node's result (the default keeps full 32-bit float)
-                let fnames = ["32 bits float (default)", "8 bits integer", "16 bits integer", "16 bits float"];
-                let cur = match get("ofmt", 0.0).round() as i32 {
-                    1 => 1,
-                    2 => 2,
-                    3 => 3,
-                    _ => 0,
-                };
+                let fnames = ["Graph default", "8 bits integer", "16 bits integer", "16 bits float", "32 bits float"];
+                let cur = (get("ofmt", 0.0).round() as i32).clamp(0, 4) as usize;
                 ui.horizontal(|ui| {
                     row_label(ui, "Output format");
                     egui::ComboBox::from_id_salt(("ofmt", id)).selected_text(fnames[cur]).show_ui(ui, |ui| {

@@ -309,7 +309,8 @@ pub fn sharpen(t: &Tex, radius: f32, amount: f32) -> Tex {
     let mut o = t.clone();
     for (i, p) in o.px.iter_mut().enumerate() {
         for c in 0..3 {
-            p[c] = (t.px[i][c] + (t.px[i][c] - b.px[i][c]) * amount).clamp(0.0, 1.0);
+            // no clamp: values above 1 (HDR) and the small undershoot next to edges are kept
+            p[c] = t.px[i][c] + (t.px[i][c] - b.px[i][c]) * amount;
         }
     }
     o
@@ -337,7 +338,7 @@ pub fn adjust(t: &Tex, brightness: f32, contrast: f32) -> Tex {
     t.map(|p| {
         let mut o = p;
         for c in 0..3 {
-            o[c] = ((p[c] - 0.5) * contrast + 0.5 + brightness).clamp(0.0, 1.0);
+            o[c] = (p[c] - 0.5) * contrast + 0.5 + brightness;
         }
         o
     })
@@ -446,7 +447,7 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 pub fn hsl_adjust(t: &Tex, hue: f32, sat: f32, val: f32) -> Tex {
     t.map(|p| {
         let (h, s, v) = rgb_to_hsv(p[0], p[1], p[2]);
-        let (r, g, b) = hsv_to_rgb(h + hue, (s * sat).clamp(0.0, 1.0), (v * val).clamp(0.0, 1.0));
+        let (r, g, b) = hsv_to_rgb(h + hue, (s * sat).clamp(0.0, 1.0), (v * val).max(0.0));
         [r, g, b, p[3]]
     })
 }
@@ -1295,6 +1296,69 @@ fn region_id(p: [f32; 4]) -> Option<i32> {
         None
     } else {
         Some((p[0] * 100_000.0) as i32)
+    }
+}
+
+/// Per-region geometry of a flood-fill result (regions are 4-connected pixels with the same region id; they may
+/// wrap around the tile border). Returns the region index of every pixel (0 = none) and, per region, the centre in
+/// uv (wrapped into 0..1), the bounding-box size in uv, and the pixel count. Index 0 of the vector is the background.
+pub fn flood_regions(t: &Tex) -> (Vec<u32>, Vec<([f32; 2], [f32; 2], u32)>) {
+    let (w, h) = (t.w, t.h);
+    let n = w * h;
+    let ids: Vec<Option<i32>> = t.px.iter().map(|p| region_id(*p)).collect();
+    let mut label = vec![0u32; n];
+    let mut stats = vec![([0.0f32; 2], [0.0f32; 2], 0u32)];
+    let mut stack = Vec::new();
+    for s in 0..n {
+        if ids[s].is_none() || label[s] != 0 {
+            continue;
+        }
+        let k = stats.len() as u32;
+        label[s] = k;
+        stack.push((s, 0i32, 0i32));
+        let (mut x0, mut x1, mut y0, mut y1, mut count) = (0i32, 0i32, 0i32, 0i32, 0u32);
+        let (mut sx, mut sy) = (0i64, 0i64);
+        while let Some((i, rx, ry)) = stack.pop() {
+            count += 1;
+            x0 = x0.min(rx);
+            x1 = x1.max(rx);
+            y0 = y0.min(ry);
+            y1 = y1.max(ry);
+            sx += rx as i64;
+            sy += ry as i64;
+            let (x, y) = (i % w, i / w);
+            for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                let j = (y as i64 + dy).rem_euclid(h as i64) as usize * w + (x as i64 + dx).rem_euclid(w as i64) as usize;
+                if label[j] == 0 && ids[j] == ids[s] {
+                    label[j] = k;
+                    stack.push((j, rx + dx as i32, ry + dy as i32));
+                }
+            }
+        }
+        // centre of the bounding box relative to the first pixel, moved back into the tile
+        let _ = (sx, sy);
+        let cx = ((s % w) as f32 + 0.5 + (x0 + x1) as f32 * 0.5).rem_euclid(w as f32) / w as f32;
+        let cy = ((s / w) as f32 + 0.5 + (y0 + y1) as f32 * 0.5).rem_euclid(h as f32) / h as f32;
+        stats.push(([cx, cy], [(x1 - x0 + 1) as f32 / w as f32, (y1 - y0 + 1) as f32 / h as f32], count));
+    }
+    (label, stats)
+}
+
+/// Flood Fill to Index: every region gets its running number as a gray level (index / region count).
+pub fn flood_fill_to_index(t: &Tex) -> Tex {
+    let (label, stats) = flood_regions(t);
+    let div = (stats.len().max(2) - 1) as f32;
+    Tex { w: t.w, h: t.h, px: label.iter().map(|&l| if l == 0 { [0.0, 0.0, 0.0, 1.0] } else { let v = l as f32 / div; [v, v, v, 1.0] }).collect() }
+}
+
+/// Flood Fill to Position (`size == false`) or to Bounding Box Size (`size == true`): the region's centre or extent
+/// in uv as red/green.
+pub fn flood_fill_to_geometry(t: &Tex, size: bool) -> Tex {
+    let (label, stats) = flood_regions(t);
+    Tex {
+        w: t.w,
+        h: t.h,
+        px: label.iter().map(|&l| if l == 0 { [0.0, 0.0, 0.0, 1.0] } else { let s = &stats[l as usize]; let v = if size { s.1 } else { s.0 }; [v[0], v[1], 0.0, 1.0] }).collect(),
     }
 }
 

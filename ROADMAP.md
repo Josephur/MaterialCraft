@@ -6,7 +6,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
-## 1. Implemented (126 node types)
+## 1. Implemented (129 node types)
 
 ### Generators: noise
 - White Noise
@@ -129,8 +129,8 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Function graphs (variables, math, conditionals, function node family)
 - [ ] FX-Map (recursive, rule-based pattern generation)
 - [ ] Pin node, Input Value node
-- [x] Non-square graphs (width/height, `size W H`, tests); [ ] per-node Non-square expansion
-- [x] Live-linked packages, instances through shared links, format versioning, package tab bar; [ ] dependency manager panel, per-graph tabs
+- [x] Non-square graphs (width/height, `size W H`, tests), New Graph dialog with separate sizes, per-node `square_cells` (keeps cells square)
+- [x] Live-linked packages, instances through shared links, format versioning, package tab bar, per-graph tabs, link picker for multi-graph packages, dependency manager (relink, embed copy, remove, search folders)
 - [ ] Graph templates, parameter presets, randomized variations
 
 ### Nodes
@@ -181,9 +181,9 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 
 ## 2b. Feature gaps by area
 
-We have 126 node types. Missing, by area (described by function; `NODES.md` lists what exists):
+We have 129 node types. Missing, by area (described by function; `NODES.md` lists what exists):
 
-**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 15 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes, float export, non-square graphs, typed pins, per-node output format, live links. Still open: some node properties that need engine features (extra image inputs, function graphs, baked mesh inputs).
+**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 15 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes (including Voronoi, Cells, Splatter and the Flood Fill mappers), float export, graph-wide node precision, non-square graphs, typed pins and value pin types, per-node output format, live links, optional GPU compute. Still open: some node properties that need engine features (extra image inputs, function graphs, baked mesh inputs).
 
 ### Noises and generators
 - Fur-like, fibre-like, fluid-like, liquid, caustic, moisture, microscope-style, anisotropic and blue noise; more cloud and directional-noise variants; dirt gradients; more grunge recipes
@@ -244,7 +244,7 @@ We have 126 node types. Missing, by area (described by function; `NODES.md` list
 - Editor extras: dependency / resource manager, user library folders, navigator minimap, customizable shortcuts, language packs
 
 ### Engine
-- Evaluation is multi-threaded CPU, with an optional GPU compute path (`--features gpu`, Tools > GPU acceleration) for Perlin / fractal noise, large blurs and normal-from-height at 512 x 512 and up; results match the CPU within rounding (tests/gpu.rs). Each GPU node still reads its result back, so the next step is more kernels and keeping chains on the GPU. Not yet checked on real GPUs
+- Evaluation is multi-threaded CPU, with an optional GPU compute path (`--features gpu`, Tools > GPU acceleration) for Perlin / fractal noise, blur, directional blur, levels, blend and normal-from-height at 512 x 512 and up; results match the CPU within rounding (tests/gpu.rs). Each GPU node still reads its result back, so the next steps (Milestone 10) are more kernels and keeping chains resident on the GPU. Not yet checked on real GPUs
 
 ---
 

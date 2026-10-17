@@ -1,10 +1,10 @@
 # MaterialCraft node reference
 
-126 node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
+129 node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
 
-Common to most nodes: **Output Size** (relative to input, relative to parent or absolute, with a power-of-two modifier), **Output format** (32-bit float default, 8 / 16-bit integer, 16-bit float), `seed`, `contrast`, `invert` on generators, and the shared **disorder** group (`disorder`, `disorder_speed`, `anisotropy`, `anisotropy_angle`) and **tile offset** (`tile_x`, `tile_y`) on noises. Every node tiles seamlessly and works on non-square graphs.
+Common to most nodes: **Output Size** (relative to input, relative to parent or absolute, with a power-of-two modifier), **Output format** (graph default, 8 / 16-bit integer, 16-bit float or 32-bit float; the graph default is set under Node Precision and is 32-bit float unless changed), `seed`, `contrast`, `invert` on generators, and the shared **disorder** group (`disorder`, `disorder_speed`, `anisotropy`, `anisotropy_angle`) and **tile offset** (`tile_x`, `tile_y`) on noises. Every node tiles seamlessly and works on non-square graphs; the cell-based generators (`perlin`, `fbm`, `clouds`, `voronoi`, `cells`, `tile_sampler`, `tile_generator`) also take `square_cells=1` to keep their cells square when the graph is not.
 
-Nodes with several outputs: `color_match` (output, mask); `quantize_color` (output, id, palette); `weave_generator` (height, mask_1, mask_2, opacity); `rgba_split` (r, g, b, a); `alpha_split` (rgb, alpha). Link to a named output with `in=@id.output` in a `.mcg` file.
+Nodes with several outputs: `color_match` (output, mask); `quantize_color` (output, id, palette); `weave_generator` (height, mask_1, mask_2, opacity); `rgba_split` (r, g, b, a); `alpha_split` (rgb, alpha); `voronoi` (output, cell_id, edge, distance); `cells` (output, cell_id, distance, edge); `splatter` (output, id, center, size, luminance); `flood_fill_to_position` (position, x, y); `flood_fill_to_bbox_size` (size, width, height). Link to a named output with `in=@id.output` in a `.mcg` file, or with `output <name> <id>.<output>` for a graph output.
 
 ## Generators
 
@@ -75,6 +75,9 @@ Nodes with several outputs: `color_match` (output, mask); `quantize_color` (outp
 |---|---|---|
 | `switch` | a, b, c, d | pass one of up to four inputs: index |
 | `flood_fill` | in | label connected regions of a mask |
+| `flood_fill_to_index` | in | region number of each flood-fill region as a gray level |
+| `flood_fill_to_position` | in | centre of each flood-fill region (outputs: position, x, y) |
+| `flood_fill_to_bbox_size` | in | bounding-box size of each flood-fill region (outputs: size, width, height) |
 | `flood_fill_random` | in | random grayscale per flood-fill region |
 | `flood_fill_color` | in | random color per flood-fill region |
 | `flood_fill_gradient` | in | gradient across each flood-fill region |

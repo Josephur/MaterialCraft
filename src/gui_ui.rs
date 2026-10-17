@@ -626,6 +626,9 @@ impl App {
             Act::NewPackage => self.open_new_dialog(None),
             Act::NewGraphIn(i) => self.open_new_dialog(Some(i)),
             Act::SwitchPkg(i) => self.switch_pkg(i),
+            Act::OpenGraphTab(n) => self.open_graph_tab(&n),
+            Act::CloseGraphTab(n) => self.close_graph_tab(&n),
+            Act::ToggleDeps => self.show_deps = !self.show_deps,
             Act::SavePkg(i) => {
                 self.switch_pkg(i);
                 self.save();
@@ -900,6 +903,107 @@ impl App {
                 }
             });
             self.bake.open = open;
+        }
+        if self.show_deps {
+            let mut open = true;
+            let mut todo: Option<(&'static str, String)> = None;
+            let in_sub = !self.parents.is_empty();
+            egui::Window::new("Package dependencies").open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+                if in_sub {
+                    ui.label("Links belong to the package: leave the nested graph to manage them.");
+                    return;
+                }
+                if self.g.links.is_empty() {
+                    ui.label("This package has no live links. Use File > Link package as node... to add one.");
+                }
+                let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>, usize)> = self
+                    .g
+                    .links
+                    .iter()
+                    .map(|l| {
+                        let info = self.g.link_info.get(&l.name);
+                        let uses = self.g.nodes.values().filter(|n| n.kind == "subgraph" && n.strs.get("graph").map(|g| *g == l.name).unwrap_or(false)).count();
+                        (l.name.clone(), l.path.clone(), l.graph.clone(), info.and_then(|i| i.found.as_ref().map(|p| p.display().to_string())), info.and_then(|i| i.issue.clone()), uses)
+                    })
+                    .collect();
+                for (name, path, graph, found, issue, uses) in rows {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(&name);
+                            match (&found, &issue) {
+                                (Some(_), _) => ui.colored_label(ACCENT, "found"),
+                                (None, _) => ui.colored_label(Color32::from_rgb(255, 120, 110), "missing"),
+                            };
+                            ui.small(format!("{uses} instance(s)"));
+                        });
+                        ui.small(format!("{path}{}", graph.as_ref().map(|g| format!("  >  {g}")).unwrap_or_default()));
+                        if let Some(f) = &found {
+                            if *f != path {
+                                ui.small(format!("read from {f}"));
+                            }
+                        }
+                        if let Some(i) = &issue {
+                            ui.colored_label(Color32::from_rgb(255, 150, 140), i);
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Relink...").clicked() {
+                                todo = Some(("relink", name.clone()));
+                            }
+                            if ui.add_enabled(found.is_some(), egui::Button::new("Embed copy")).on_hover_text("Turn the link into a copy saved inside this package").clicked() {
+                                todo = Some(("embed", name.clone()));
+                            }
+                            if ui.button("Remove").clicked() {
+                                todo = Some(("remove", name.clone()));
+                            }
+                        });
+                    });
+                }
+                ui.separator();
+                ui.strong("Search folders");
+                ui.small("When a linked file is not where the link says, these folders (relative to the package, separated by ;) are searched for a file with the same name.");
+                let mut sp = self.g.meta.get("search_paths").cloned().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut sp).desired_width(f32::INFINITY)).changed() {
+                    if sp.trim().is_empty() {
+                        self.g.meta.remove("search_paths");
+                    } else {
+                        self.g.meta.insert("search_paths".into(), sp);
+                    }
+                    self.modified = true;
+                }
+                if ui.button("Refresh links").clicked() {
+                    todo = Some(("refresh", String::new()));
+                }
+            });
+            match todo {
+                Some(("relink", n)) => self.relink_dialog(&n),
+                Some(("embed", n)) => self.break_link_ui(&n),
+                Some(("remove", n)) => self.remove_link_ui(&n),
+                Some(("refresh", _)) => self.refresh_links(true),
+                _ => {}
+            }
+            self.show_deps = open;
+        }
+        if let Some((path, names)) = self.link_pick.clone() {
+            let mut open = true;
+            let mut chosen: Option<Option<String>> = None;
+            egui::Window::new("Link which graph?").open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+                ui.label(format!("{} contains several graphs.", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+                if ui.button("Main graph").clicked() {
+                    chosen = Some(None);
+                }
+                ui.separator();
+                for n in &names {
+                    if ui.button(n).clicked() {
+                        chosen = Some(Some(n.clone()));
+                    }
+                }
+            });
+            if let Some(c) = chosen {
+                self.link_pick = None;
+                self.link_file(path, c);
+            } else if !open {
+                self.link_pick = None;
+            }
         }
         if self.show_about {
             let mut open = true;

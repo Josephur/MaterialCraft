@@ -51,7 +51,7 @@ path-traced 3D rendering and custom mesh import in the 3D viewer.
 See ROADMAP.md for the complete list.
 
 
-## Nodes (126)
+## Nodes (129)
 Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
 BnW spots, crystal, directional noise, grunge, grunge maps, plasma, voronoi, voronoi fractal, stripes, weave, weave generator, bricks, checker, gradients, star, SDF shapes.
 Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /

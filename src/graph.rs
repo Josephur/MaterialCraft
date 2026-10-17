@@ -102,6 +102,9 @@ pub const SPECS: &[Spec] = &[
     s!("flood_fill", ["in"], [], "label connected regions of a mask"),
     s!("flood_fill_random", ["in"], [], "random grayscale per flood-fill region"),
     s!("flood_fill_color", ["in"], [], "random color per flood-fill region"),
+    s!("flood_fill_to_index", ["in"], [], "region number of each flood-fill region as a gray level"),
+    s!("flood_fill_to_position", ["in"], [], "centre of each flood-fill region (outputs: position, x, y)"),
+    s!("flood_fill_to_bbox_size", ["in"], [], "bounding-box size of each flood-fill region (outputs: size, width, height)"),
     s!("flood_fill_gradient", ["in"], [], "gradient across each flood-fill region"),
     s!("vector_warp", ["in", "vector"], [], "displace by a vector map: intensity directx"),
     s!("slope_blur", ["in", "slope"], [], "blur along a slope map: samples intensity mode"),
@@ -342,10 +345,20 @@ pub struct Exposed {
 /// unchanged); a file with a newer version is refused with a clear message instead of being half-understood.
 pub const FORMAT_VERSION: u32 = 2;
 
+/// What resolving a live link found (kept in memory only).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LinkInfo {
+    /// the file that was actually read (the stored path, or a match found in the search folders)
+    pub found: Option<std::path::PathBuf>,
+    pub issue: Option<String>,
+    /// subgraph names this link brought into the package
+    pub members: Vec<String>,
+}
+
 /// A live link to a graph in another package file (`link <name> "<relative path>" ["<graph>"]`). The linked graph is
 /// not stored in this file: it is read from disk each time the file is opened or the links are refreshed, and used
 /// through a subgraph node whose `graph` is `<name>`. Every node that uses the same name is an instance of it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub name: String,
     pub path: String,
@@ -360,11 +373,15 @@ pub struct Graph {
     pub links: Vec<Link>,
     /// subgraph names that came from resolving `links` (read-only copies, never written to the file)
     pub managed: BTreeSet<String>,
+    /// what the last `resolve_links` found for every link (not saved): the file used and the problem, if any
+    pub link_info: BTreeMap<String, LinkInfo>,
     pub size: usize,
     /// pixel height at the nominal size; 0 means square (same as `size`)
     pub height: usize,
     pub nodes: BTreeMap<u32, Node>,
     pub outputs: Vec<(String, u32)>,
+    /// `output name id.pin` in a file: which named output of the node feeds the graph output (legacy output lines)
+    pub output_pins: BTreeMap<String, String>,
     pub subgraphs: BTreeMap<String, Graph>,
     pub resources: BTreeMap<String, Vec<u8>>,
     pub exposed: Vec<Exposed>,
@@ -379,10 +396,12 @@ impl Default for Graph {
             format: FORMAT_VERSION,
             links: Vec::new(),
             managed: BTreeSet::new(),
+            link_info: BTreeMap::new(),
             size: 512,
             height: 0,
             nodes: BTreeMap::new(),
             outputs: Vec::new(),
+            output_pins: BTreeMap::new(),
             subgraphs: BTreeMap::new(),
             resources: BTreeMap::new(),
             exposed: Vec::new(),
@@ -582,8 +601,15 @@ impl Graph {
                     if t.len() != 3 {
                         return Err(Error::Parse(ln, "usage: output <name> <node-id>".into()));
                     }
-                    let id = t[2].parse::<u32>().map_err(|_| Error::Parse(ln, "bad node id".into()))?;
+                    let (idtxt, pin) = match t[2].split_once('.') {
+                        Some((a, b)) => (a, Some(b.to_string())),
+                        None => (t[2].as_str(), None),
+                    };
+                    let id = idtxt.parse::<u32>().map_err(|_| Error::Parse(ln, "bad node id".into()))?;
                     g.outputs.push((t[1].clone(), id));
+                    if let Some(pin) = pin {
+                        g.output_pins.insert(t[1].clone(), pin);
+                    }
                 }
                 "node" => {
                     if t.len() < 3 {
@@ -622,6 +648,10 @@ impl Graph {
                 other => return Err(Error::Parse(ln, format!("unknown directive '{other}'"))),
             }
         }
+        // `output name id.pin` needs a real Output node to carry the pin
+        if !g.output_pins.is_empty() {
+            g.migrate_outputs();
+        }
         Ok(g)
     }
 
@@ -652,15 +682,25 @@ impl Graph {
     /// Convert legacy `output` assignments into real Output nodes.
     pub fn migrate_outputs(&mut self) {
         let legacy = std::mem::take(&mut self.outputs);
+        let pins = std::mem::take(&mut self.output_pins);
         let mut next = self.nodes.keys().max().copied().unwrap_or(0) + 1;
         for (name, id) in legacy {
             let pos = self.nodes.get(&id).map(|n| [n.pos[0] + 150.0, n.pos[1]]).unwrap_or([0.0, 0.0]);
             let mut node = Node { kind: "output".into(), pos, ..Default::default() };
             node.strs.insert("usage".into(), name.clone());
             node.ins.insert("in".into(), id);
+            if let Some(pin) = pins.get(&name) {
+                node.in_out.insert("in".into(), pin.clone());
+            }
             self.nodes.insert(next, node);
             next += 1;
         }
+    }
+
+    /// Precision every node of this graph is quantised to unless it sets its own Output Format:
+    /// 0 = 32-bit float (default, nothing is rounded), 1 = 8 bit, 2 = 16 bit, 3 = 16-bit float.
+    pub fn default_format(&self) -> u32 {
+        self.meta.get("ofmt").and_then(|s| s.parse::<u32>().ok()).filter(|v| *v <= 3).unwrap_or(0)
     }
 
     /// true when width and height are the same
@@ -937,6 +977,7 @@ impl Graph {
     }
 
     fn resolve_links_depth(&mut self, base: &std::path::Path, depth: usize) -> Vec<String> {
+        self.link_info.clear();
         for m in std::mem::take(&mut self.managed) {
             self.subgraphs.remove(&m);
         }
@@ -949,23 +990,53 @@ impl Graph {
             return issues;
         }
         for l in self.links.clone() {
-            let path = base.join(&l.path.replace('\\', "/"));
+            let start = issues.len();
+            match self.resolve_one(&l, base, depth, &mut issues) {
+                Some((path, members)) => {
+                    self.link_info.insert(l.name.clone(), LinkInfo { found: Some(path), issue: None, members });
+                }
+                None => {
+                    let msg = issues.get(start).cloned();
+                    self.link_info.insert(l.name.clone(), LinkInfo { found: None, issue: msg, members: Vec::new() });
+                }
+            }
+        }
+        issues
+    }
+
+    /// Folders (relative to the package) that are searched by file name when a linked file is not where the link says.
+    pub fn search_paths(&self) -> Vec<String> {
+        self.meta.get("search_paths").map(|s| s.split(';').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()).unwrap_or_default()
+    }
+
+    fn resolve_one(&mut self, l: &Link, base: &std::path::Path, depth: usize, issues: &mut Vec<String>) -> Option<(std::path::PathBuf, Vec<String>)> {
+            let stored = base.join(&l.path.replace('\\', "/"));
+            // a moved file is looked for by name in the package's search folders
+            let path = if stored.is_file() {
+                stored
+            } else {
+                self.search_paths()
+                    .iter()
+                    .map(|d| base.join(d.replace('\\', "/")).join(stored.file_name().unwrap_or_default()))
+                    .find(|c| c.is_file())
+                    .unwrap_or(stored)
+            };
             if self.subgraphs.contains_key(&l.name) {
                 issues.push(format!("link '{}': a graph with that name is already embedded", l.name));
-                continue;
+                return None;
             }
             let text = match std::fs::read_to_string(&path) {
                 Ok(t) => t,
                 Err(e) => {
                     issues.push(format!("link '{}': cannot read {} ({e})", l.name, path.display()));
-                    continue;
+                    return None;
                 }
             };
             let mut other = match Graph::parse_unchecked(&text) {
                 Ok(g) => g,
                 Err(e) => {
                     issues.push(format!("link '{}': {} is not a valid package ({e})", l.name, path.display()));
-                    continue;
+                    return None;
                 }
             };
             other.migrate_outputs();
@@ -981,25 +1052,68 @@ impl Graph {
                     }
                     None => {
                         issues.push(format!("link '{}': {} has no graph '{gn}'", l.name, path.display()));
-                        continue;
+                        return None;
                     }
                 },
                 None => other,
             };
             let before: BTreeSet<String> = self.subgraphs.keys().cloned().collect();
+            let mut members = Vec::new();
             if let Err(e) = self.import_graph(main, &l.name) {
                 issues.push(format!("link '{}': {e}", l.name));
-                continue;
+                return None;
             }
             for (k, sg) in self.subgraphs.iter_mut() {
                 if !before.contains(k) {
                     self.managed.insert(k.clone());
+                    members.push(k.clone());
                     // keeps linked copies out of the Explorer's graph list
                     sg.meta.insert("embedded".into(), "1".into());
                 }
             }
+            Some((path, members))
+    }
+
+    /// Turn a live link into an ordinary embedded copy: the linked graphs become part of this package and are saved
+    /// with it. Instances keep working; later changes to the linked file no longer reach them.
+    pub fn break_link(&mut self, name: &str) -> Result<usize, String> {
+        let Some(i) = self.links.iter().position(|l| l.name == name) else { return Err(format!("no link '{name}'")) };
+        let info = self.link_info.remove(name).unwrap_or_default();
+        if info.found.is_none() {
+            return Err(format!("link '{name}' is not resolved (nothing to embed): {}", info.issue.unwrap_or_default()));
         }
-        issues
+        self.links.remove(i);
+        for m in &info.members {
+            self.managed.remove(m);
+            if let Some(sg) = self.subgraphs.get_mut(m) {
+                sg.meta.remove("embedded");
+            }
+        }
+        Ok(info.members.len())
+    }
+
+    /// Remove a link and the graphs it brought in. Returns how many nodes still refer to the removed name.
+    pub fn remove_link(&mut self, name: &str) -> usize {
+        self.links.retain(|l| l.name != name);
+        if let Some(info) = self.link_info.remove(name) {
+            for m in info.members {
+                self.managed.remove(&m);
+                self.subgraphs.remove(&m);
+            }
+        }
+        self.nodes.values().filter(|n| n.kind == "subgraph" && n.strs.get("graph").map(|g| g == name).unwrap_or(false)).count()
+    }
+
+    /// Point a link at another file (and optionally another graph in it), keeping its name so instances follow.
+    pub fn relink(&mut self, name: &str, path: &str, graph: Option<String>) -> bool {
+        match self.links.iter_mut().find(|l| l.name == name) {
+            Some(l) => {
+                l.path = path.replace('\\', "/");
+                l.graph = graph;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Read a package file, resolve its live links and validate it. The strings are link problems (not fatal).
@@ -1409,6 +1523,7 @@ impl Fnv {
 fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
     let mut env = Fnv::new();
     env.u64(crate::gpu::active() as u64);
+    env.u64(g.default_format() as u64);
     for (k, sub) in ctx.lib {
         env.str(k);
         env.str(&sub.to_text());
@@ -1605,7 +1720,13 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
     }
     let mut t = if t.w != sz.0 || t.h != sz.1 { ops::resize_to(&t, sz.0, sz.1) } else { t };
     // an explicit per-node Output Format (8 / 16 bit integer, 16 bit float) quantises the result; 32 bit float is untouched
-    if let Some(fmt) = n.nums.get("ofmt").map(|v| v.round() as u32).filter(|v| (1..=3).contains(v)) {
+    // (a node's own value 4 forces 32-bit float even when the graph rounds everything else)
+    let fmt = match n.nums.get("ofmt").map(|v| v.round() as u32) {
+        Some(v @ 1..=3) => v,
+        Some(4) => 0,
+        _ => g.default_format(),
+    };
+    if fmt != 0 {
         ops::apply_format(&mut t, fmt);
     }
     let rc = Rc::new(t);
@@ -1679,6 +1800,11 @@ pub fn node_outputs(kind: &str) -> &'static [&'static str] {
         "weave_generator" => &["height", "mask_1", "mask_2", "opacity"],
         "rgba_split" => &["r", "g", "b", "a"],
         "alpha_split" => &["rgb", "alpha"],
+        "voronoi" => &["output", "cell_id", "edge", "distance"],
+        "cells" => &["output", "cell_id", "distance", "edge"],
+        "splatter" => &["output", "id", "center", "size", "luminance"],
+        "flood_fill_to_position" => &["position", "x", "y"],
+        "flood_fill_to_bbox_size" => &["size", "width", "height"],
         _ => &[],
     }
 }
@@ -1690,6 +1816,102 @@ pub fn node_outputs(kind: &str) -> &'static [&'static str] {
 pub enum Pin {
     Gray,
     Color,
+    /// value pins (carried by function graphs and value nodes, not by textures)
+    Float,
+    Float2,
+    Float3,
+    Float4,
+    Int,
+    Int2,
+    Int3,
+    Int4,
+    Bool,
+    Text,
+}
+
+impl Pin {
+    /// Carries a texture (grayscale or colour).
+    pub fn is_image(self) -> bool {
+        matches!(self, Pin::Gray | Pin::Color)
+    }
+
+    /// Number of components of a numeric value pin (1 for scalars, 0 for images, bool and text).
+    pub fn lanes(self) -> usize {
+        match self {
+            Pin::Float | Pin::Int => 1,
+            Pin::Float2 | Pin::Int2 => 2,
+            Pin::Float3 | Pin::Int3 => 3,
+            Pin::Float4 | Pin::Int4 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Can an output of type `from` feed an input of this type without an explicit cast?
+    /// Images convert freely between gray and colour; numeric values widen from integer to float and from bool to
+    /// integer or float with the same number of components; nothing else converts implicitly (a float needs a cast
+    /// to become an integer, an image never turns into a value or back).
+    pub fn accepts(self, from: Pin) -> bool {
+        if self == from {
+            return true;
+        }
+        if self.is_image() || from.is_image() {
+            return self.is_image() && from.is_image();
+        }
+        match (self, from) {
+            (Pin::Float, Pin::Int) | (Pin::Float2, Pin::Int2) | (Pin::Float3, Pin::Int3) | (Pin::Float4, Pin::Int4) => true,
+            (Pin::Int, Pin::Bool) | (Pin::Float, Pin::Bool) => true,
+            _ => false,
+        }
+    }
+
+    /// Short name for tooltips and file messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Pin::Gray => "grayscale",
+            Pin::Color => "color",
+            Pin::Float => "float",
+            Pin::Float2 => "float2",
+            Pin::Float3 => "float3",
+            Pin::Float4 => "float4",
+            Pin::Int => "integer",
+            Pin::Int2 => "integer2",
+            Pin::Int3 => "integer3",
+            Pin::Int4 => "integer4",
+            Pin::Bool => "boolean",
+            Pin::Text => "string",
+        }
+    }
+}
+
+/// What a built-in node's input slot expects when it is not an image slot. Image slots (the default) take any
+/// texture. Value-typed slots belong to the function-graph and value nodes.
+pub fn input_value_type(kind: &str, slot: &str) -> Option<Pin> {
+    let _ = (kind, slot);
+    None
+}
+
+/// Connections whose types do not fit: `(node, slot, message)`. The editor refuses these when a link is dragged;
+/// a file that contains one is still loadable, the node simply reports the error when it is evaluated.
+pub fn connection_issues(g: &Graph) -> Vec<(u32, String, String)> {
+    let pins = pin_types(g);
+    let mut issues = Vec::new();
+    for (id, n) in &g.nodes {
+        for (slot, src) in &n.ins {
+            let Some(sn) = g.nodes.get(src) else { continue };
+            let out = n.in_out.get(slot).map(|s| s.as_str());
+            let from = if !node_outputs(&sn.kind).is_empty() && out.is_some() {
+                let upstream = sn.ins.values().any(|s| pins.get(s) == Some(&Pin::Color));
+                output_pin(&sn.kind, out, upstream, sn)
+            } else {
+                pins.get(src).copied().unwrap_or(Pin::Gray)
+            };
+            let want = input_value_type(&n.kind, slot).unwrap_or(Pin::Gray);
+            if !want.accepts(from) {
+                issues.push((*id, slot.clone(), format!("{} input '{slot}' needs {} but node {src} gives {}", n.kind, want.name(), from.name())));
+            }
+        }
+    }
+    issues
 }
 
 /// Output type of a built-in node. `any_color_in` says whether any connected input is a colour pin, `n` supplies
@@ -1717,6 +1939,16 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
             _ => Pin::Color,
         },
         "rgba_split" => Pin::Gray,
+        "splatter" => match out {
+            Some("center") | Some("size") => Pin::Color,
+            Some("output") | None => if any_color_in { Pin::Color } else { Pin::Gray },
+            _ => Pin::Gray,
+        },
+        "flood_fill_to_index" => Pin::Gray,
+        "flood_fill_to_position" | "flood_fill_to_bbox_size" => match out {
+            Some("x") | Some("y") | Some("width") | Some("height") => Pin::Gray,
+            _ => Pin::Color,
+        },
         "alpha_split" => match out {
             Some("alpha") => Pin::Gray,
             _ => Pin::Color,
@@ -1887,6 +2119,9 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
     let s = ctx.size;
     let hs = ctx.height;
     let rs = s as f32 / 512.0;
+    // `square_cells` keeps lattice cells square in a non-square graph: the vertical count follows the aspect ratio
+    let ar = if f("square_cells", 0.0) > 0.5 { hs as f32 / s as f32 } else { 1.0 };
+    let per_y = |k: &str, d: f32| ((per(k, d) as f32 * ar).round().max(1.0)) as i32;
     // one pixel in uv units: hard edges are softened by at least this much, so they are anti-aliased at any resolution
     let px1 = 1.2 / s as f32;
     let (dis, con, inv) = (f("disorder", 0.0), f("contrast", 1.0), f("invert", 0.0) > 0.5);
@@ -1941,7 +2176,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }))
         }
         "perlin" => {
-            let (px, py) = (per("scale_x", f("scale", 4.0)), per("scale_y", f("scale", 4.0)));
+            let (px, py) = (per("scale_x", f("scale", 4.0)), per_y("scale_y", f("scale", 4.0)));
             match if no_warp { crate::gpu::noise(s, hs, false, px, py, 1, 0.5, seed, 0) } else { None } {
                 Some(t) => fin(t),
                 None => fin(Tex::gray_fn(s, hs, move |u, v| {
@@ -1952,7 +2187,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "fbm" | "clouds" => {
             let cl = n.kind == "clouds";
-            let (px, py) = (per("scale_x", f("scale", if cl { 3.0 } else { 4.0 })), per("scale_y", f("scale", if cl { 3.0 } else { 4.0 })));
+            let (px, py) = (per("scale_x", f("scale", if cl { 3.0 } else { 4.0 })), per_y("scale_y", f("scale", if cl { 3.0 } else { 4.0 })));
             let (oct, gain, mode) = (f("octaves", if cl { 6.0 } else { 5.0 }).max(1.0) as u32, f("gain", if cl { 0.6 } else { 0.5 }), f("mode", 0.0).max(0.0) as u32);
             match if no_warp { crate::gpu::noise(s, hs, true, px, py, oct, gain, seed, mode) } else { None } {
                 Some(t) => fin(t),
@@ -2156,8 +2391,12 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         }
         "voronoi" | "voronoi_fractal" => {
             let fractal = n.kind == "voronoi_fractal";
-            let (p, j, style) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
-            let aspect = f("aspect", 1.0).clamp(0.25, 4.0);
+            let (p, j, mut style) = (per("scale", 6.0), f("jitter", 1.0).clamp(0.0, 1.0), f("mode", 0.0) as u32);
+            if !fractal {
+                // extra outputs show the same cells as an id map, an edge map and the plain distance
+                style = match f("_out", 0.0).round() as i32 { 1 => 1, 2 => 2, 3 => 0, _ => style };
+            }
+            let aspect = (f("aspect", 1.0) * ar).clamp(0.05, 8.0);
             let (ox, oy) = (f("offset_x", 0.0), f("offset_y", 0.0));
             let (dist, dscale) = (f("distortion", 0.0).clamp(0.0, 2.0), per("distortion_scale", 3.0));
             let metric = noise::Metric::from_index(f("distance_mode", 0.0) as u32, f("minkowski", 2.0));
@@ -2251,6 +2490,9 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let mut p = scatter::TileP::legacy(gen);
             p.nx = f("x_amount", p.nx);
             p.ny = f("y_amount", p.ny);
+            if ar != 1.0 {
+                p.ny = (p.nx * ar).round().max(1.0);
+            }
             p.size = f("size", p.size);
             p.aspect = f("aspect", 1.0);
             p.size_mode = f("size_mode", 0.0) as u32;
@@ -2321,7 +2563,13 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             p.opacity = f("opacity", 1.0);
             p.seed = seed;
             let pats = scatter_patterns(ins, f("pattern_type", 0.0) as u32, 99, f("pattern_distribution", 0.0) as u32);
-            scatter::splatter(s, s, &pats, &p)
+            match f("_out", 0.0).round() as i32 {
+                1 => scatter::splatter_data(s, hs, &pats, &p, scatter::SplatData::Id),
+                2 => scatter::splatter_data(s, hs, &pats, &p, scatter::SplatData::Center),
+                3 => scatter::splatter_data(s, hs, &pats, &p, scatter::SplatData::Size),
+                4 => scatter::splatter_data(s, hs, &pats, &p, scatter::SplatData::Luminance),
+                _ => scatter::splatter(s, s, &pats, &p),
+            }
         }
         "splatter_circular" => {
             let mut p = scatter::CircularP::legacy();
@@ -2371,6 +2619,15 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }
         }
         "flood_fill" => ops::flood_fill(tex("in")?, f("threshold", 0.05)),
+        "flood_fill_to_index" => ops::flood_fill_to_index(tex("in")?),
+        "flood_fill_to_position" | "flood_fill_to_bbox_size" => {
+            let g = ops::flood_fill_to_geometry(tex("in")?, n.kind == "flood_fill_to_bbox_size");
+            match f("_out", 0.0).round() as i32 {
+                1 => g.map(|p| [p[0], p[0], p[0], 1.0]),
+                2 => g.map(|p| [p[1], p[1], p[1], 1.0]),
+                _ => g,
+            }
+        }
         "flood_fill_random" => ops::flood_fill_random(tex("in")?, seed, f("min", 0.0), f("max", 1.0)),
         "flood_fill_color" => ops::flood_fill_color(tex("in")?, seed),
         "flood_fill_gradient" => ops::flood_fill_gradient(tex("in")?, f("angle", 0.0), f("variation", 0.0), seed),
@@ -2535,7 +2792,10 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (src, sg) = (tex("in")?, f("radius", 4.0) * rs);
             crate::gpu::blur(src, sg).unwrap_or_else(|| ops::blur(src, sg))
         }
-        "directional_blur" => ops::directional_blur(tex("in")?, f("angle", 0.0), f("length", 0.05)),
+        "directional_blur" => {
+            let (src, a, l) = (tex("in")?, f("angle", 0.0), f("length", 0.05));
+            crate::gpu::directional_blur(src, a, l).unwrap_or_else(|| ops::directional_blur(src, a, l))
+        }
         "sharpen" => ops::sharpen(tex("in")?, f("radius", 2.0) * rs, f("amount", 1.0)),
         "levels" => {
             let t = tex("in")?;
@@ -2545,7 +2805,8 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 lo = mn;
                 hi = mx.max(mn + 1e-4);
             }
-            ops::levels(t, lo, hi, f("gamma", 1.0), f("out_low", 0.0), f("out_high", 1.0))
+            let (gm, ol, oh) = (f("gamma", 1.0), f("out_low", 0.0), f("out_high", 1.0));
+            crate::gpu::levels(t, lo, hi, gm, ol, oh).unwrap_or_else(|| ops::levels(t, lo, hi, gm, ol, oh))
         }
         "adjust" => ops::adjust(tex("in")?, f("brightness", 0.0), f("contrast", 1.0)),
         "invert" => if f("invert", 1.0) > 0.5 { ops::invert(tex("in")?) } else { tex("in")?.clone() },
@@ -2587,15 +2848,13 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "mirror" => ops::mirror_ex(tex("in")?, f("axis", 0.0) as u32, f("offset_x", 0.5), f("offset_y", 0.5), f("invert_x", 0.0) > 0.5, f("invert_y", 0.0) > 0.5, f("corner", 0.0) as u32),
         "warp" => ops::warp_ex(tex("in")?, tex("warp")?, f("intensity", 0.05), f("filtering", 2.0).max(0.0) as u32),
         "directional_warp" => ops::directional_warp_ex(tex("in")?, tex("warp")?, f("angle", 0.0), f("intensity", 0.1), f("offset", 0.5), f("filtering", 2.0).max(0.0) as u32),
-        "blend" => ops::blend_ex(
-            tex("fg")?,
-            tex("bg")?,
-            ins.get("mask").map(|m| m.as_ref()),
-            f("mode", 0.0).max(0.0) as u32,
-            f("opacity", 1.0),
-            f("alpha_mode", 1.0).max(0.0) as u32,
-            [f("crop_x0", 0.0), f("crop_y0", 0.0), f("crop_x1", 1.0), f("crop_y1", 1.0)],
-        ),
+        "blend" => {
+            let (fg, bg, mask) = (tex("fg")?, tex("bg")?, ins.get("mask").map(|m| m.as_ref()));
+            let (mode, op, am) = (f("mode", 0.0).max(0.0) as u32, f("opacity", 1.0), f("alpha_mode", 1.0).max(0.0) as u32);
+            let crop = [f("crop_x0", 0.0), f("crop_y0", 0.0), f("crop_x1", 1.0), f("crop_y1", 1.0)];
+            let on_gpu = if crop == [0.0, 0.0, 1.0, 1.0] { crate::gpu::blend(fg, bg, mask, mode, op, am) } else { None };
+            on_gpu.unwrap_or_else(|| ops::blend_ex(fg, bg, mask, mode, op, am, crop))
+        }
         "normal" => {
             let (src, st, dx) = (tex("in")?, f("strength", 2.0), f("directx", 0.0) > 0.5);
             let n = crate::gpu::normal_from_height(src, st, dx).unwrap_or_else(|| ops::normal_from_height(src, st, dx));

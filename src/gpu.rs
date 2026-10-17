@@ -73,6 +73,34 @@ pub fn normal_from_height(t: &Tex, strength: f32, directx: bool) -> Option<Tex> 
     imp::global()?.normal(t, strength, directx)
 }
 
+/// Levels (input range, gamma, output range) on the GPU.
+pub fn levels(t: &Tex, in_lo: f32, in_hi: f32, gamma: f32, out_lo: f32, out_hi: f32) -> Option<Tex> {
+    if !usable(t.w, t.h) {
+        return None;
+    }
+    imp::global()?.levels(t, in_lo, in_hi, gamma, out_lo, out_hi)
+}
+
+/// Directional blur (24 taps along a line, wrap-around, bilinear).
+pub fn directional_blur(t: &Tex, angle: f32, length: f32) -> Option<Tex> {
+    if !usable(t.w, t.h) {
+        return None;
+    }
+    imp::global()?.directional_blur(t, angle, length)
+}
+
+/// Blend of `fg` over `bg` for the colour blend modes (not Dissolve), with the "ignore alpha" and "use source alpha"
+/// alpha modes and no cropping; every input must have the same size. `None` leaves the other cases to the CPU.
+pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32, alpha_mode: u32) -> Option<Tex> {
+    if !usable(bg.w, bg.h) || mode == 19 || alpha_mode > 3 {
+        return None;
+    }
+    if (fg.w, fg.h) != (bg.w, bg.h) || mask.map(|m| (m.w, m.h) != (bg.w, bg.h)).unwrap_or(false) {
+        return None;
+    }
+    imp::global()?.blend(fg, bg, mask, mode, opacity, alpha_mode)
+}
+
 #[cfg(not(feature = "gpu"))]
 mod imp {
     use crate::tex::Tex;
@@ -92,6 +120,15 @@ mod imp {
             None
         }
         pub fn normal(&self, _: &Tex, _: f32, _: bool) -> Option<Tex> {
+            None
+        }
+        pub fn levels(&self, _: &Tex, _: f32, _: f32, _: f32, _: f32, _: f32) -> Option<Tex> {
+            None
+        }
+        pub fn directional_blur(&self, _: &Tex, _: f32, _: f32) -> Option<Tex> {
+            None
+        }
+        pub fn blend(&self, _: &Tex, _: &Tex, _: Option<&Tex>, _: u32, _: f32, _: u32) -> Option<Tex> {
             None
         }
     }
@@ -346,6 +383,197 @@ mod imp {
             self.read(&out, w, h, enc)
         }
     }
+
+    impl Gpu {
+        /// Run `src` once per pixel over `inputs` (bindings 1..=n, storage read) and read the result back.
+        fn map_pixels(&self, name: &'static str, src: &str, uni: Vec<u8>, inputs: &[&Tex]) -> Option<Tex> {
+            let (w, h) = (inputs.first()?.w, inputs.first()?.h);
+            if !self.fits(w, h) || inputs.iter().any(|t| (t.w, t.h) != (w, h)) {
+                return None;
+            }
+            let pipe = self.pipeline(name, src);
+            let bytes = (w * h * 16) as u64;
+            let ubuf = self.uniform(&uni);
+            let bufs: Vec<wgpu::Buffer> = inputs
+                .iter()
+                .map(|t| {
+                    let b = self.buf(bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                    self.queue.write_buffer(&b, 0, px_bytes(&t.px));
+                    b
+                })
+                .collect();
+            let out = self.buf(bytes, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+            let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() }];
+            for (i, b) in bufs.iter().enumerate() {
+                entries.push(wgpu::BindGroupEntry { binding: 1 + i as u32, resource: b.as_entire_binding() });
+            }
+            entries.push(wgpu::BindGroupEntry { binding: 1 + bufs.len() as u32, resource: out.as_entire_binding() });
+            let mut enc = self.dev.create_command_encoder(&Default::default());
+            self.dispatch(&mut enc, &pipe, &entries, w, h);
+            self.read(&out, w, h, enc)
+        }
+
+        pub fn levels(&self, t: &Tex, in_lo: f32, in_hi: f32, gamma: f32, out_lo: f32, out_hi: f32) -> Option<Tex> {
+            let d = if in_hi >= in_lo { (in_hi - in_lo).max(1e-6) } else { (in_hi - in_lo).min(-1e-6) };
+            let g = 1.0 / gamma.max(1e-3);
+            let uni = Uni::default().u(t.w as u32).u(t.h as u32).f(in_lo).f(d).f(g).f(out_lo).f(out_hi).done();
+            self.map_pixels("levels", LEVELS_WGSL, uni, &[t])
+        }
+
+        pub fn directional_blur(&self, t: &Tex, angle: f32, length: f32) -> Option<Tex> {
+            let (s, c) = (angle * std::f32::consts::TAU).sin_cos();
+            let uni = Uni::default().u(t.w as u32).u(t.h as u32).f(c).f(s).f(length).done();
+            self.map_pixels("dirblur", DIRBLUR_WGSL, uni, &[t])
+        }
+
+        pub fn blend(&self, fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32, alpha_mode: u32) -> Option<Tex> {
+            let uni = Uni::default().u(bg.w as u32).u(bg.h as u32).u(mode).u(alpha_mode).f(opacity).u(mask.is_some() as u32).done();
+            self.map_pixels("blend", BLEND_WGSL, uni, &[fg, bg, mask.unwrap_or(fg)])
+        }
+    }
+
+    const LEVELS_WGSL: &str = r#"
+struct U { w: u32, h: u32, in_lo: f32, d: f32, g: f32, out_lo: f32, out_hi: f32, pad: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
+fn lv(x: f32) -> f32 {
+    let v = clamp((x - u.in_lo) / u.d, 0.0, 1.0);
+    var k = v;
+    if (abs(u.g - 1.0) >= 1e-6) { k = pow(v, u.g); }
+    return u.out_lo + (u.out_hi - u.out_lo) * k;
+}
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= u.w || id.y >= u.h) { return; }
+    let p = src[id.y * u.w + id.x];
+    dst[id.y * u.w + id.x] = vec4<f32>(lv(p.x), lv(p.y), lv(p.z), p.w);
+}
+"#;
+
+    const DIRBLUR_WGSL: &str = r#"
+struct U { w: u32, h: u32, c: f32, s: f32, length: f32, a: f32, b: f32, e: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
+fn wrapi(a: i32, m: i32) -> i32 {
+    // floor division through floats: signed remainders are not reliable on every driver
+    let q = i32(floor(f32(a) / f32(m)));
+    return a - q * m;
+}
+fn texel(x: i32, y: i32) -> vec4<f32> {
+    return src[u32(wrapi(y, i32(u.h))) * u.w + u32(wrapi(x, i32(u.w)))];
+}
+fn samp(uu: f32, vv: f32) -> vec4<f32> {
+    let x = uu * f32(u.w) - 0.5;
+    let y = vv * f32(u.h) - 0.5;
+    let x0 = floor(x);
+    let y0 = floor(y);
+    let fx = x - x0;
+    let fy = y - y0;
+    let xa = i32(x0);
+    let ya = i32(y0);
+    let a = texel(xa, ya);
+    let b = texel(xa + 1, ya);
+    let c = texel(xa, ya + 1);
+    let d = texel(xa + 1, ya + 1);
+    let top = a + (b - a) * fx;
+    let bot = c + (d - c) * fx;
+    return top + (bot - top) * fy;
+}
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= u.w || id.y >= u.h) { return; }
+    let uu = (f32(id.x) + 0.5) / f32(u.w);
+    let vv = (f32(id.y) + 0.5) / f32(u.h);
+    var acc = vec4<f32>(0.0);
+    for (var i = 0; i < 24; i = i + 1) {
+        let f = (f32(i) / 23.0 - 0.5) * u.length;
+        acc = acc + samp(uu + u.c * f, vv + u.s * f) / 24.0;
+    }
+    dst[id.y * u.w + id.x] = acc;
+}
+"#;
+
+    const BLEND_WGSL: &str = r#"
+struct U { w: u32, h: u32, mode: u32, alpha_mode: u32, opacity: f32, has_mask: u32, a: u32, b: u32 };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> fg: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> bg: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> msk: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> dst: array<vec4<f32>>;
+fn lum(c: vec4<f32>) -> f32 { return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z; }
+fn bm(mode: u32, f: f32, b: f32) -> f32 {
+    switch (mode) {
+        case 0u: { return f; }
+        case 1u: { return f + b; }
+        case 2u: { return b - f; }
+        case 3u: { return f * b; }
+        case 4u: { return 1.0 - (1.0 - f) * (1.0 - b); }
+        case 5u: {
+            if (b < 0.5) { return 2.0 * f * b; }
+            return 1.0 - 2.0 * (1.0 - f) * (1.0 - b);
+        }
+        case 6u: { return max(f, b); }
+        case 7u: { return min(f, b); }
+        case 8u: { return abs(f - b); }
+        case 9u: { return (1.0 - 2.0 * f) * b * b + 2.0 * f * b; }
+        case 10u: {
+            if (f >= 0.999) { return 1.0; }
+            return b / (1.0 - f);
+        }
+        case 11u: {
+            if (f <= 0.001) { return 0.0; }
+            return 1.0 - (1.0 - b) / f;
+        }
+        case 12u: { return f + b - 1.0; }
+        case 13u: {
+            if (f < 0.5) { return 2.0 * f * b; }
+            return 1.0 - 2.0 * (1.0 - f) * (1.0 - b);
+        }
+        case 14u: { return f + b - 2.0 * f * b; }
+        case 15u: {
+            if (f <= 0.001) { return b; }
+            return b / f;
+        }
+        case 16u: { return b + 2.0 * f - 1.0; }
+        case 20u: { return b + (f - 0.5) * 2.0; }
+        default: { return f; }
+    }
+}
+fn set_lum(c: vec4<f32>, l: f32) -> vec3<f32> {
+    let d = l - lum(c);
+    return clamp(vec3<f32>(c.x + d, c.y + d, c.z + d), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x >= u.w || id.y >= u.h) { return; }
+    let i = id.y * u.w + id.x;
+    let f = fg[i];
+    let b = bg[i];
+    var m = u.opacity;
+    if (u.has_mask != 0u) { m = m * lum(msk[i]); }
+    var out = b;
+    if (u.alpha_mode == 0u) {
+        out.w = b.w + (f.w - b.w) * m;
+        m = m * f.w;
+    } else if (u.alpha_mode >= 2u) {
+        out.w = f.w * m + b.w * (1.0 - f.w * m);
+        m = m * f.w;
+    }
+    if (u.mode == 17u || u.mode == 18u) {
+        var r: vec3<f32>;
+        if (u.mode == 17u) { r = set_lum(f, lum(b)); } else { r = set_lum(b, lum(f)); }
+        let o = clamp(b.xyz + (r - b.xyz) * m, vec3<f32>(0.0), vec3<f32>(1.0));
+        dst[i] = vec4<f32>(o, out.w);
+        return;
+    }
+    let cr = clamp(b.x + (clamp(bm(u.mode, f.x, b.x), 0.0, 1.0) - b.x) * m, 0.0, 1.0);
+    let cg = clamp(b.y + (clamp(bm(u.mode, f.y, b.y), 0.0, 1.0) - b.y) * m, 0.0, 1.0);
+    let cb = clamp(b.z + (clamp(bm(u.mode, f.z, b.z), 0.0, 1.0) - b.z) * m, 0.0, 1.0);
+    dst[i] = vec4<f32>(cr, cg, cb, out.w);
+}
+"#;
 
     const NOISE_WGSL: &str = r#"
 struct U { w: u32, h: u32, px: i32, py: i32, octaves: u32, seed: u32, mode: u32, fractal: u32, gain: f32, a: f32, b: f32, c: f32 };

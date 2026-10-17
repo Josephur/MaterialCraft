@@ -115,6 +115,9 @@ enum Act {
     NewPackage,
     NewGraphIn(usize),
     SwitchPkg(usize),
+    OpenGraphTab(String),
+    CloseGraphTab(String),
+    ToggleDeps,
     SavePkg(usize),
     ClosePkg(usize),
     /// Pick a package file and use one of its graphs as a live-linked node.
@@ -133,6 +136,8 @@ struct Pkg {
     name: String,
     g: Graph,
     modified: bool,
+    /// graph tabs that were open in this package (subgraph names)
+    tabs: Vec<String>,
 }
 
 fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
@@ -145,7 +150,7 @@ fn read_pkg(path: &std::path::Path) -> Result<Pkg, String> {
     if !g.meta.get("identifier").map(|s| !s.is_empty()).unwrap_or(false) {
         g.meta.insert("identifier".into(), path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "graph".into()));
     }
-    Ok(Pkg { path: Some(path.to_path_buf()), name: path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), g, modified: false })
+    Ok(Pkg { path: Some(path.to_path_buf()), name: path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), g, modified: false, tabs: Vec::new() })
 }
 
 struct EvalResult {
@@ -195,6 +200,11 @@ struct BakeUi {
 struct App {
     was_focused: bool,
     gpu_eval: bool,
+    /// graphs of the open package that have a tab (the main graph always has one)
+    graph_tabs: Vec<String>,
+    show_deps: bool,
+    /// smallest / largest channel value of the node shown in the 2D view (HDR range readout)
+    tex2d_range: Option<(f32, f32)>,
     g: Graph,
     parents: Vec<(Graph, String)>,
     undo: Vec<Graph>,
@@ -258,6 +268,7 @@ struct App {
     export: ExportUi,
     bake: BakeUi,
     show_about: bool,
+    link_pick: Option<(PathBuf, Vec<String>)>,
     screen: Screen,
     new_dlg: NewDlg,
     recent: Vec<PathBuf>,
@@ -303,6 +314,9 @@ impl App {
         App {
             was_focused: true,
             gpu_eval: true,
+            graph_tabs: Vec::new(),
+            show_deps: false,
+            tex2d_range: None,
             parents: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -357,8 +371,9 @@ impl App {
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new() },
             bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
             show_about: false,
+            link_pick: None,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
-            new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, depth16: false, dest: None },
+            new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, height: 0, depth16: false, dest: None },
             recent,
             home_filter: String::new(),
             home_page: 0,
@@ -411,7 +426,90 @@ impl App {
             return self.status("Links belong to the package: leave the nested graph first", false);
         }
         let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() else { return };
-        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "linked".into());
+        // a package with several graphs lets the user choose which one to link
+        let names: Vec<String> = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| Graph::parse_unchecked(&s).ok())
+            .map(|g| g.subgraphs.iter().filter(|(_, s)| !s.meta.contains_key("embedded")).map(|(k, _)| k.clone()).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            self.link_file(p, None);
+        } else {
+            self.link_pick = Some((p, names));
+        }
+    }
+
+    /// How a link to file `p` is stored: relative to this package when it has a file (so the pair can move together).
+    fn link_path_for(&self, p: &std::path::Path) -> String {
+        let base = self.link_base();
+        match p.strip_prefix(&base) {
+            Ok(r) if self.file.is_some() => r.to_string_lossy().replace('\\', "/"),
+            _ => p.to_string_lossy().replace('\\', "/"),
+        }
+    }
+
+    /// Show graph `name` ("" = the package's main graph) in the editor.
+    fn open_graph_tab(&mut self, name: &str) {
+        let current = self.parents.last().map(|(_, n)| n.clone()).unwrap_or_default();
+        if current == name {
+            return;
+        }
+        self.goto_root();
+        if !name.is_empty() {
+            self.enter_sub(name);
+        }
+    }
+
+    fn close_graph_tab(&mut self, name: &str) {
+        let current = self.parents.last().map(|(_, n)| n.clone()).unwrap_or_default();
+        self.graph_tabs.retain(|t| t != name);
+        if current == name {
+            self.goto_root();
+        }
+    }
+
+    /// Re-point link `name` at another file chosen by the user.
+    fn relink_dialog(&mut self, name: &str) {
+        let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft graph / package", &["mcg", "mca"]).pick_file() else { return };
+        let path = self.link_path_for(&p);
+        let graph = self.g.links.iter().find(|l| l.name == name).and_then(|l| l.graph.clone());
+        self.snap();
+        self.g.relink(name, &path, graph);
+        self.refresh_links(false);
+        self.dirty = true;
+        self.modified = true;
+        self.status(format!("Link '{name}' now points to {}", p.display()), true);
+    }
+
+    fn break_link_ui(&mut self, name: &str) {
+        self.snap();
+        match self.g.break_link(name) {
+            Ok(n) => {
+                self.dirty = true;
+                self.modified = true;
+                self.status(format!("'{name}' is now an embedded copy ({n} graph(s) saved with this package)"), true);
+            }
+            Err(e) => {
+                self.undo.pop();
+                self.status(e, false);
+            }
+        }
+    }
+
+    fn remove_link_ui(&mut self, name: &str) {
+        self.snap();
+        let left = self.g.remove_link(name);
+        self.dirty = true;
+        self.modified = true;
+        self.status(if left == 0 { format!("Link '{name}' removed") } else { format!("Link '{name}' removed - {left} node(s) still refer to it and will report an error") }, left == 0);
+    }
+
+    /// Add a live link to `graph` of the package at `p` (None = its main graph) and place an instance node.
+    fn link_file(&mut self, p: PathBuf, graph: Option<String>) {
+        let stem: String = match &graph {
+            Some(g) => g.clone(),
+            None => p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "linked".into()),
+        };
         let base_name: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
         let mut name = base_name.clone();
         let mut i = 2;
@@ -426,7 +524,7 @@ impl App {
             _ => p.to_string_lossy().replace('\\', "/"),
         };
         self.snap();
-        self.g.links.push(materialcraft::graph::Link { name: name.clone(), path, graph: None });
+        self.g.links.push(materialcraft::graph::Link { name: name.clone(), path, graph });
         let issues = self.g.resolve_links(&base);
         if self.g.links.last().map(|l| l.name != name).unwrap_or(true) || !self.g.is_linked(&name) {
             self.g.links.pop();
@@ -576,12 +674,13 @@ impl App {
 
     fn snapshot_active(&mut self) -> Pkg {
         self.goto_root();
-        Pkg { path: self.file.clone(), name: self.package_label(), g: self.g.clone(), modified: self.modified }
+        Pkg { path: self.file.clone(), name: self.package_label(), g: self.g.clone(), modified: self.modified, tabs: self.graph_tabs.clone() }
     }
 
     fn load_active(&mut self, p: Pkg) {
         self.parents.clear();
         self.g = p.g;
+        self.graph_tabs = p.tabs;
         self.clear_views();
         self.file = p.path;
         self.unsaved_name = p.name;
@@ -772,6 +871,22 @@ impl App {
         if src == dst || self.depends_on(src, dst) {
             self.status("Connection rejected: it would create a cycle.", false);
             return;
+        }
+        // a value pin never connects to an image pin (or the other way round)
+        {
+            let pins = materialcraft::graph::pin_types(&self.g);
+            let (sn, dn) = (self.g.nodes.get(&src), self.g.nodes.get(&dst));
+            if let (Some(sn), Some(dn)) = (sn, dn) {
+                let from = match &out {
+                    Some(o) if !materialcraft::graph::node_outputs(&sn.kind).is_empty() => materialcraft::graph::output_pin(&sn.kind, Some(o.as_str()), pins.get(&src) == Some(&materialcraft::graph::Pin::Color), sn),
+                    _ => pins.get(&src).copied().unwrap_or(materialcraft::graph::Pin::Gray),
+                };
+                let want = materialcraft::graph::input_value_type(&dn.kind, slot).unwrap_or(materialcraft::graph::Pin::Gray);
+                if !want.accepts(from) {
+                    self.status(format!("Connection rejected: {} input needs {}, this output is {}.", slot, want.name(), from.name()), false);
+                    return;
+                }
+            }
         }
         self.snap();
         if let Some(n) = self.g.nodes.get_mut(&dst) {
@@ -1027,6 +1142,9 @@ impl App {
         auto_layout_if_unplaced(&mut w);
         let parent = std::mem::replace(&mut self.g, w);
         self.parents.push((parent, name.to_string()));
+        if !self.graph_tabs.iter().any(|t| t == name) {
+            self.graph_tabs.push(name.to_string());
+        }
         self.clear_views();
         self.clear_history();
         self.fit_view();
@@ -1374,6 +1492,9 @@ impl App {
                 self.node_err = r.errors;
                 self.node_sizes = r.sizes;
                 self.pass_size = r.size;
+                self.tex2d_range = self.active.and_then(|a| r.kept.get(&a)).map(|t| {
+                    t.px.iter().fold((f32::MAX, f32::MIN), |m, p| (m.0.min(p[0]).min(p[1]).min(p[2]), m.1.max(p[0]).max(p[1]).max(p[2])))
+                });
                 if let Some(a) = self.active {
                     if let (Some(img), true) = (r.img2d, r.img_for == Some(a)) {
                         self.tex2d_size = (img.size[0], img.size[1]);
