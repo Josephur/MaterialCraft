@@ -6,9 +6,9 @@ our discord is here: if you want to submit features or got any cool ideas! https
 
 # MaterialCraft
 
-<img width="1505" height="954" alt="image" src="https://github.com/user-attachments/assets/117b9925-5d4a-47d1-b205-1bb34e784eb9" />
+<img width="1495" height="949" alt="image" src="https://github.com/user-attachments/assets/dc27324c-f63c-4569-beb7-be4766bd839c" />
 
-<img width="2555" height="1388" alt="image" src="https://github.com/user-attachments/assets/ea5b0174-9821-4b28-a70b-9bef1c1dbbbf" />
+<img width="2556" height="1388" alt="image" src="https://github.com/user-attachments/assets/75dba5c4-50ac-4f79-8395-8d3c20697d63" />
 
 Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
 
@@ -45,17 +45,23 @@ Dual licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your 
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and [INDEPENDENT_IMPLEMENTATION.md](INDEPENDENT_IMPLEMENTATION.md)
 (how we keep the code original). MaterialCraft is not affiliated with any other software vendor.
 
+## Graph language
+Besides texture graphs, a package can hold **function graphs** (`meta kind "function"`, about 85 value nodes: math, vectors,
+logic, variables, random, image sampling, calls) and **pattern programs** (`meta kind "fxmap"`: quadrant, iterate, switch and
+marker nodes, run by the Pattern Program Map node). Any parameter can be driven by a function, and the pixel processor and
+value processor run function graphs. Also: curve node, SVG and text nodes (own rasteriser and TrueType reader).
+
 ## Not implemented (honest list)
-FX-Maps, splines/paths, function graphs, SVG/font/AxF import, OCIO/ACE colour management, scripting API,
+Splines/paths, AxF import, OCIO/ACE colour management, scripting API, SVG gradients, OpenType (CFF) fonts,
 path-traced 3D rendering and custom mesh import in the 3D viewer.
 See ROADMAP.md for the complete list.
 
 
-## Nodes (129)
+## Nodes (136 texture nodes, 84 function nodes, 5 pattern-program nodes)
 Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
 BnW spots, crystal, directional noise, grunge, grunge maps, plasma, voronoi, voronoi fractal, stripes, weave, weave generator, bricks, checker, gradients, star, SDF shapes.
 Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /
 slope warps, blur and blur HQ, levels, histogram scan / range, bevel, distance, gradient map, uniform color, HSL, color match,
 make-it-tile photo / patch and more. Material: normal, ambient occlusion, curvature (smooth), height blend, edge wear, dirt, dust.
-Structure: output (drives the 3D view), input color / grayscale (subgraphs), subgraph instances, bitmap, comment, frame, dot.
+Structure: output (drives the 3D view), input color / grayscale (subgraphs), subgraph instances, bitmap, SVG, text, curve, pattern program map, pixel / value processor, input value, comment, frame, dot.
 

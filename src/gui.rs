@@ -1192,11 +1192,23 @@ impl App {
     fn entries(&self) -> Vec<Entry> {
         let mk = |label: &str, kind: &str, cat: &'static str, doc: &str, nums: Vec<(&'static str, f32)>| Entry { label: label.to_string(), kind: kind.to_string(), sub: None, cat, doc: doc.to_string(), nums };
         let in_sub = !self.parents.is_empty();
-        let mut v: Vec<Entry> = SPECS
+        // function graphs and pattern programs have their own node families
+        let specs: &[materialcraft::graph::Spec] = match self.g.graph_kind() {
+            "function" => materialcraft::func::FUNC_SPECS,
+            "fxmap" => materialcraft::fxmap::FXM_SPECS,
+            _ => SPECS,
+        };
+        let texture = self.g.graph_kind() == "texture";
+        let mut v: Vec<Entry> = specs
             .iter()
             .filter(|s| !matches!(s.kind, "input" | "subgraph" | "output" | "dot"))
             .map(|s| mk(&label(s.kind), s.kind, category(s.kind), s.doc, vec![]))
             .collect();
+        if !texture {
+            v.push(mk("Comment", "comment", "Utility", "small note placed at the cursor", vec![]));
+            v.push(mk("Frame", "frame", "Utility", "frame around the selected nodes", vec![]));
+            return v;
+        }
         v.push(mk("Output", "output", "Utility", "graph output: drives the 3D view and exports a texture", vec![]));
         if in_sub {
             v.push(mk("Input Color", "input", "Utility", "color input of the subgraph", vec![("gray", 0.0)]));
@@ -1210,6 +1222,10 @@ impl App {
             subs.extend(p.subgraphs.keys().cloned());
         }
         for name in subs {
+            let is_texture = self.g.subgraphs.get(&name).map(|g| g.graph_kind() == "texture").unwrap_or(true);
+            if !is_texture {
+                continue;
+            }
             v.push(Entry { label: format!("subgraph: {name}"), kind: "subgraph".into(), sub: Some(name.clone()), cat: "Subgraphs", doc: format!("instance of subgraph '{name}'"), nums: vec![] });
         }
         v
@@ -1364,14 +1380,27 @@ impl App {
         }
     }
 
+    /// Node whose result the 2D view shows: the selected node, or for function graphs and pattern programs the
+    /// helper that runs the whole graph.
+    fn view_node(&self) -> Option<u32> {
+        if self.g.graph_kind() != "texture" {
+            Some(materialcraft::graph::PREVIEW_ID)
+        } else {
+            self.active
+        }
+    }
+
     fn spawn_eval(&mut self, size: usize) {
-        let g = self.g.clone();
+        let g = match self.g.preview_host() {
+            Some((h, _)) => h,
+            None => self.g.clone(),
+        };
         let full = self.preview_full();
         let size = size.clamp(16, full.max(16));
         self.job_size = size;
         self.refine_size = None;
         let mut keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
-        let active = self.active;
+        let active = self.view_node();
         if let Some(a) = active {
             keep.push(a);
         }
@@ -1446,7 +1475,7 @@ impl App {
                 latest = Some(p);
             }
             if let Some(p) = latest {
-                if p.gen == self.gen && self.active == Some(p.img_for) {
+                if p.gen == self.gen && self.view_node() == Some(p.img_for) {
                     let opts = egui::TextureOptions {
                         magnification: egui::TextureFilter::Nearest,
                         minification: egui::TextureFilter::Linear,
@@ -1489,13 +1518,18 @@ impl App {
                         }
                     }
                 }
+                if self.g.graph_kind() != "texture" {
+                    if let Some(e) = r.errors.get(&materialcraft::graph::PREVIEW_ID) {
+                        self.status(format!("{}: {e}", if self.g.graph_kind() == "function" { "function" } else { "pattern program" }), false);
+                    }
+                }
                 self.node_err = r.errors;
                 self.node_sizes = r.sizes;
                 self.pass_size = r.size;
-                self.tex2d_range = self.active.and_then(|a| r.kept.get(&a)).map(|t| {
+                self.tex2d_range = self.view_node().and_then(|a| r.kept.get(&a)).map(|t| {
                     t.px.iter().fold((f32::MAX, f32::MIN), |m, p| (m.0.min(p[0]).min(p[1]).min(p[2]), m.1.max(p[0]).max(p[1]).max(p[2])))
                 });
-                if let Some(a) = self.active {
+                if let Some(a) = self.view_node() {
                     if let (Some(img), true) = (r.img2d, r.img_for == Some(a)) {
                         self.tex2d_size = (img.size[0], img.size[1]);
                         self.tex2d = Some(ctx.load_texture("view2d", img, opts));

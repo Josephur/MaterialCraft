@@ -417,7 +417,7 @@ fn displacement_renders_every_shape_and_camera_without_panics() {
 fn every_node_output_is_sane_at_several_sizes() {
     use materialcraft::graph::{demo_graph_for, SPECS};
     // nodes whose demo output may legitimately be a flat colour
-    let flat_ok = ["color", "invert_flat", "clamp", "histogram_range", "dust", "curvature_smooth", "curvature", "edge_detect", "height_blend", "edge_wear", "dirt", "ao", "slope_blur", "vector_warp", "distance", "flood_fill_gradient"];
+    let flat_ok = ["color", "input_value", "value_processor", "invert_flat", "clamp", "histogram_range", "dust", "curvature_smooth", "curvature", "edge_detect", "height_blend", "edge_wear", "dirt", "ao", "slope_blur", "vector_warp", "distance", "flood_fill_gradient"];
     let mut problems = Vec::new();
     for sp in SPECS {
         let Some(text) = demo_graph_for(sp.kind) else { continue };
@@ -1625,4 +1625,28 @@ fn m0_dependency_management() {
     assert_eq!(h.remove_link("pat"), 1);
     assert!(h.links.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn m1_curve_node() {
+    use materialcraft::curve::Curve;
+    let c = Curve::parse("0:0,0.5:0.8,1:1").unwrap();
+    assert!((c.eval(0.5) - 0.8).abs() < 1e-5);
+    assert!(c.eval(0.25) > 0.25, "curve bends up");
+    let lut = c.lut();
+    assert!(lut.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone points give a monotone curve");
+    assert!(Curve::parse("0:0,abc").is_err());
+    assert!((Curve::identity().eval(0.3) - 0.3).abs() < 1e-5);
+    let g = G2::parse("size 16\nnode 1 gradient\nnode 2 curve in=@1 points=\"0:1,1:0\"\nnode 3 invert in=@1\noutput a 2\noutput b 3\n").unwrap();
+    let o = g.evaluate(Some(16)).unwrap();
+    for (x, y) in o["a"].px.iter().zip(&o["b"].px) {
+        assert!((x[0] - y[0]).abs() < 2e-3, "reversed curve equals invert");
+    }
+}
+
+#[test]
+fn m1_channel_shuffle_and_bitmap_options() {
+    let g = G2::parse("size 8\nnode 1 color r=0.2 g=0.4 b=0.6\nnode 2 channel_shuffle in=@1 src_r=2 src_g=8 src_b=9 inv_a=1\noutput o 2\n").unwrap();
+    let p = g.evaluate(Some(8)).unwrap()["o"].px[0];
+    assert!((p[0] - 0.6).abs() < 1e-5 && p[1] == 0.0 && p[2] == 1.0 && p[3] == 0.0, "{p:?}");
 }

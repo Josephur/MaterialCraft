@@ -74,12 +74,19 @@ pub const SPECS: &[Spec] = &[
     s!("polygon", [], [], "sides radius softness rotation"),
     s!("checker", [], [], "tiles"),
     s!("bricks", [], [], "rows cols mortar bevel offset lum_var seed"),
-    s!("pixel_processor", [], ["in"], "per-pixel expr / expr_g / expr_b / expr_a (string params)"),
+    s!("fx_map", [], ["in", "in2", "in3", "in4"], "run a pattern program: program=\"name\" depth seed blend (0 max 1 add 2 over 3 min 4 multiply) color bg bg_r bg_g bg_b"),
+    s!("curve", ["in"], [], "tone curves: points (master), points_r points_g points_b points_a as \"x:y,x:y\" lists"),
+    s!("svg", [], [], "vector image: file=\"art.svg\" fit (0 contain 1 stretch 2 cover) scale x y"),
+    s!("text", [], [], "text: text=\"...\" font=\"face.ttf\" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value"),
+    s!("channel_shuffle", ["in"], ["in2"], "rebuild channels: src_r src_g src_b src_a (0-3 channels of in, 4-7 channels of in2, 8 zero, 9 one), inv_r inv_g inv_b inv_a"),
+    s!("input_value", [], [], "graph parameter read by functions: name, type (0 float, 1 int, 2 bool, 3 float2, 4 float3, 5 float4, 6 int2, 7 int3, 8 int4, 9 string), v / x y z w, min max, label"),
+    s!("pixel_processor", [], ["in", "in2", "in3", "in4"], "per-pixel expr / expr_g / expr_b / expr_a (string params), or fn=\"function\" to run a function graph per pixel"),
+    s!("value_processor", [], ["in", "in2", "in3", "in4"], "run fn=\"function\" once; the result (float, float3 or float4) fills the image. The function can read image statistics"),
     s!("sdf_shape", [], [], "2D signed distance shape: shape(0 circle,1 box,2 polygon,3 ring) size aspect sides rotation round x y range"),
     s!("sdf_op", ["a", "b"], [], "combine SDFs: op(0 union,1 subtract,2 intersect) smooth range"),
     s!("sdf_mask", ["in"], [], "SDF -> mask: offset softness"),
     s!("sdf_form", [], [], "procedural 3D SDF form as height: shape(0 sphere,1 box,2 torus,3 cylinder) size repeat round scatter seed height"),
-    s!("bitmap", [], [], "imported PNG bitmap: file=\"path.png\""),
+    s!("bitmap", [], [], "flip_x flip_y gray; imported PNG bitmap: file=\"path.png\""),
     s!("input", [], [], "subgraph input: idx"),
     s!("subgraph", [], ["in0", "in1", "in2", "in3"], "instance of a reusable subgraph: graph=\"name\""),
     s!("shape", [], [], "procedural shape: square, disc, paraboloid, gaussian, diamond, pyramid, half sphere, cone"),
@@ -193,16 +200,18 @@ pub const SPECS: &[Spec] = &[
 ];
 
 pub fn spec(kind: &str) -> Option<&'static Spec> {
-    SPECS.iter().find(|s| s.kind == kind)
+    SPECS.iter().chain(crate::func::FUNC_SPECS.iter()).chain(crate::fxmap::FXM_SPECS.iter()).find(|s| s.kind == kind)
 }
 
 pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
-        "bitmap" | "input" | "subgraph" | "output" | "dot" => "Utility",
+        "bitmap" | "input" | "input_value" | "subgraph" | "output" | "dot" => "Utility",
+        k if k.starts_with("f_") => "Function",
+        k if k.starts_with("fxm_") => "Pattern Program",
         "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" => "Material",
         _ => "Filters",
     }
@@ -229,6 +238,11 @@ pub fn label(kind: &str) -> String {
         "sdf_mask" => "SDF Mask",
         "sdf_form" => "SDF 3D Form",
         "pixel_processor" => "Pixel Processor",
+        "value_processor" => "Value Processor",
+        "svg" => "SVG",
+        "text" => "Text",
+        "fx_map" => "Pattern Program Map",
+        "input_value" => "Input Value",
         "normal" => "Normal From Height",
         "normal_blend" => "Normal Blend",
         "rgba_split" => "RGBA Split",
@@ -239,6 +253,35 @@ pub fn label(kind: &str) -> String {
     if !named.is_empty() {
         return named.to_string();
     }
+    let fnamed = match kind {
+        "f_vec2" => "Float2",
+        "f_vec3" => "Float3",
+        "f_vec4" => "Float4",
+        "f_ivec2" => "Integer2",
+        "f_ivec3" => "Integer3",
+        "f_ivec4" => "Integer4",
+        "f_int" => "Integer",
+        "f_bool" => "Boolean",
+        "f_graph_input" => "Graph Input",
+        "f_sample_gray" => "Sample Grayscale",
+        "f_sample_color" => "Sample Color",
+        "f_lerp" => "Lerp",
+        "f_atan2" => "Atan2",
+        "f_eq" => "Equal",
+        "f_ne" => "Not Equal",
+        "f_lt" => "Less Than",
+        "f_le" => "Less Or Equal",
+        "f_gt" => "Greater Than",
+        "f_ge" => "Greater Or Equal",
+        "f_pos" => "Position",
+        "f_out" => "Function Output",
+        "fxm_out" => "Program Output",
+        _ => "",
+    };
+    if !fnamed.is_empty() {
+        return fnamed.to_string();
+    }
+    let kind = kind.strip_prefix("fxm_").or_else(|| kind.strip_prefix("f_")).unwrap_or(kind);
     kind.split('_').map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")
 }
 
@@ -281,6 +324,12 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
         return None;
     }
     let sp = spec(kind)?;
+    match kind {
+        "fx_map" => return Some("size 64\nsubgraph dots\nmeta kind \"fxmap\"\nnode 1 fxm_marker\nnode 2 fxm_iterate body=@1 grid_x=4 grid_y=4\nnode 3 fxm_out in=@2\nend\nnode 1 fx_map program=\"dots\"\noutput o 1\n".into()),
+        "value_processor" => return Some("size 64\nsubgraph avg\nmeta kind \"function\"\nnode 1 f_image_avg\nnode 2 f_out in=@1\nend\nnode 100 fbm scale=4 seed=2\nnode 1 value_processor fn=\"avg\" in=@100\noutput o 1\n".into()),
+        "svg" => return Some("size 64\nresource art.svg PHN2ZyB2aWV3Qm94PSIwIDAgMTAgMTAiPjxjaXJjbGUgY3g9IjUiIGN5PSI1IiByPSI0IiBmaWxsPSIjZmZmIi8+PC9zdmc+\nnode 1 svg file=\"art.svg\"\noutput o 1\n".into()),
+        _ => {}
+    }
     let mut t = String::from(
         "size 64\nnode 100 fbm scale=4 octaves=4 seed=2\nnode 101 gradient angle=0.1\nnode 102 sdf_shape shape=0 size=0.3\nnode 103 sdf_shape shape=1 size=0.25 x=0.15\nnode 104 voronoi scale=5 mode=2 seed=3\nnode 105 threshold in=@104 threshold=0.2\nnode 106 flood_fill in=@105\nnode 107 normal in=@100 strength=3\nnode 108 colorize in=@100 p0=0 r0=1 g0=0.2 b0=0.1 p1=1 r1=0.1 g1=0.4 b1=1\n",
     )
@@ -297,6 +346,8 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
     let mut line = format!("node 1 {kind}");
     match kind {
         "pixel_processor" => line += " expr=\"sin(u*18.849556)*0.5+0.5\"",
+        "text" => line += " text=\"Ab\" size=0.5",
+        "input_value" => line += " name=\"level\" type=0 v=0.5",
         "colorize" => line += " p0=0 r0=0.1 g0=0.1 b0=0.35 p1=1 r1=1 g1=0.8 b1=0.3",
         "merge" => line += " r=@100 g=@101 b=@100",
         "alpha_merge" => line += " alpha=@101",
@@ -495,9 +546,59 @@ struct Ctx<'a> {
     res: &'a BTreeMap<String, Vec<u8>>,
     so: u32,
     depth: usize,
+    /// values of the Input Value nodes of the graph being evaluated (read by function graphs)
+    gin: &'a BTreeMap<String, crate::func::Value>,
 }
 
+/// Node id used for the helper nodes of [`Graph::preview_host`] (far above any id an author would reach).
+pub const PREVIEW_ID: u32 = 4_000_000_001;
+
 impl Graph {
+    /// "texture", "function" or "fxmap".
+    pub fn graph_kind(&self) -> &str {
+        match self.meta.get("kind").map(String::as_str) {
+            Some("function") => "function",
+            Some("fxmap") => "fxmap",
+            _ => "texture",
+        }
+    }
+
+    /// Function graphs and pattern programs are not textures. To look at one, wrap it in a texture graph that
+    /// runs it: a pixel processor for a function, a pattern map for a program. Returns the wrapper and the id of the
+    /// node that shows the result (`None` for ordinary graphs).
+    pub fn preview_host(&self) -> Option<(Graph, u32)> {
+        let kind = self.graph_kind();
+        if kind == "texture" {
+            return None;
+        }
+        let mut host = Graph::default();
+        host.size = self.size;
+        host.height = self.height;
+        host.seed_offset = self.seed_offset;
+        host.resources = self.resources.clone();
+        host.subgraphs = self.subgraphs.clone();
+        let mut me = self.clone();
+        me.subgraphs.clear();
+        me.resources.clear();
+        host.subgraphs.insert("__self".into(), me);
+        let mut n = Node::default();
+        if kind == "function" {
+            n.kind = "pixel_processor".into();
+            n.strs.insert("fn".into(), "__self".into());
+        } else {
+            n.kind = "fx_map".into();
+            n.strs.insert("program".into(), "__self".into());
+            n.nums.insert("color".into(), 0.0);
+        }
+        host.nodes.insert(PREVIEW_ID, n);
+        let mut o = Node::default();
+        o.kind = "output".into();
+        o.strs.insert("usage".into(), "basecolor".into());
+        o.ins.insert("in".into(), PREVIEW_ID);
+        host.nodes.insert(PREVIEW_ID + 1, o);
+        Some((host, PREVIEW_ID))
+    }
+
     pub fn parse(text: &str) -> Result<Graph, Error> {
         let g = Graph::parse_unchecked(text)?;
         g.validate()?;
@@ -762,8 +863,8 @@ impl Graph {
                 }
             }
             if n.kind == "pixel_processor" {
-                if !n.strs.contains_key("expr") {
-                    return Err(Error::BadParam(*id, "pixel_processor needs expr=\"...\"".into()));
+                if !n.strs.contains_key("expr") && !n.strs.contains_key("fn") {
+                    return Err(Error::BadParam(*id, "pixel_processor needs expr=\"...\" or fn=\"function\"".into()));
                 }
                 for (k, v) in &n.strs {
                     if k.starts_with("expr") {
@@ -1249,7 +1350,8 @@ impl Graph {
         if size == 0 || size > 8192 {
             return Err(Error::BadSize(size));
         }
-        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let gin = crate::func::graph_inputs(self);
+        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0, gin: &gin };
         let outs = self.output_nodes();
         let keep: Vec<u32> = outs.iter().map(|o| o.2).collect();
         let mut cache = Cache::for_graph(self, &keep, false);
@@ -1269,7 +1371,8 @@ impl Graph {
             return Err(Error::BadSize(size));
         }
         self.check_cycles()?;
-        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let gin = crate::func::graph_inputs(self);
+        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0, gin: &gin };
         let mut cache = Cache::for_graph(self, &[id], false);
         let t = eval_node(self, id, &ctx, &[], &mut cache)?;
         cache.map.clear();
@@ -1310,7 +1413,8 @@ impl Graph {
             r.errors.insert(0, e.to_string());
             return r;
         }
-        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0 };
+        let gin = crate::func::graph_inputs(self);
+        let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0, gin: &gin };
         // thumbnails are taken the moment a node finishes, so intermediate textures can be freed as soon as every
         // node that reads them is done (a big graph at 4K would not fit in memory otherwise)
         let mut cache = Cache::for_graph(self, keep, true);
@@ -1535,6 +1639,10 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
         f.bytes(v);
         env.u64(f.0);
     }
+    for (k, v) in ctx.gin {
+        env.str(k);
+        env.str(&v.show());
+    }
     let mut memo: HashMap<u32, u64> = HashMap::new();
     fn go(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, env: u64, memo: &mut HashMap<u32, u64>, depth: u32) -> u64 {
         let key = cache_key(g, id, out);
@@ -1560,9 +1668,9 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
             h.str(k);
             h.str(v);
         }
-        if n.kind == "bitmap" {
+        if matches!(n.kind.as_str(), "bitmap" | "svg" | "text") {
             // a file on disk can change under us: its size and modification time are part of the identity
-            if let Some(f) = n.strs.get("file") {
+            for f in [n.strs.get("file"), n.strs.get("font")].into_iter().flatten() {
                 if !ctx.res.contains_key(f) {
                     if let Ok(m) = std::fs::metadata(f).or_else(|_| std::fs::metadata(f.replace('\\', "/"))) {
                         h.u64(m.len());
@@ -1665,6 +1773,13 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
         }
     }
     let n = g.nodes.get(&id).ok_or(Error::MissingNode(0, id))?;
+    let bound;
+    let n = if n.strs.keys().any(|k| k.starts_with("fn.")) {
+        bound = bind_functions(id, n, ctx)?;
+        &bound
+    } else {
+        n
+    };
     let mut ins: BTreeMap<String, Rc<Tex>> = BTreeMap::new();
     for (slot, rid) in &n.ins {
         let want = n.in_out.get(slot).map(|s| s.as_str());
@@ -1681,7 +1796,7 @@ fn eval_node_out(g: &Graph, id: u32, out: Option<&str>, ctx: &Ctx, ext: &[Option
     }
     let node_ctx;
     let ctx = if sz.0 != ctx.size || sz.1 != ctx.height {
-        node_ctx = Ctx { size: sz.0, height: sz.1, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth };
+        node_ctx = Ctx { size: sz.0, height: sz.1, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth, gin: ctx.gin };
         &node_ctx
     } else {
         ctx
@@ -1964,7 +2079,7 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
         | "grunge_map" | "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => Pin::Gray,
         "weave_generator" => Pin::Gray,
         // pixel processor and the scatter family produce colour only when colour comes in
-        "pixel_processor" => Pin::Color,
+        "pixel_processor" | "value_processor" | "fx_map" => Pin::Color,
         // everything else (blur, levels, blend, transform, warp, ...) keeps the type of what goes in
         _ => {
             if any_color_in {
@@ -2070,6 +2185,100 @@ fn thumbnail(t: &Tex) -> Vec<u8> {
     px
 }
 
+/// Function-driven parameters: `fn.<param>="name"` runs that function and stores the result in `<param>`;
+/// `fa.<param>.<input>` numbers feed the function's inputs.
+fn bind_functions(id: u32, n: &Node, ctx: &Ctx) -> Result<Node, Error> {
+    use crate::func::{compile_named, FnEnv};
+    let mut out = n.clone();
+    for (k, fname) in &n.strs {
+        let Some(param) = k.strip_prefix("fn.") else { continue };
+        if fname.is_empty() {
+            continue;
+        }
+        let prog = compile_named(ctx.lib, fname).map_err(|e| Error::BadParam(id, format!("{k}: {e}")))?;
+        let mut env = FnEnv::new([ctx.size as f64, ctx.height as f64]);
+        env.seed = ctx.so;
+        env.graph_inputs = ctx.gin;
+        let prefix = format!("fa.{param}.");
+        for (ak, av) in &n.nums {
+            if let Some(input) = ak.strip_prefix(&prefix) {
+                let pin = prog.inputs.iter().find(|i| i.0 == input).map(|i| i.1).unwrap_or(crate::graph::Pin::Float);
+                env.args.insert(input.to_string(), crate::func::coerce(&crate::func::Value::float(*av as f64), pin));
+            }
+        }
+        let v = prog.run(&env, [0.5, 0.5]).map_err(|e| Error::BadParam(id, format!("{k}: {e}")))?;
+        match v {
+            crate::func::Value::Str(s) => {
+                out.strs.insert(param.to_string(), s.to_string());
+            }
+            v => {
+                out.nums.insert(param.to_string(), v.as_f32());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Pixel processor / value processor driven by a function graph.
+fn read_resource(id: u32, file: &str, ctx: &Ctx) -> Result<Vec<u8>, Error> {
+    match ctx.res.get(file) {
+        Some(b) => Ok(b.clone()),
+        None => std::fs::read(file)
+            .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
+            .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}"))),
+    }
+}
+
+fn run_function_image(id: u32, n: &Node, fname: &str, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx, once: bool) -> Result<Tex, Error> {
+    use crate::func::{compile_named, FnEnv, Value};
+    let prog = compile_named(ctx.lib, fname).map_err(|e| Error::BadParam(id, e))?;
+    let (w, h) = (ctx.size, ctx.height);
+    let mut env = FnEnv::new([w as f64, h as f64]);
+    env.seed = (n.nums.get("seed").copied().unwrap_or(0.0).max(0.0) as u32).wrapping_add(ctx.so);
+    env.graph_inputs = ctx.gin;
+    for slot in ["in", "in2", "in3", "in4"] {
+        if let Some(t) = ins.get(slot) {
+            env.images.push((slot, t.as_ref()));
+        }
+    }
+    for (ak, av) in &n.nums {
+        if let Some(input) = ak.strip_prefix("fa.") {
+            let pin = prog.inputs.iter().find(|i| i.0 == input).map(|i| i.1).unwrap_or(crate::graph::Pin::Float);
+            env.args.insert(input.to_string(), crate::func::coerce(&Value::float(*av as f64), pin));
+        }
+    }
+    if prog.uses_stats {
+        env = env.with_stats();
+    }
+    let to_px = |v: &Value| -> [f32; 4] {
+        match v {
+            Value::Num(x) => match x.lanes {
+                1 => [x.v[0] as f32, x.v[0] as f32, x.v[0] as f32, 1.0],
+                2 => [x.v[0] as f32, x.v[1] as f32, 0.0, 1.0],
+                3 => [x.v[0] as f32, x.v[1] as f32, x.v[2] as f32, 1.0],
+                _ => [x.v[0] as f32, x.v[1] as f32, x.v[2] as f32, x.v[3] as f32],
+            },
+            Value::Bool(b) => {
+                let f = *b as i32 as f32;
+                [f, f, f, 1.0]
+            }
+            Value::Str(_) => [0.0, 0.0, 0.0, 1.0],
+        }
+    };
+    // the first run reports a broken function as an error instead of a silent black image
+    let first = prog.run(&env, [0.5, 0.5]).map_err(|e| Error::BadParam(id, format!("{fname}: {e}")))?;
+    if matches!(first, Value::Str(_)) {
+        return Err(Error::BadParam(id, format!("{fname}: the result must be a number, vector or boolean")));
+    }
+    if once {
+        return Ok(Tex::solid(w, h, to_px(&first)));
+    }
+    Ok(Tex::from_fn(w, h, |u, v| match prog.run(&env, [u as f64, v as f64]) {
+        Ok(r) => to_px(&r),
+        Err(_) => [0.0, 0.0, 0.0, 1.0],
+    }))
+}
+
 fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx, out: Option<&str>) -> Result<Tex, Error> {
     if ctx.depth >= 8 {
         return Err(Error::BadParam(id, "subgraph nesting too deep (recursive?)".into()));
@@ -2099,7 +2308,8 @@ fn run_sub(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx, out: O
         .or_else(|| outs.first())
         .map(|o| o.2)
         .ok_or_else(|| Error::BadParam(id, format!("subgraph '{name}' has no output")))?;
-    let c2 = Ctx { size: ctx.size, height: ctx.height, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1 };
+    let gin = crate::func::graph_inputs(&sub);
+    let c2 = Ctx { size: ctx.size, height: ctx.height, nominal: ctx.nominal, lib: ctx.lib, res: ctx.res, so: ctx.so, depth: ctx.depth + 1, gin: &gin };
     let mut cache = Cache::for_graph(&sub, &[out_id], false);
     let t = eval_node(&sub, out_id, &c2, &ext, &mut cache)?;
     cache.map.clear();
@@ -2735,7 +2945,64 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             }
             m
         }
+        "fx_map" => {
+            let name = n.strs.get("program").ok_or_else(|| Error::BadParam(id, "fx_map needs program=\"name\"".into()))?;
+            let prog = ctx.lib.get(name).ok_or_else(|| Error::BadParam(id, format!("unknown pattern program '{name}'")))?;
+            if !crate::fxmap::is_program(prog) {
+                return Err(Error::BadParam(id, format!("'{name}' is not a pattern program")));
+            }
+            let pats = [ins.get("in").map(|t| t.as_ref()), ins.get("in2").map(|t| t.as_ref()), ins.get("in3").map(|t| t.as_ref()), ins.get("in4").map(|t| t.as_ref())];
+            let color = f("color", 0.0) > 0.5;
+            let bg = f("bg", 0.0);
+            let bgc = if color { [f("bg_r", bg), f("bg_g", bg), f("bg_b", bg)] } else { [bg, bg, bg] };
+            let run = crate::fxmap::Run { depth: f("depth", 12.0).clamp(0.0, 32.0) as u32, seed, blend: f("blend", 0.0) as u32, color, patterns: &pats };
+            crate::fxmap::render(prog, s, hs, bgc, &run).map_err(|e| Error::BadParam(id, format!("{name}: {e}")))?
+        }
+        "curve" => {
+            let get = |k: &str| -> Result<crate::curve::Curve, Error> {
+                match n.strs.get(k) {
+                    Some(t) if !t.trim().is_empty() => crate::curve::Curve::parse(t).map_err(|m| Error::BadParam(id, format!("{k}: {m}"))),
+                    _ => Ok(crate::curve::Curve::identity()),
+                }
+            };
+            let (m, r, g, b, a) = (get("points")?, get("points_r")?, get("points_g")?, get("points_b")?, get("points_a")?);
+            crate::curve::apply(tex("in")?, &m, [&r, &g, &b, &a])
+        }
+        "svg" => {
+            let file = n.strs.get("file").ok_or_else(|| Error::BadParam(id, "svg needs file=\"art.svg\"".into()))?;
+            let bytes = read_resource(id, file, ctx)?;
+            let src = String::from_utf8_lossy(&bytes);
+            crate::vector::render_svg(&src, s, hs, f("fit", 0.0) as u32, f("scale", 1.0).max(0.001), f("x", 0.0), f("y", 0.0)).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?
+        }
+        "text" => {
+            let font = match n.strs.get("font").filter(|f| !f.is_empty()) {
+                Some(file) => crate::font::Font::load(&read_resource(id, file, ctx)?).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?,
+                None => crate::font::Font::Builtin,
+            };
+            let text = n.strs.get("text").cloned().unwrap_or_default();
+            let xf = crate::vector::Xf::rotate(f("rotation", 0.0).to_radians()).then(crate::vector::Xf::translate((0.5 + f("x", 0.0)) * s as f32, (0.5 + f("y", 0.0)) * hs as f32));
+            let polys = font.layout(&text, f("size", 0.2).max(0.001) * hs as f32, f("align", 1.0) as u32, f("spacing", 0.0), f("line_spacing", 1.0), &xf);
+            let mask = crate::vector::fill(&polys, s, hs, false);
+            let v = f("value", 1.0);
+            let mut t = Tex::solid(s, hs, [0.0, 0.0, 0.0, 1.0]);
+            for (p, c) in t.px.iter_mut().zip(&mask.a) {
+                let g = c * v;
+                *p = [g, g, g, 1.0];
+            }
+            t
+        }
+        "value_processor" => {
+            let fname = n.strs.get("fn").ok_or_else(|| Error::BadParam(id, "value_processor needs fn=\"function\"".into()))?;
+            return run_function_image(id, n, fname, ins, ctx, true);
+        }
+        "input_value" => {
+            let v = f("v", 0.0);
+            Tex::solid(ctx.size, ctx.height, [v, v, v, 1.0])
+        }
         "pixel_processor" => {
+            if let Some(fname) = n.strs.get("fn") {
+                return run_function_image(id, n, fname, ins, ctx, false);
+            }
             let parse = |k: &str| -> Result<Option<expr::Ex>, Error> {
                 match n.strs.get(k) {
                     Some(src) => expr::parse(src).map(Some).map_err(|m| Error::BadParam(id, format!("{k}: {m}"))),
@@ -2786,7 +3053,42 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                     .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
                     .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
             };
-            png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?
+            let mut t = png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?;
+            if f("flip_x", 0.0) > 0.5 || f("flip_y", 0.0) > 0.5 {
+                let (fx, fy) = (f("flip_x", 0.0) > 0.5, f("flip_y", 0.0) > 0.5);
+                let src = t.clone();
+                for y in 0..t.h {
+                    for x in 0..t.w {
+                        let (sx, sy) = (if fx { t.w - 1 - x } else { x }, if fy { t.h - 1 - y } else { y });
+                        t.px[y * t.w + x] = src.px[sy * t.w + sx];
+                    }
+                }
+            }
+            if f("gray", 0.0) > 0.5 {
+                t = ops::to_gray(&t);
+            }
+            t
+        }
+        "channel_shuffle" => {
+            // each output channel picks a source: 0-3 channels of `in`, 4-7 channels of `in2`, 8 zero, 9 one
+            let a = tex("in")?;
+            let b = ins.get("in2").map(|t| t.as_ref()).unwrap_or(a);
+            let pick = |k: &str, d: f32| f(k, d).round().clamp(0.0, 9.0) as usize;
+            let src = [pick("src_r", 0.0), pick("src_g", 1.0), pick("src_b", 2.0), pick("src_a", 3.0)];
+            let inv = [f("inv_r", 0.0) > 0.5, f("inv_g", 0.0) > 0.5, f("inv_b", 0.0) > 0.5, f("inv_a", 0.0) > 0.5];
+            let mut out = a.clone();
+            for (i, p) in out.px.iter_mut().enumerate() {
+                for k in 0..4 {
+                    let v = match src[k] {
+                        0..=3 => a.px[i][src[k]],
+                        4..=7 => b.px[i][src[k] - 4],
+                        8 => 0.0,
+                        _ => 1.0,
+                    };
+                    p[k] = if inv[k] { 1.0 - v } else { v };
+                }
+            }
+            out
         }
         "blur" => {
             let (src, sg) = (tex("in")?, f("radius", 4.0) * rs);

@@ -42,7 +42,7 @@ fn load(path: &str) -> Result<Graph, String> {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("nodes") => {
-            for s in SPECS {
+            for s in SPECS.iter().chain(materialcraft::func::FUNC_SPECS).chain(materialcraft::fxmap::FXM_SPECS) {
                 println!("{:<18} {:<11} inputs: {:<22} {}", s.kind, materialcraft::graph::category(s.kind), [s.req, s.opt].concat().join(","), s.doc);
             }
             Ok(())

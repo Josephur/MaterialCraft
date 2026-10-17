@@ -126,9 +126,10 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Several graph tabs open at once (one graph is shown at a time today)
 - [ ] Imported graphs are embedded copies; no live link or "update from source" when the package file changes
 - [ ] Size/format caption (e.g. 2048x2048 - C8) on graph nodes
-- [ ] Function graphs (variables, math, conditionals, function node family)
-- [ ] FX-Map (recursive, rule-based pattern generation)
-- [ ] Pin node, Input Value node
+- [x] Function graphs: about 85 `f_*` value nodes (variables, math, vectors, comparisons, logic, if / sequence, random, image sampling and statistics, inputs, casts, calls), a type checker, function-driven parameters (`fn.<param>`), pixel processor and value processor driven by a function
+- [x] Pattern programs (our FX-Map): `fx_map` node running a graph of quadrant / iterate / switch / marker nodes with random seeds, depth limit, blend modes and tileable output
+- [x] Pin (`f_pin`) and Input Value (`input_value`) nodes
+- [x] Curve node (per-channel tone curves) with an interactive editor
 - [x] Non-square graphs (width/height, `size W H`, tests), New Graph dialog with separate sizes, per-node `square_cells` (keeps cells square)
 - [x] Live-linked packages, instances through shared links, format versioning, package tab bar, per-graph tabs, link picker for multi-graph packages, dependency manager (relink, embed copy, remove, search folders)
 - [ ] Graph templates, parameter presets, randomized variations
@@ -156,7 +157,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Camera and light presets, turntable rendering
 
 ### Import and color
-- [ ] SVG import, font import, text nodes
+- [x] SVG import (own rasteriser: shapes, paths, transforms, solid fill and stroke), TrueType font import and text nodes (own reader and a built-in face). Not supported: SVG gradients / clipping / filters, CFF (.otf) fonts, kerning and complex-script shaping
 - [ ] Bitmap import for JPEG, TIFF, EXR (only PNG today)
 - [ ] AxF material import
 - [ ] OCIO and ICC colour management (sRGB only today)
@@ -226,10 +227,8 @@ We have 129 node types. Missing, by area (described by function; `NODES.md` list
 - Render (scatter on spline, fill, mappers, render), path tools (mask to paths, paths to splines, transform, warp, polygon, select, preview, vertex processing)
 
 ### Graph system
-- Function graphs: variables, math, vector, conditionals, loops, get / set nodes, samplers with border modes, function-driven parameters
-- A recursive, rule-based pattern construction node
-- Pixel processor driven by function graphs (ours uses an expression language)
-- Portal, pin and input-value nodes, parameter presets, randomized variations, graph templates
+- Function graph extras: loops, sampler border modes, bitwise operators
+- Portal nodes, parameter presets, randomized variations, graph templates
 - Tiling modes (none / horizontal / vertical)
 
 ### 3D view and rendering
@@ -238,7 +237,7 @@ We have 129 node types. Missing, by area (described by function; `NODES.md` list
 - Custom mesh and 3D scene loading, several meshes at once
 
 ### Import, export, colour, automation
-- SVG, font and text nodes; JPEG, TIFF, EXR, HDR bitmap import
+- JPEG, TIFF, EXR, HDR bitmap import; SVG gradients; OpenType (CFF) fonts
 - OCIO and ICC colour management
 - Scripting API and batch automation, engine output templates (Unreal / Unity packing), UDIM, texture atlases, a built-in asset library
 - Editor extras: dependency / resource manager, user library folders, navigator minimap, customizable shortcuts, language packs
@@ -250,7 +249,7 @@ We have 129 node types. Missing, by area (described by function; `NODES.md` list
 
 ## 3. Suggested order
 
-1. Function graphs + FX-Map (unlocks the most missing nodes)
+1. Function graphs + pattern programs (done, Milestone 1); next the node library by area (Milestone 2), which they unlock
 2. Spline / path tools
 3. HDRI image-based lighting and custom mesh loading
 4. More nodes and a built-in material library

@@ -32,6 +32,7 @@ fn pb(name: &'static str, label: &'static str, def: bool) -> PD {
 const BLEND_MODES: &[&str] = &["Copy", "Add", "Subtract", "Multiply", "Screen", "Overlay", "Max", "Min", "Difference", "Soft light", "Color dodge", "Color burn", "Linear burn", "Hard light", "Exclusion", "Divide", "Linear light", "Color", "Luminosity", "Dissolve"];
 const SHAPES: &[&str] = &["Square", "Disc", "Paraboloid", "Gaussian", "Diamond", "Pyramid", "Half sphere", "Cone"];
 
+const CH_SRC: &[&str] = &["Input red", "Input green", "Input blue", "Input alpha", "Second red", "Second green", "Second blue", "Second alpha", "Zero", "One"];
 const ROT90: &[&str] = &["0", "90", "180", "270"];
 const SYMM: &[&str] = &["None", "Horizontal", "Vertical", "Both"];
 const TILE_BLEND: &[&str] = &["Max", "Add", "Alpha blend", "Add / Sub"];
@@ -559,6 +560,56 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "gradient_reflected" => vec![pi("count", "Count", 1, 1, 16), pf("angle", "Angle", 0.0, 0.0, 1.0), p_con(), p_inv()],
         "shape_stroke" => vec![pf("width", "Width", 8.0, 0.5, 256.0), pf("offset", "Offset", 0.0, -1.0, 1.0), pf("softness", "Softness", 0.5, 0.0, 1.0), pf("threshold", "Shape threshold", 0.5, 0.0, 1.0), pf("opacity", "Opacity", 1.0, 0.0, 1.0), pf("color_r", "Outline color R", 1.0, 0.0, 1.0), pf("color_g", "Outline color G", 1.0, 0.0, 1.0), pf("color_b", "Outline color B", 1.0, 0.0, 1.0)],
         "shape_glow" => vec![pf("width", "Width", 16.0, 0.5, 256.0), pf("softness", "Softness", 0.5, 0.0, 1.0), pf("intensity", "Intensity", 1.0, 0.0, 4.0), pf("threshold", "Shape threshold", 0.5, 0.0, 1.0), pf("spread", "Spread", 0.0, 0.0, 1.0), pf("opacity", "Opacity", 1.0, 0.0, 1.0), pf("color_r", "Glow color R", 1.0, 0.0, 1.0), pf("color_g", "Glow color G", 1.0, 0.0, 1.0), pf("color_b", "Glow color B", 1.0, 0.0, 1.0)],
+        "f_float" | "f_int" => vec![pf("v", "Value", 0.0, -1000.0, 1000.0)],
+        "f_bool" => vec![pb("v", "Value", false)],
+        "f_vec2" | "f_ivec2" => vec![pf("x", "X", 0.0, -1000.0, 1000.0), pf("y", "Y", 0.0, -1000.0, 1000.0)],
+        "f_vec3" | "f_ivec3" => vec![pf("x", "X", 0.0, -1000.0, 1000.0), pf("y", "Y", 0.0, -1000.0, 1000.0), pf("z", "Z", 0.0, -1000.0, 1000.0)],
+        "f_vec4" | "f_ivec4" => vec![pf("x", "X", 0.0, -1000.0, 1000.0), pf("y", "Y", 0.0, -1000.0, 1000.0), pf("z", "Z", 0.0, -1000.0, 1000.0), pf("w", "W", 0.0, -1000.0, 1000.0)],
+        "f_random" => vec![pi("seed", "Seed", 0, 0, 9999)],
+        "f_input" | "f_graph_input" | "input_value" => {
+            let mut v = vec![pe("type", "Type", 0, &["Float", "Integer", "Boolean", "Float2", "Float3", "Float4", "Integer2", "Integer3", "Integer4", "String"]), pf("v", "Default", 0.0, -1000.0, 1000.0), pf("x", "Default X", 0.0, -1000.0, 1000.0), pf("y", "Default Y", 0.0, -1000.0, 1000.0), pf("z", "Default Z", 0.0, -1000.0, 1000.0), pf("w", "Default W", 0.0, -1000.0, 1000.0)];
+            if kind == "input_value" {
+                v.push(pf("min", "Minimum", 0.0, -1000.0, 1000.0));
+                v.push(pf("max", "Maximum", 1.0, -1000.0, 1000.0));
+            }
+            v
+        }
+        "pixel_processor" | "value_processor" => vec![pi("seed", "Seed (function)", 0, 0, 9999)],
+        "fx_map" => vec![
+            pi("depth", "Recursion depth", 12, 0, 32), pi("seed", "Random seed", 0, 0, 9999),
+            pe("blend", "Blend", 0, &["Max", "Add", "Over", "Min", "Multiply"]), pb("color", "Colour", false),
+            pf("bg", "Background", 0.0, 0.0, 1.0), pf("bg_r", "Background R", 0.0, 0.0, 1.0), pf("bg_g", "Background G", 0.0, 0.0, 1.0), pf("bg_b", "Background B", 0.0, 0.0, 1.0),
+        ],
+        "fxm_marker" => vec![
+            pe("shape", "Shape", 0, &["Circle", "Square", "Diamond", "Image"]), pi("src", "Image input", 0, 0, 3),
+            pf("x", "Offset X", 0.0, -1.0, 1.0), pf("y", "Offset Y", 0.0, -1.0, 1.0), pf("w", "Width", 1.0, 0.0, 4.0), pf("h", "Height", 1.0, 0.0, 4.0),
+            pf("rot", "Rotation (deg)", 0.0, -360.0, 360.0), pf("value", "Value", 1.0, 0.0, 4.0), pf("softness", "Softness", 0.02, 0.0, 1.0),
+            pf("r", "Colour R", 1.0, 0.0, 2.0), pf("g", "Colour G", 1.0, 0.0, 2.0), pf("b", "Colour B", 1.0, 0.0, 2.0),
+            pf("rnd_pos", "Random position", 0.0, 0.0, 1.0), pf("rnd_scale", "Random scale", 0.0, 0.0, 1.0), pf("rnd_rot", "Random rotation (deg)", 0.0, 0.0, 180.0), pf("rnd_val", "Random value", 0.0, 0.0, 1.0), pf("rnd_color", "Random colour", 0.0, 0.0, 1.0),
+        ],
+        "fxm_quadrant" => vec![
+            pf("scale", "Child scale", 0.5, 0.0, 2.0), pf("off_x", "Offset X", 0.0, -1.0, 1.0), pf("off_y", "Offset Y", 0.0, -1.0, 1.0),
+            pf("p0", "Chance 1", 1.0, 0.0, 1.0), pf("p1", "Chance 2", 1.0, 0.0, 1.0), pf("p2", "Chance 3", 1.0, 0.0, 1.0), pf("p3", "Chance 4", 1.0, 0.0, 1.0),
+            pf("v0", "Value 1", 1.0, 0.0, 4.0), pf("v1", "Value 2", 1.0, 0.0, 4.0), pf("v2", "Value 3", 1.0, 0.0, 4.0), pf("v3", "Value 4", 1.0, 0.0, 4.0),
+            pf("r0", "Rotation 1 (deg)", 0.0, -360.0, 360.0), pf("r1", "Rotation 2 (deg)", 0.0, -360.0, 360.0), pf("r2", "Rotation 3 (deg)", 0.0, -360.0, 360.0), pf("r3", "Rotation 4 (deg)", 0.0, -360.0, 360.0),
+            pf("rnd_pos", "Random position", 0.0, 0.0, 1.0), pf("rnd_scale", "Random scale", 0.0, 0.0, 1.0), pf("rnd_rot", "Random rotation (deg)", 0.0, 0.0, 180.0), pf("rnd_val", "Random value", 0.0, 0.0, 1.0),
+        ],
+        "fxm_iterate" => vec![
+            pi("count", "Count", 4, 0, 1000), pi("grid_x", "Grid X (0 = off)", 0, 0, 64), pi("grid_y", "Grid Y", 0, 0, 64), pf("stagger", "Stagger odd rows", 0.0, 0.0, 1.0),
+            pf("dx", "Step X", 0.0, -2.0, 2.0), pf("dy", "Step Y", 0.0, -2.0, 2.0), pf("dscale", "Step scale", 1.0, 0.0, 2.0), pf("drot", "Step rotation (deg)", 0.0, -360.0, 360.0), pf("dval", "Step value", 1.0, 0.0, 2.0),
+            pf("rnd_x", "Random X", 0.0, 0.0, 1.0), pf("rnd_y", "Random Y", 0.0, 0.0, 1.0), pf("rnd_scale", "Random scale", 0.0, 0.0, 1.0), pf("rnd_rot", "Random rotation (deg)", 0.0, 0.0, 180.0), pf("rnd_val", "Random value", 0.0, 0.0, 1.0),
+        ],
+        "fxm_switch" => vec![pe("mode", "Mode", 0, &["By index", "Random"]), pi("index", "Index", 0, 0, 3), pf("w0", "Weight A", 1.0, 0.0, 10.0), pf("w1", "Weight B", 1.0, 0.0, 10.0), pf("w2", "Weight C", 1.0, 0.0, 10.0), pf("w3", "Weight D", 1.0, 0.0, 10.0)],
+        "svg" => vec![pe("fit", "Fit", 0, &["Contain", "Stretch", "Cover"]), pf("scale", "Scale", 1.0, 0.05, 8.0), pf("x", "Offset X", 0.0, -1.0, 1.0), pf("y", "Offset Y", 0.0, -1.0, 1.0)],
+        "text" => vec![
+            pf("size", "Size", 0.2, 0.02, 1.5), pf("x", "Offset X", 0.0, -1.0, 1.0), pf("y", "Offset Y", 0.0, -1.0, 1.0), pe("align", "Align", 1, &["Left", "Centre", "Right"]),
+            pf("spacing", "Letter spacing", 0.0, -0.3, 1.0), pf("line_spacing", "Line spacing", 1.0, 0.3, 3.0), pf("rotation", "Rotation (deg)", 0.0, -360.0, 360.0), pf("value", "Value", 1.0, 0.0, 1.0),
+        ],
+        "channel_shuffle" => vec![
+            pe("src_r", "Red from", 0, CH_SRC), pe("src_g", "Green from", 1, CH_SRC), pe("src_b", "Blue from", 2, CH_SRC), pe("src_a", "Alpha from", 3, CH_SRC),
+            pb("inv_r", "Invert red", false), pb("inv_g", "Invert green", false), pb("inv_b", "Invert blue", false), pb("inv_a", "Invert alpha", false),
+        ],
+        "bitmap" => vec![pb("flip_x", "Flip horizontally", false), pb("flip_y", "Flip vertically", false), pb("gray", "Convert to grayscale", false)],
         "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
         "glow" => vec![pf("width", "Glow size", 8.0, 0.0, 128.0), pf("intensity", "Glow amount", 1.0, 0.0, 8.0), pf("clear", "Clear amount", 0.0, 0.0, 1.0), pf("glow_r", "Glow color R", 1.0, 0.0, 1.0), pf("glow_g", "Glow color G", 1.0, 0.0, 1.0), pf("glow_b", "Glow color B", 1.0, 0.0, 1.0)],
         "mosaic" => vec![pf("intensity", "Intensity (with map)", 1.0, 0.0, 1.0), pi("count", "Cells per side (no map)", 16, 1, 128)],
@@ -784,6 +835,124 @@ fn gradient_editor(ui: &mut egui::Ui, id: Id, stops: &mut Vec<(f32, [f32; 3])>) 
 }
 
 // ---------------------------------------------------------------- property panels
+/// A single-line text property.
+fn str_row(ui: &mut egui::Ui, node: &Node, key: &str, lbl: &str, hint: &str, strs: &mut Vec<(String, Option<String>)>) {
+    let mut s = node.strs.get(key).cloned().unwrap_or_default();
+    ui.horizontal(|ui| {
+        row_label(ui, lbl);
+        if ui.add(egui::TextEdit::singleline(&mut s).hint_text(hint).desired_width(f32::INFINITY)).changed() {
+            let clean: String = s.chars().filter(|c| *c != '"').collect();
+            strs.push((key.to_string(), if clean.trim().is_empty() { None } else { Some(clean) }));
+        }
+    });
+}
+
+/// Pick one of `options` for a text property (empty choice removes it).
+fn name_combo(ui: &mut egui::Ui, id: u32, node: &Node, key: &str, lbl: &str, options: &[String], strs: &mut Vec<(String, Option<String>)>) {
+    let cur = node.strs.get(key).cloned().unwrap_or_default();
+    ui.horizontal(|ui| {
+        row_label(ui, lbl);
+        egui::ComboBox::from_id_salt((id, key)).selected_text(if cur.is_empty() { "(none)".to_string() } else { cur.clone() }).show_ui(ui, |ui| {
+            if ui.selectable_label(cur.is_empty(), "(none)").clicked() {
+                strs.push((key.to_string(), None));
+            }
+            for o in options {
+                if ui.selectable_label(*o == cur, o).clicked() {
+                    strs.push((key.to_string(), Some(o.clone())));
+                }
+            }
+        });
+    });
+    if !cur.is_empty() && !options.contains(&cur) {
+        ui.colored_label(Color32::from_rgb(255, 120, 110), format!("'{cur}' does not exist in this package"));
+    }
+}
+
+/// Tone-curve editor: pick a channel, click to add a point, drag to move it, double-click to remove it.
+fn curve_editor(ui: &mut egui::Ui, id: u32, node: &Node, strs: &mut Vec<(String, Option<String>)>) {
+    use materialcraft::curve::Curve;
+    let chans = [("Master", "points"), ("R", "points_r"), ("G", "points_g"), ("B", "points_b"), ("A", "points_a")];
+    let ch_id = egui::Id::new(("curve_channel", id));
+    let mut ch = ui.data_mut(|d| d.get_temp::<usize>(ch_id)).unwrap_or(0).min(4);
+    ui.horizontal(|ui| {
+        for (i, (n, _)) in chans.iter().enumerate() {
+            if ui.selectable_label(ch == i, *n).clicked() {
+                ch = i;
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(ch_id, ch));
+    let key = chans[ch].1;
+    let text = node.strs.get(key).cloned().unwrap_or_default();
+    let curve = Curve::parse(&text).unwrap_or_else(|_| Curve::identity());
+    let mut pts: Vec<(f32, f32)> = curve.pts.iter().map(|p| (p.0, p.1)).collect();
+    let side = ui.available_width().clamp(120.0, 240.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::click_and_drag());
+    let to_s = |x: f32, y: f32| pos2(rect.left() + x * side, rect.bottom() - y * side);
+    let from_s = |p: Pos2| (((p.x - rect.left()) / side).clamp(0.0, 1.0), (1.0 - (p.y - rect.top()) / side).clamp(0.0, 1.0));
+    let drag_id = egui::Id::new(("curve_drag", id));
+    let mut changed = false;
+    if let Some(pos) = resp.interact_pointer_pos() {
+        let near = |pts: &Vec<(f32, f32)>| pts.iter().position(|p| to_s(p.0, p.1).distance(pos) < 10.0);
+        if resp.drag_started() {
+            let hit = near(&pts).or_else(|| {
+                // grab the nearest point, or create one under the pointer
+                let (x, y) = from_s(pos);
+                pts.push((x, y));
+                pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                changed = true;
+                pts.iter().position(|p| (p.0 - x).abs() < 1e-6 && (p.1 - y).abs() < 1e-6)
+            });
+            ui.data_mut(|d| d.insert_temp(drag_id, hit.unwrap_or(usize::MAX)));
+        } else if resp.dragged() {
+            if let Some(i) = ui.data_mut(|d| d.get_temp::<usize>(drag_id)).filter(|i| *i < pts.len()) {
+                let (mut x, y) = from_s(pos);
+                // keep the order of the points
+                let lo = if i > 0 { pts[i - 1].0 + 0.002 } else { 0.0 };
+                let hi = if i + 1 < pts.len() { pts[i + 1].0 - 0.002 } else { 1.0 };
+                x = x.clamp(lo.min(hi), hi.max(lo));
+                pts[i] = (x, y);
+                changed = true;
+            }
+        } else if resp.double_clicked() && pts.len() > 2 {
+            if let Some(i) = near(&pts) {
+                pts.remove(i);
+                changed = true;
+            }
+        }
+    }
+    let shown = if changed { Curve::new(pts.iter().map(|p| (p.0, p.1, None, None)).collect()) } else { curve };
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, Rounding::same(3.0), Color32::from_gray(28));
+    for k in 1..4 {
+        let t = k as f32 / 4.0;
+        painter.line_segment([to_s(t, 0.0), to_s(t, 1.0)], Stroke::new(1.0_f32, Color32::from_gray(48)));
+        painter.line_segment([to_s(0.0, t), to_s(1.0, t)], Stroke::new(1.0_f32, Color32::from_gray(48)));
+    }
+    painter.line_segment([to_s(0.0, 0.0), to_s(1.0, 1.0)], Stroke::new(1.0_f32, Color32::from_gray(70)));
+    let col = match ch {
+        1 => Color32::from_rgb(235, 90, 90),
+        2 => Color32::from_rgb(90, 220, 110),
+        3 => Color32::from_rgb(100, 140, 255),
+        _ => Color32::from_gray(225),
+    };
+    let line: Vec<Pos2> = (0..=64).map(|i| {
+        let x = i as f32 / 64.0;
+        to_s(x, shown.eval(x))
+    }).collect();
+    painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, col)));
+    for p in &pts {
+        painter.circle(to_s(p.0, p.1), 4.5, Color32::from_gray(30), Stroke::new(1.5_f32, col));
+    }
+    ui.small("Click and drag to add or move a point, double-click a point to remove it.");
+    if ui.small_button("Reset this curve").clicked() {
+        strs.push((key.to_string(), None));
+    } else if changed {
+        let t = pts.iter().map(|p| format!("{:.4}:{:.4}", p.0, p.1)).collect::<Vec<_>>().join(",");
+        strs.push((key.to_string(), Some(t)));
+    }
+}
+
 fn row_label(ui: &mut egui::Ui, text: &str) {
     ui.allocate_ui_with_layout(vec2(112.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.label(text);
@@ -832,6 +1001,63 @@ impl App {
         }
         self.graph_props(ui);
         self.published_params(ui);
+        self.functions_panel(ui);
+    }
+
+    /// Function graphs and pattern programs of this package: open or create them.
+    fn functions_panel(&mut self, ui: &mut egui::Ui) {
+        let list: Vec<(String, bool)> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() != "texture").map(|(k, g)| (k.clone(), g.graph_kind() == "function")).collect();
+        let mut open = None;
+        let mut make: Option<bool> = None;
+        egui::CollapsingHeader::new(egui::RichText::new("FUNCTIONS AND PATTERN PROGRAMS").strong()).default_open(!list.is_empty()).show(ui, |ui| {
+            if list.is_empty() {
+                ui.small("A function graph computes values that can drive any parameter or a pixel processor. A pattern program is drawn by a Pattern Program Map node.");
+            }
+            for (name, is_fn) in &list {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{name}  ({})", if *is_fn { "function" } else { "pattern program" }));
+                    if ui.small_button("Open").clicked() {
+                        open = Some(name.clone());
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                if ui.button("New function").clicked() {
+                    make = Some(true);
+                }
+                if ui.button("New pattern program").clicked() {
+                    make = Some(false);
+                }
+            });
+        });
+        if let Some(n) = open {
+            self.acts.push(Act::EnterSub(n));
+        }
+        if let Some(is_fn) = make {
+            let base = if is_fn { "function" } else { "pattern" };
+            let mut n = 1;
+            let name = loop {
+                let c = format!("{base}_{n}");
+                if !self.g.subgraphs.contains_key(&c) && !self.parents.iter().any(|(p, _)| p.subgraphs.contains_key(&c)) {
+                    break c;
+                }
+                n += 1;
+            };
+            let text = if is_fn {
+                "meta kind \"function\"\nnode 1 f_pos\nnode 2 f_swizzle a=@1 mask=\"x\"\nnode 3 f_out in=@2\n"
+            } else {
+                "meta kind \"fxmap\"\nnode 1 fxm_marker w=0.6 h=0.6\nnode 2 fxm_iterate body=@1 grid_x=4 grid_y=4\nnode 3 fxm_out in=@2\n"
+            };
+            match Graph::parse_unchecked(text) {
+                Ok(g) => {
+                    self.snap();
+                    self.g.subgraphs.insert(name.clone(), g);
+                    self.dirty = true;
+                    self.status(format!("Created '{name}'. Open it to edit; pick it on a node with the 'fn' button or the Function / Pattern program field."), true);
+                }
+                Err(e) => self.status(e.to_string(), false),
+            }
+        }
     }
 
     fn published_params(&mut self, ui: &mut egui::Ui) {
@@ -877,6 +1103,17 @@ impl App {
         });
         if let Some(sp) = spec(&kind) {
             ui.small(sp.doc);
+        }
+        if kind.starts_with("f_") && kind != "f_out" {
+            let none = BTreeMap::new();
+            match materialcraft::func::probe_value(&self.g, &self.g.subgraphs, id, &none) {
+                Ok(v) => {
+                    ui.label(egui::RichText::new(format!("{} = {}", v.pin().name(), v.show())).monospace());
+                }
+                Err(e) => {
+                    ui.colored_label(Color32::from_rgb(255, 120, 110), e);
+                }
+            }
         }
         if let Some(e) = self.node_err.get(&id) {
             ui.colored_label(Color32::from_rgb(255, 120, 110), e);
@@ -1070,13 +1307,74 @@ impl App {
                     ui.small(format!("Exports as {}.png at {0}x{0}. The 3D view uses this output as the '{}' channel.", self.g.size, usage));
                 }
                 "pixel_processor" => {
-                    ui.small("vars: u v x y w h r g b l   funcs: sin cos abs sqrt min max pow floor fract clamp mix step smoothstep noise rand tex atan2 exp log");
-                    for key in ["expr", "expr_g", "expr_b", "expr_a"] {
-                        let mut s = node.strs.get(key).cloned().unwrap_or_default();
-                        if ui.add(egui::TextEdit::singleline(&mut s).hint_text(key).desired_width(f32::INFINITY)).changed() {
-                            strs.push((key.to_string(), if s.trim().is_empty() { None } else { Some(s.replace('"', "")) }));
+                    let funcs: Vec<String> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "function").map(|(k, _)| k.clone()).collect();
+                    name_combo(ui, id, &node, "fn", "Function graph", &funcs, &mut strs);
+                    if node.strs.get("fn").map(|f| !f.is_empty()).unwrap_or(false) {
+                        ui.small("The function runs once per pixel. Its position input is the pixel position; it can sample the inputs.");
+                    } else {
+                        ui.small("vars: u v x y w h r g b l   funcs: sin cos abs sqrt min max pow floor fract clamp mix step smoothstep noise rand tex atan2 exp log");
+                        for key in ["expr", "expr_g", "expr_b", "expr_a"] {
+                            let mut s = node.strs.get(key).cloned().unwrap_or_default();
+                            if ui.add(egui::TextEdit::singleline(&mut s).hint_text(key).desired_width(f32::INFINITY)).changed() {
+                                strs.push((key.to_string(), if s.trim().is_empty() { None } else { Some(s.replace('"', "")) }));
+                            }
                         }
                     }
+                }
+                "value_processor" => {
+                    let funcs: Vec<String> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "function").map(|(k, _)| k.clone()).collect();
+                    name_combo(ui, id, &node, "fn", "Function graph", &funcs, &mut strs);
+                    ui.small("The function runs once. A float fills the image with grey, a float3 or float4 with colour. It can read image statistics.");
+                }
+                "fx_map" => {
+                    let progs: Vec<String> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "fxmap").map(|(k, _)| k.clone()).collect();
+                    name_combo(ui, id, &node, "program", "Pattern program", &progs, &mut strs);
+                    if let Some(p) = node.strs.get("program").filter(|p| progs.contains(p)) {
+                        if ui.button("Open program").clicked() {
+                            self.acts.push(Act::EnterSub(p.clone()));
+                        }
+                    }
+                }
+                "svg" => {
+                    let file = node.strs.get("file").cloned().unwrap_or_default();
+                    ui.label(if file.is_empty() { "(no file)".to_string() } else { file });
+                    if ui.button("Browse SVG...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("SVG image", &["svg"]).pick_file() {
+                            strs.push(("file".into(), Some(p.to_string_lossy().to_string())));
+                        }
+                    }
+                }
+                "text" => {
+                    let mut t = node.strs.get("text").cloned().unwrap_or_default();
+                    if ui.add(egui::TextEdit::multiline(&mut t).hint_text("text").desired_rows(2).desired_width(f32::INFINITY)).changed() {
+                        strs.push(("text".into(), Some(t.replace('"', ""))));
+                    }
+                    let font = node.strs.get("font").cloned().unwrap_or_default();
+                    ui.label(if font.is_empty() { "Font: built-in".to_string() } else { format!("Font: {font}") });
+                    ui.horizontal(|ui| {
+                        if ui.button("Browse TrueType font...").clicked() {
+                            if let Some(p) = rfd::FileDialog::new().add_filter("TrueType font", &["ttf"]).pick_file() {
+                                strs.push(("font".into(), Some(p.to_string_lossy().to_string())));
+                            }
+                        }
+                        if !font.is_empty() && ui.button("Built-in").clicked() {
+                            strs.push(("font".into(), None));
+                        }
+                    });
+                }
+                "curve" => curve_editor(ui, id, &node, &mut strs),
+                "f_string" => str_row(ui, &node, "v", "Text", "", &mut strs),
+                "f_swizzle" => str_row(ui, &node, "mask", "Components", "xyzw or rgba, e.g. zyx", &mut strs),
+                "f_set" | "f_get" | "f_input" | "f_graph_input" | "input_value" => {
+                    str_row(ui, &node, "name", "Name", "name", &mut strs);
+                    if matches!(kind.as_str(), "f_input" | "f_graph_input" | "input_value") && node.nums.get("type").copied().unwrap_or(0.0) as i32 == 9 {
+                        str_row(ui, &node, "v", "Default text", "", &mut strs);
+                    }
+                }
+                "f_sample_gray" | "f_sample_color" | "f_image_avg" | "f_image_min" | "f_image_max" => str_row(ui, &node, "slot", "Image input", "in", &mut strs),
+                "f_call" => {
+                    let funcs: Vec<String> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "function").map(|(k, _)| k.clone()).collect();
+                    name_combo(ui, id, &node, "fn", "Function", &funcs, &mut strs);
                 }
                 "bitmap" => {
                     let file = node.strs.get("file").cloned().unwrap_or_default();
@@ -1139,6 +1437,7 @@ impl App {
             if rows.is_empty() && !matches!(kind.as_str(), "color" | "colorize" | "output" | "pixel_processor" | "bitmap" | "subgraph" | "dot" | "to_gray" | "merge") {
                 ui.small("No adjustable parameters.");
             }
+            let funcs_all: Vec<String> = if exposable { self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "function").map(|(k, _)| k.clone()).collect() } else { Vec::new() };
             let mut draw = |ui: &mut egui::Ui, i: usize| {
                 let (key, lbl, pk) = &rows[i];
                 let cur = node.nums.get(key).copied();
@@ -1185,6 +1484,25 @@ impl App {
                         if ui.selectable_label(is_exp, "P").on_hover_text("Publish this parameter (settable in .mca packages)").clicked() {
                             expose = Some((key.clone(), lo, hi));
                         }
+                        // drive this parameter by a function graph
+                        let fkey = format!("fn.{key}");
+                        let bound = node.strs.get(&fkey).cloned().unwrap_or_default();
+                        if !funcs_all.is_empty() || !bound.is_empty() {
+                            ui.menu_button(if bound.is_empty() { "fn" } else { "fn*" }, |ui| {
+                                if ui.selectable_label(bound.is_empty(), "(not driven)").clicked() {
+                                    strs.push((fkey.clone(), None));
+                                    ui.close_menu();
+                                }
+                                for f in &funcs_all {
+                                    if ui.selectable_label(*f == bound, f).clicked() {
+                                        strs.push((fkey.clone(), Some(f.clone())));
+                                        ui.close_menu();
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Drive this parameter by a function graph");
+                        }
                     }
                 });
             };
@@ -1226,6 +1544,32 @@ impl App {
             } else {
                 for i in 0..rows.len() {
                     draw(ui, i);
+                }
+            }
+            // parameters driven by functions: show the function and its inputs
+            let bound: Vec<(String, String)> = node.strs.iter().filter_map(|(k, v)| k.strip_prefix("fn.").map(|p| (p.to_string(), v.clone()))).collect();
+            if !bound.is_empty() {
+                ui.separator();
+                ui.strong("FUNCTION-DRIVEN PARAMETERS");
+            }
+            for (param, fname) in &bound {
+                ui.label(format!("{param}  <-  {fname}()"));
+                match materialcraft::func::compile_named(&self.g.subgraphs, fname) {
+                    Ok(p) => {
+                        for (iname, _, def) in &p.inputs {
+                            let key = format!("fa.{param}.{iname}");
+                            let mut v = node.nums.get(&key).copied().unwrap_or(def.as_f32());
+                            ui.horizontal(|ui| {
+                                row_label(ui, iname);
+                                if ui.add(egui::DragValue::new(&mut v).speed(0.01)).changed() {
+                                    nums.push((key.clone(), v));
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        ui.colored_label(Color32::from_rgb(255, 120, 110), e);
+                    }
                 }
             }
         });

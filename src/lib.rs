@@ -3,7 +3,11 @@
 //! The core library has no external dependencies; it builds on Windows, Linux and macOS.
 pub mod bake;
 pub mod export;
+pub mod curve;
 pub mod expr;
+pub mod font;
+pub mod func;
+pub mod fxmap;
 pub mod graph;
 #[cfg(feature = "gui")]
 pub mod gpu3d;
@@ -20,3 +24,4 @@ pub mod scatter;
 pub mod tiff;
 pub mod tex;
 pub mod v3;
+pub mod vector;
