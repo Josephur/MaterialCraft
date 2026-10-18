@@ -369,6 +369,10 @@ impl App {
                         }
                     }
                 }
+                if kind != "output" && kind != "subgraph" && ui.button("Trace to spline").on_hover_text("Outline the light areas of this node's picture as a spline and draw it with a Path Stroke node").clicked() {
+                    acts.push(Act::SplineTrace(id));
+                    ui.close();
+                }
                 if ui.button("Create subgraph from selection").clicked() {
                     acts.push(Act::Subgraph);
                     ui.close();
@@ -618,6 +622,7 @@ impl App {
             Act::ExitSub => self.exit_sub(),
             Act::SplineEdit(id) => self.spl_start(id),
             Act::SplineImportSvg(id) => self.spl_import_svg(id),
+            Act::SplineTrace(id) => self.spl_trace(id),
             Act::SplDelete => self.spl_delete_point(),
             Act::AutoLayout => {
                 self.snap();

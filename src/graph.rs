@@ -239,16 +239,40 @@ pub const SPECS: &[Spec] = &[
     s!("perlin_3d", [], [], "slice of 3D noise that loops in depth: scale depth octaves gain seed contrast invert"),
     s!("paving", [], [], "irregular paving stones (outputs: height, cell_id, gaps): scale jitter gap bevel height_variation dome seed contrast invert"),
     s!("wire_mesh", [], [], "woven or chain-link wire: count_x count_y wire_width weave_depth mode(0 square,1 diamond) contrast invert"),
-    s!("path_stroke", [], [], "line along a spline (dashes, taper, profile 0 flat,1 round,2 bevel): file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit width softness profile taper_start taper_end dash_length dash_gap contrast invert"),
-    s!("path_fill", [], [], "inside of closed splines: file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit even_odd softness contrast invert"),
-    s!("path_distance", [], [], "distance to a spline: mode(0 falloff from the line,1 signed,2 inward gradient,3 outward gradient) range file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
-    s!("path_border", [], [], "border or bevel along closed splines (outputs: height, mask): width side(0 inside,1 outside,2 both) profile(0 linear,1 round,2 smooth) flat file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
-    s!("path_scatter", [], ["in"], "copies of a pattern along a spline: spacing scale scale_variation jitter_along jitter_across rotation(0 follow,1 fixed,2 random) angle angle_variation density opacity_variation blend(0 max,1 add) offset seed file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
-    s!("path_track", [], [], "railway track along a spline (outputs: height, rails, sleepers): gauge rail_width sleeper_spacing sleeper_length sleeper_width rail_height sleeper_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
-    s!("path_cable", [], [], "twisted cable along a spline (outputs: height, mask, strand): width strands strand_size twist file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
-    s!("path_seam", [], [], "stitched seam along a spline (outputs: height, stitches): stitch_length stitch_gap stitch_width groove_width groove_depth stitch_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert"),
+    s!("path_stroke", [], [], "line along a spline (dashes, taper, profile 0 flat,1 round,2 bevel): file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit width softness profile taper_start taper_end dash_length dash_gap contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_fill", [], [], "inside of closed splines: file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit even_odd softness contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_distance", [], [], "distance to a spline: mode(0 falloff from the line,1 signed,2 inward gradient,3 outward gradient) range file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_border", [], [], "border or bevel along closed splines (outputs: height, mask): width side(0 inside,1 outside,2 both) profile(0 linear,1 round,2 smooth) flat file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_scatter", [], ["in", "mask"], "copies of a pattern along a spline: spacing scale scale_variation jitter_along jitter_across rotation(0 follow,1 fixed,2 random) angle angle_variation density opacity_variation blend(0 max,1 add) offset seed file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_track", [], [], "railway track along a spline (outputs: height, rails, sleepers): gauge rail_width sleeper_spacing sleeper_length sleeper_width rail_height sleeper_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_cable", [], [], "twisted cable along a spline (outputs: height, mask, strand): width strands strand_size twist file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_splatter", [], ["in", "mask"], "several rows of copies of a pattern along a spline, thinned out by a mask: rows row_spacing spacing scale scale_variation jitter_along jitter_across rotation(0 follow,1 fixed,2 random) angle angle_variation density opacity_variation blend(0 max,1 add) offset seed file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_warp", ["in"], [], "push, slide or swirl a picture near a spline: width amount mode(0 push away,1 slide along,2 swirl) file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
+    s!("path_sample", [], [], "maps from a spline (outputs: position, width, height, side): width file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse contrast invert"),
+    s!("path_seam", [], [], "stitched seam along a spline (outputs: height, stitches): stitch_length stitch_gap stitch_width groove_width groove_depth stitch_height file preset(0 line,1 diagonal,2 wave,3 circle,4 spiral,5 zigzag,6 figure eight) amplitude frequency path(-1 all) fit contrast invert file2 file3 file4 path_count path_scale path_rotate path_x path_y path_mirror(0 none,1 horizontal,2 vertical,3 both) path_reverse"),
     s!("halftone", ["in"], [], "dots whose size follows brightness: cells mode(0 grid,1 diagonal) softness gain"),
     s!("reaction_diffusion", ["in"], [], "growing spots and stripes seeded by the input: resolution iterations feed kill spots seed"),
+    s!("herringbone", [], [], "herringbone pavement: scale gap bevel variation mode(0 height,1 brick id,2 orientation) seed contrast invert"),
+    s!("arc_pavement", [], [], "fan-shaped arc pavement: scale rings stones gap bevel variation mode(0 height,1 stone id) seed contrast invert"),
+    s!("anisotropic_noise", [], [], "noise stretched along any direction, still tiling: scale stretch angle octaves gain seed contrast invert"),
+    s!("fur_noise", [], [], "fur-like hairs: count length thickness angle angle_variation curl taper root_shade brightness_variation seed contrast invert"),
+    s!("moisture_noise", [], [], "damp patches with drips: scale coverage softness drips drip_length seed contrast invert"),
+    s!("microscope_noise", [], [], "cells seen through a microscope: scale jitter membrane nucleus grain mode(0 combined,1 membrane,2 nuclei,3 cell id) seed contrast invert"),
+    s!("worley_3d", [], [], "cellular noise in 3D, one slice per z: scale z jitter mode(0 f1,1 f2,2 f2-f1,3 cell id) seed contrast invert"),
+    s!("fbm_3d", [], [], "fractal noise in 3D, one slice per z: scale z octaves gain mode(0 fbm,1 ridged,2 turbulence) seed contrast invert"),
+    s!("volume_mask", [], [], "slice through a repeated 3D shape as a mask: shape(0 sphere,1 box,2 cylinder,3 torus,4 cone) size repeat z roundness softness contrast invert"),
+    s!("gradient_3d", [], [], "distance gradient of a repeated 3D shape slice: shape size repeat z roundness range contrast invert"),
+    s!("shape_extrude", ["in"], [], "extrude shapes along a direction (outputs: height, walls): length angle top falloff contrast invert"),
+    s!("shape_mapper", ["in"], ["pattern"], "put a pattern into every flood-filled region: scale rotation_random flip_random keep_aspect seed contrast invert"),
+    s!("cross_section", ["in"], [], "plot of the values along one row: position height thickness fill contrast invert"),
+    s!("uber_emboss", ["height"], ["mask", "gloss"], "emboss with gloss (outputs: emboss, highlight, shadow): intensity angle elevation gloss highlight gain"),
+    s!("diffusion", ["in"], ["mask"], "fill unknown pixels from the known ones (alpha or mask): smoothing gray"),
+    s!("summed_area_table", ["in"], [], "running sums of the image: per_channel normalize"),
+    s!("vector_morph", ["in", "vector"], [], "move pixels along a vector map and fill the holes: amount directx"),
+    s!("safe_transform", ["in"], [], "transform that stays seamless: mode(0 tile-safe,1 free) angle scale_x scale_y offset_x offset_y filter(0 nearest,1 bilinear,2 bicubic) edge(0 repeat,1 mirror,2 clamp,3 empty) rotate_after_scale"),
+    s!("snow_filter", ["height"], ["mask"], "snow on upward-facing surfaces (outputs: height, mask): coverage slope softness breakup height_bias depth steepness scale seed"),
+    s!("season_filter", ["in"], ["mask"], "recolour foliage for a season (0 spring,1 summer,2 autumn,3 winter): season strength variation foliage_hue foliage_range scale seed"),
+    s!("water_filter", ["height"], ["base"], "water in the low parts (outputs: color, mask, height, roughness): level softness tint_r tint_g tint_b murkiness wet_edge ripples ripple_scale dry_roughness wet_roughness seed"),
     s!("fxaa", ["in"], [], "smooth jagged edges: strength threshold"),
     s!("bilateral_blur", ["in"], ["guide"], "blur that keeps edges: radius range"),
 ];
@@ -261,12 +285,12 @@ pub fn category(kind: &str) -> &'static str {
     match kind {
         "color" | "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise" | "grunge" | "plasma"
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
-        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" => "Generators",
+        | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" | "path_splatter" | "path_sample" | "herringbone" | "arc_pavement" | "anisotropic_noise" | "fur_noise" | "moisture_noise" | "microscope_noise" | "worley_3d" | "fbm_3d" | "volume_mask" | "gradient_3d" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
         "bitmap" | "input" | "input_value" | "subgraph" | "output" | "dot" => "Utility",
         k if k.starts_with("f_") => "Function",
         k if k.starts_with("fxm_") => "Pattern Program",
-        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" => "Material",
+        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" | "snow_filter" | "season_filter" | "water_filter" => "Material",
         _ => "Filters",
     }
 }
@@ -302,6 +326,29 @@ pub fn label(kind: &str) -> String {
         "path_track" => "Path Track",
         "path_cable" => "Path Cable",
         "path_seam" => "Path Seam",
+        "path_splatter" => "Path Splatter",
+        "path_warp" => "Path Warp",
+        "path_sample" => "Path Sample",
+        "herringbone" => "Herringbone",
+        "arc_pavement" => "Arc Pavement",
+        "anisotropic_noise" => "Anisotropic Noise",
+        "fur_noise" => "Fur Noise",
+        "moisture_noise" => "Moisture Noise",
+        "microscope_noise" => "Microscope Noise",
+        "worley_3d" => "Worley Noise 3D",
+        "fbm_3d" => "Fractal Noise 3D",
+        "volume_mask" => "Volume Mask",
+        "gradient_3d" => "Gradient 3D",
+        "shape_extrude" => "Shape Extrude",
+        "shape_mapper" => "Shape Mapper",
+        "cross_section" => "Cross Section",
+        "uber_emboss" => "Uber Emboss",
+        "summed_area_table" => "Summed Area Table",
+        "vector_morph" => "Vector Morph",
+        "safe_transform" => "Safe Transform",
+        "snow_filter" => "Snow",
+        "season_filter" => "Season",
+        "water_filter" => "Water",
         "text" => "Text",
         "fx_map" => "Pattern Program Map",
         "input_value" => "Input Value",
@@ -407,7 +454,7 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
     let (a, b) = match kind {
         "sdf_op" | "sdf_mask" => (102, 103),
         "flood_fill" => (105, 105),
-        k if k.starts_with("flood_fill_") => (106, 106),
+        k if k.starts_with("flood_fill_") || k == "shape_mapper" => (106, 106),
         "dust" | "curvature_smooth" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "normal_facing" | "normal_transform" | "normal_sobel" => (107, 107),
         "spec_gloss_to_metal_rough" => (108, 100),
         "palette_apply" => (108, 108),
@@ -1745,16 +1792,18 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
         }
         if n.kind.starts_with("path_") {
             // an embedded spline can be edited under the same name: its content is part of the identity
-            if let Some(b) = n.strs.get("file").and_then(|f| ctx.res.get(f)) {
-                h.u64(b.len() as u64);
-                for ch in b.chunks(8) {
-                    h.u64(ch.iter().fold(0u64, |a, &x| a.wrapping_mul(257).wrapping_add(x as u64)));
+            for key in ["file", "file2", "file3", "file4"] {
+                if let Some(b) = n.strs.get(key).and_then(|f| ctx.res.get(f)) {
+                    h.u64(b.len() as u64);
+                    for ch in b.chunks(8) {
+                        h.u64(ch.iter().fold(0u64, |a, &x| a.wrapping_mul(257).wrapping_add(x as u64)));
+                    }
                 }
             }
         }
         if matches!(n.kind.as_str(), "bitmap" | "svg" | "text") || n.kind.starts_with("path_") {
             // a file on disk can change under us: its size and modification time are part of the identity
-            for f in [n.strs.get("file"), n.strs.get("font")].into_iter().flatten() {
+            for f in [n.strs.get("file"), n.strs.get("file2"), n.strs.get("file3"), n.strs.get("file4"), n.strs.get("font")].into_iter().flatten() {
                 if !ctx.res.contains_key(f) {
                     if let Ok(m) = std::fs::metadata(f).or_else(|_| std::fs::metadata(f.replace('\\', "/"))) {
                         h.u64(m.len());
@@ -2015,6 +2064,11 @@ pub fn node_outputs(kind: &str) -> &'static [&'static str] {
         "path_track" => &["height", "rails", "sleepers"],
         "path_cable" => &["height", "mask", "strand"],
         "path_seam" => &["height", "stitches"],
+        "path_sample" => &["position", "width", "height", "side"],
+        "shape_extrude" => &["height", "walls"],
+        "uber_emboss" => &["emboss", "highlight", "shadow"],
+        "snow_filter" => &["height", "mask"],
+        "water_filter" => &["color", "mask", "height", "roughness"],
         _ => &[],
     }
 }
@@ -2159,6 +2213,11 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
                 Pin::Color
             }
         }
+        "water_filter" => match out {
+            Some("color") | None => Pin::Color,
+            _ => Pin::Gray,
+        },
+        "uber_emboss" | "shape_extrude" | "cross_section" | "snow_filter" => Pin::Gray,
         "color_match" => match out {
             Some("mask") => Pin::Gray,
             _ => Pin::Color,
@@ -2190,7 +2249,7 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
         "white_noise" | "gaussian_noise" | "perlin" | "fbm" | "clouds" | "voronoi" | "voronoi_fractal" | "bnw_spots" | "crystal" | "directional_noise"
         | "grunge" | "plasma" | "gradient" | "gradient_axial" | "gradient_circular" | "gradient_reflected" | "circle" | "rect" | "polygon" | "shape"
         | "star" | "starburst" | "checker" | "bricks" | "stripes" | "weave" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid"
-        | "grunge_map" | "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "reaction_diffusion" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" => Pin::Gray,
+        | "grunge_map" | "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "reaction_diffusion" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" | "path_splatter" | "path_sample" | "herringbone" | "arc_pavement" | "anisotropic_noise" | "fur_noise" | "moisture_noise" | "microscope_noise" | "worley_3d" | "fbm_3d" | "volume_mask" | "gradient_3d" => Pin::Gray,
         "weave_generator" => Pin::Gray,
         // pixel processor and the scatter family produce colour only when colour comes in
         "pixel_processor" | "value_processor" | "fx_map" => Pin::Color,
@@ -3362,7 +3421,10 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                         Some(t) => t,
                         None => match crate::nodes6::compute(other, id, n, ins, s, hs, seed, &|f| read_resource(id, f, ctx).map_err(|e| format!("{e}")))? {
                             Some(t) => t,
-                            None => return Err(Error::UnknownNode(id, other.to_string())),
+                            None => match crate::nodes7::compute(other, id, n, ins, s, hs, seed)? {
+                                Some(t) => t,
+                                None => return Err(Error::UnknownNode(id, other.to_string())),
+                            },
                         },
                     },
                 },

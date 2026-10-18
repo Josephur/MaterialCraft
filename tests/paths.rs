@@ -14,7 +14,7 @@ fn sum(t: &materialcraft::tex::Tex) -> f32 {
 #[test]
 fn spline_text_roundtrip_and_errors() {
     let mut sp = Spline::default();
-    sp.paths.push(SPath { closed: true, smooth: false, pts: vec![SPoint::new(0.1, 0.2), SPoint { p: [0.5, 0.25], hin: Some([-0.1, 0.0]), hout: Some([0.1, 0.0]), w: 2.0 }, SPoint::new(0.3, 0.9)] });
+    sp.paths.push(SPath { closed: true, smooth: false, pts: vec![SPoint::new(0.1, 0.2), SPoint { p: [0.5, 0.25], hin: Some([-0.1, 0.0]), hout: Some([0.1, 0.0]), w: 2.0, z: 1.0, tan: 0 }, SPoint::new(0.3, 0.9)] });
     sp.paths.push(SPath { pts: vec![SPoint::new(0.0, 0.0), SPoint::new(1.0, 1.0)], ..Default::default() });
     let text = sp.to_text();
     let back = Spline::parse(&text).unwrap();
@@ -193,4 +193,154 @@ fn splitting_a_segment_keeps_the_curve() {
     assert_eq!(at, c.pts.len() - 1);
     let (hi, ho) = c.handles(0);
     assert!(hi[0].is_finite() && ho[1].is_finite());
+}
+
+fn graph_with(text: &str, files: &[(&str, &str)]) -> Graph {
+    let mut g = Graph::parse(text).unwrap_or_else(|e| panic!("{e}"));
+    for (k, v) in files {
+        g.resources.insert((*k).into(), v.as_bytes().to_vec());
+    }
+    g
+}
+
+fn eval(g: &Graph, size: usize) -> materialcraft::tex::Tex {
+    g.evaluate(Some(size)).unwrap_or_else(|e| panic!("{e}")).remove("o").unwrap()
+}
+
+const LINE: &str = "spline 1\npath smooth=0\npt 0.1 0.5\npt 0.9 0.5\n";
+
+#[test]
+fn tangent_modes_and_heights_are_saved() {
+    let sp = Spline::parse("spline 1\npath\npt 0.1 0.2 tan=3 z=0.25\npt 0.5 0.5 tan=1\npt 0.9 0.2 tan=free\n").unwrap();
+    assert_eq!(sp.paths[0].pts[0].tan, 3);
+    assert_eq!(sp.paths[0].pts[2].tan, 2);
+    assert!((sp.paths[0].pts[0].z - 0.25).abs() < 1e-6);
+    let back = Spline::parse(&sp.to_text()).unwrap();
+    assert_eq!(back, sp);
+    assert!(Spline::parse("spline 1\npath\npt 0 0 tan=9").is_err());
+    // a corner point has no automatic handle, so the curve through it bends sharply
+    let mut a = sp.clone();
+    a.paths[0].pts[0].tan = 0;
+    let (ca, cb) = (a.flatten(100.0, 100.0), sp.flatten(100.0, 100.0));
+    assert!(ca[0].pts.iter().zip(&cb[0].pts).any(|(p, q)| (p[0] - q[0]).abs() + (p[1] - q[1]).abs() > 0.1));
+}
+
+#[test]
+fn transform_merge_and_reverse() {
+    let sp = Spline::parse(LINE).unwrap();
+    let moved = sp.transformed([1.0, 1.0], 0.0, [0.0, 0.25], (false, false), false);
+    assert!((moved.paths[0].pts[0].p[1] - 0.75).abs() < 1e-6);
+    let turned = sp.transformed([1.0, 1.0], 0.25, [0.0, 0.0], (false, false), false);
+    assert!((turned.paths[0].pts[0].p[0] - 0.5).abs() < 1e-5 && (turned.paths[0].pts[0].p[1] - 0.1).abs() < 1e-5);
+    let rev = sp.transformed([1.0, 1.0], 0.0, [0.0, 0.0], (false, false), true);
+    assert!((rev.paths[0].pts[0].p[0] - 0.9).abs() < 1e-6);
+    // mirroring flips the direction of travel; reverse puts it back
+    let m = sp.transformed([1.0, 1.0], 0.0, [0.0, 0.0], (true, false), false);
+    assert!((m.paths[0].pts[0].p[0] - 0.1).abs() < 1e-6, "mirror alone keeps the start index");
+    let mut both = sp.clone();
+    both.merge(moved);
+    assert_eq!(both.paths.len(), 2);
+}
+
+#[test]
+fn node_options_move_merge_and_pick_paths() {
+    let base = "size 256\nnode 1 path_stroke file=\"a.spl\" width=8";
+    let plain = eval(&graph_with(&format!("{base}\noutput o 1\n"), &[("a.spl", LINE)]), 256);
+    assert!(plain.at(128, 128)[0] > 0.9 && plain.at(128, 64)[0] < 0.01);
+    // move the path up a quarter of the texture
+    let up = eval(&graph_with(&format!("{base} path_y=-0.25\noutput o 1\n"), &[("a.spl", LINE)]), 256);
+    assert!(up.at(128, 64)[0] > 0.9 && up.at(128, 128)[0] < 0.01);
+    // a second file adds a path
+    let two = eval(&graph_with(&format!("{base} file2=\"b.spl\"\noutput o 1\n"), &[("a.spl", LINE), ("b.spl", "spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n")]), 256);
+    assert!(two.at(128, 128)[0] > 0.9 && two.at(128, 51)[0] > 0.9);
+    // choose the second path of one file only
+    let both = "spline 1\npath smooth=0\npt 0.1 0.5\npt 0.9 0.5\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n";
+    let second = eval(&graph_with(&format!("{base} path=1\noutput o 1\n"), &[("a.spl", both)]), 256);
+    assert!(second.at(128, 51)[0] > 0.9 && second.at(128, 128)[0] < 0.01);
+    let range = eval(&graph_with(&format!("{base} path=0 path_count=2\noutput o 1\n"), &[("a.spl", both)]), 256);
+    assert!(range.at(128, 51)[0] > 0.9 && range.at(128, 128)[0] > 0.9);
+    // the edited content of the second file changes the picture
+    let mut g = graph_with(&format!("{base} file2=\"b.spl\"\noutput o 1\n"), &[("a.spl", LINE), ("b.spl", "spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n")]);
+    let a = eval(&g, 256);
+    g.resources.insert("b.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec());
+    let b = eval(&g, 256);
+    assert!(a.at(128, 51)[0] > 0.9 && b.at(128, 51)[0] < 0.01 && b.at(128, 205)[0] > 0.9);
+}
+
+#[test]
+fn path_sample_gives_position_width_height_and_side() {
+    let sp = "spline 1\npath smooth=0\npt 0.1 0.5 z=0.2 w=0.5\npt 0.9 0.5 z=1 w=2\n";
+    let g = |o: &str| graph_with(&format!("size 256\nnode 1 path_sample file=\"a.spl\" width=40\noutput o 1.{o}\n"), &[("a.spl", sp)]);
+    let pos = eval(&g("position"), 256);
+    assert!(pos.at(60, 128)[0] < pos.at(190, 128)[0] && pos.at(128, 20)[0] < 0.01);
+    let wid = eval(&g("width"), 256);
+    assert!(wid.at(200, 128)[0] > wid.at(40, 128)[0]);
+    let hgt = eval(&g("height"), 256);
+    assert!(hgt.at(200, 128)[0] > hgt.at(40, 128)[0] + 0.3);
+    let side = eval(&g("side"), 256);
+    let (a, b) = (side.at(128, 120)[0], side.at(128, 136)[0]);
+    assert!((a - b).abs() > 0.1 && (side.at(128, 10)[0] - 0.5).abs() < 1e-4, "{a} {b}");
+}
+
+#[test]
+fn path_warp_moves_the_picture_near_the_path_only() {
+    let src = "node 1 pixel_processor expr=\"u\"\n";
+    let plain = eval(&graph_with(&format!("size 256\n{src}node 2 path_warp in=@1 file=\"a.spl\" width=60 amount=0\noutput o 2\n"), &[("a.spl", LINE)]), 256);
+    let warped = eval(&graph_with(&format!("size 256\n{src}node 2 path_warp in=@1 file=\"a.spl\" width=60 amount=30 mode=1\noutput o 2\n"), &[("a.spl", LINE)]), 256);
+    assert!((plain.at(128, 128)[0] - 0.5).abs() < 0.01);
+    assert!((warped.at(128, 128)[0] - plain.at(128, 128)[0]).abs() > 0.05, "pixels on the path slide");
+    assert!((warped.at(128, 10)[0] - plain.at(128, 10)[0]).abs() < 1e-4, "far from the path nothing moves");
+    // push away moves pixels sideways: the image changes where the gradient has a vertical part
+    let v = "node 1 pixel_processor expr=\"v\"\n";
+    let push = eval(&graph_with(&format!("size 256\n{v}node 2 path_warp in=@1 file=\"a.spl\" width=60 amount=20 mode=0\noutput o 2\n"), &[("a.spl", LINE)]), 256);
+    assert!((push.at(128, 118)[0] - 118.5 / 256.0).abs() > 0.02);
+}
+
+#[test]
+fn splatter_makes_rows_and_listens_to_a_mask() {
+    let base = "size 256\nnode 1 path_splatter file=\"a.spl\" rows=3 row_spacing=30 spacing=16 scale=12 seed=3";
+    let rows = eval(&graph_with(&format!("{base}\noutput o 1\n"), &[("a.spl", LINE)]), 256);
+    let one = eval(&graph_with("size 256\nnode 1 path_splatter file=\"a.spl\" rows=1 spacing=16 scale=12 seed=3\noutput o 1\n", &[("a.spl", LINE)]), 256);
+    assert!(sum(&rows) > sum(&one) * 2.0, "three rows cover more than one");
+    // the outer rows sit 15 px (30 px at 512) above and below the path
+    assert!((0..256).any(|x| rows.at(x, 113)[0] > 0.5) && (0..256).any(|x| rows.at(x, 143)[0] > 0.5));
+    assert!((0..256).all(|x| one.at(x, 113)[0] < 0.01), "a single row stays on the path");
+    // a mask that is black on the left half removes the copies there
+    let masked = eval(&graph_with(&format!("size 256\nnode 9 pixel_processor expr=\"step(0.5,u)\"\nnode 1 path_splatter file=\"a.spl\" rows=3 row_spacing=30 spacing=16 scale=12 seed=3 mask=@9\noutput o 1\n"), &[("a.spl", LINE)]), 256);
+    let half = |t: &materialcraft::tex::Tex, x0: i64| (x0..x0 + 80).map(|x| (0..256).map(|y| t.at(x, y)[0]).sum::<f32>()).sum::<f32>();
+    assert!(half(&masked, 20) < half(&rows, 20) * 0.1 && half(&masked, 160) > half(&rows, 160) * 0.5);
+}
+
+#[test]
+fn a_picture_is_traced_into_a_spline() {
+    use materialcraft::tex::Tex;
+    // a bright disc on a dark ground
+    let t = Tex::from_fn(128, 128, |u, v| {
+        let d = ((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt();
+        let g = if d < 0.25 { 1.0 } else { 0.0 };
+        [g, g, g, 1.0]
+    });
+    let sp = Spline::from_mask(&t, 0.5, 0.002).unwrap();
+    assert_eq!(sp.paths.len(), 1);
+    assert!(sp.paths[0].closed && sp.paths[0].pts.len() >= 8);
+    for q in &sp.paths[0].pts {
+        let d = ((q.p[0] - 0.5).powi(2) + (q.p[1] - 0.5).powi(2)).sqrt();
+        assert!((d - 0.25).abs() < 0.01, "point at distance {d}");
+    }
+    // the traced spline fills to about the area of the disc
+    let g = graph_with("size 128\nnode 1 path_fill file=\"t.spl\"\noutput o 1\n", &[]);
+    let mut g = g;
+    g.resources.insert("t.spl".into(), sp.to_text().into_bytes());
+    let area = sum(&eval(&g, 128));
+    assert!((area - std::f32::consts::PI * 0.0625).abs() < 0.02, "area {area}");
+    // a stripe across the seam comes out as an open path that ends one texture further
+    let stripe = Tex::from_fn(64, 64, |u, _| {
+        let g = if u < 0.1 || u > 0.9 { 1.0 } else { 0.0 };
+        [g, g, g, 1.0]
+    });
+    let ss = Spline::from_mask(&stripe, 0.5, 0.002).unwrap();
+    assert!(!ss.paths.is_empty() && ss.paths.iter().all(|p| p.pts.iter().all(|q| q.p[0].is_finite())));
+    // flat pictures cannot be traced
+    let flat = Tex::from_fn(16, 16, |_, _| [0.0, 0.0, 0.0, 1.0]);
+    assert!(Spline::from_mask(&flat, 0.5, 0.002).is_err());
 }

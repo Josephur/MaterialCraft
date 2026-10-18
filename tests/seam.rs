@@ -2,8 +2,9 @@
 use materialcraft::graph::{demo_graph_for, Graph, SPECS};
 use materialcraft::tex::Tex;
 
-/// Nodes whose result is a strip of swatches (data, not a surface), so it has no reason to tile.
-const DATA_STRIPS: &[&str] = &["palette_extract"];
+/// Nodes whose result is data and not a surface (a strip of swatches, a plot of a row, a running sum), so it has no
+/// reason to tile.
+const DATA_STRIPS: &[&str] = &["palette_extract", "cross_section", "summed_area_table"];
 
 /// (seam jump, largest jump anywhere else): the mean difference across the wrap-around border, and the
 /// steepest mean difference between any two neighbouring columns/rows inside the texture. Hard-edged patterns whose

@@ -40,6 +40,8 @@ struct Seg {
     s0: f32,
     wa: f32,
     wb: f32,
+    za: f32,
+    zb: f32,
     path: u32,
 }
 
@@ -72,6 +74,12 @@ struct Hit {
     wf: f32,
     plen: f32,
     closed: bool,
+    /// height value at the nearest point
+    z: f32,
+    /// unit vector from the nearest point to the pixel (zero on the path itself)
+    away: [f32; 2],
+    /// unit direction of the path at the nearest point
+    dir: [f32; 2],
 }
 
 impl Field {
@@ -92,7 +100,7 @@ impl Field {
                 if len < 1e-6 || !len.is_finite() {
                     continue;
                 }
-                segs.push(Seg { a, d, len, s0, wa: poly.w[i], wb: poly.w[(i + 1) % n], path: pi as u32 });
+                segs.push(Seg { a, d, len, s0, wa: poly.w[i], wb: poly.w[(i + 1) % n], za: poly.z.get(i).copied().unwrap_or(1.0), zb: poly.z.get((i + 1) % n).copied().unwrap_or(1.0), path: pi as u32 });
                 s0 += len;
             }
             paths.push(PInfo { len: s0.max(1e-3), closed });
@@ -128,7 +136,7 @@ impl Field {
         let cx = ((x / self.cs) as usize).min(self.gw - 1);
         let cy = ((y / self.cs) as usize).min(self.gh - 1);
         let mut best = self.reach * self.reach;
-        let mut found: Option<(usize, f32, f32, f32)> = None;
+        let mut found: Option<(usize, f32, f32, f32, [f32; 2])> = None;
         for &(si, sx, sy) in &self.bins[cy * self.gw + cx] {
             let sg = &self.segs[si as usize];
             let (ax, ay) = (sg.a[0] + sx as f32 * self.w, sg.a[1] + sy as f32 * self.h);
@@ -139,13 +147,13 @@ impl Field {
             if d2 < best {
                 best = d2;
                 let cross = sg.d[0] * py - sg.d[1] * px;
-                found = Some((si as usize, t, cross, d2));
+                found = Some((si as usize, t, cross, d2, [qx, qy]));
             }
         }
-        found.map(|(si, t, cross, d2)| {
+        found.map(|(si, t, cross, d2, q)| {
             let sg = &self.segs[si];
             let p = &self.paths[sg.path as usize];
-            Hit { d: d2.sqrt(), s: sg.s0 + t * sg.len, side: if cross >= 0.0 { 1.0 } else { -1.0 }, wf: sg.wa + (sg.wb - sg.wa) * t, plen: p.len, closed: p.closed }
+            Hit { d: d2.sqrt(), s: sg.s0 + t * sg.len, side: if cross >= 0.0 { 1.0 } else { -1.0 }, wf: sg.wa + (sg.wb - sg.wa) * t, plen: p.len, closed: p.closed, z: sg.za + (sg.zb - sg.za) * t, away: if d2 > 1e-10 { [q[0] / d2.sqrt(), q[1] / d2.sqrt()] } else { [0.0, 0.0] }, dir: [sg.d[0] / sg.len, sg.d[1] / sg.len] }
         })
     }
 }
@@ -173,13 +181,27 @@ impl Ctx6<'_> {
     }
 
     fn spline(&self, id: u32, load: &dyn Fn(&str) -> Result<Vec<u8>, String>) -> Result<Spline, Error> {
-        match self.n.strs.get("file").filter(|f| !f.is_empty()) {
+        let mut sp = match self.n.strs.get("file").filter(|f| !f.is_empty()) {
             Some(file) => {
                 let bytes = load(file).map_err(|m| Error::BadParam(id, m))?;
-                Spline::from_bytes(&bytes).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))
+                Spline::from_bytes(&bytes).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?
             }
-            None => Ok(Spline::preset(self.f("preset", self.default_preset()).round().clamp(0.0, 6.0) as u32 + 1, self.f("amplitude", 0.12), self.f("frequency", 2.0))),
+            None => Spline::preset(self.f("preset", self.default_preset()).round().clamp(0.0, 6.0) as u32 + 1, self.f("amplitude", 0.12), self.f("frequency", 2.0)),
+        };
+        // up to three more splines are merged in (their paths come after the first file's)
+        for key in ["file2", "file3", "file4"] {
+            if let Some(file) = self.n.strs.get(key).filter(|f| !f.is_empty()) {
+                let bytes = load(file).map_err(|m| Error::BadParam(id, m))?;
+                sp.merge(Spline::from_bytes(&bytes).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?);
+            }
         }
+        let (scale, rot, ox, oy) = (self.f("path_scale", 1.0).clamp(0.05, 8.0), self.f("path_rotate", 0.0), self.f("path_x", 0.0), self.f("path_y", 0.0));
+        let mirror = self.f("path_mirror", 0.0).round() as u32;
+        let reverse = self.f("path_reverse", 0.0) > 0.5;
+        if (scale - 1.0).abs() > 1e-6 || rot.abs() > 1e-6 || ox.abs() > 1e-6 || oy.abs() > 1e-6 || mirror != 0 || reverse {
+            sp = sp.transformed([scale, scale], rot, [ox, oy], (mirror & 1 != 0, mirror & 2 != 0), reverse);
+        }
+        Ok(sp)
     }
 
     /// Flattened paths for this texture size; `path` picks one (-1 = all).
@@ -187,7 +209,13 @@ impl Ctx6<'_> {
         let sp = self.spline(id, load)?;
         let all = sp.flatten(self.s as f32, self.hs as f32);
         let pick = self.f("path", -1.0).round();
-        Ok(if pick >= 0.0 { all.into_iter().skip(pick as usize).take(1).collect() } else { all })
+        let count = self.f("path_count", if pick >= 0.0 { 1.0 } else { -1.0 }).round();
+        Ok(if pick >= 0.0 {
+            let rest = all.into_iter().skip(pick as usize);
+            if count > 0.0 { rest.take(count as usize).collect() } else { rest.collect() }
+        } else {
+            all
+        })
     }
 }
 
@@ -370,9 +398,12 @@ pub fn compute(
                 hgt * aa(width - h.d)
             }))
         }
-        "path_scatter" => {
+        "path_scatter" | "path_splatter" => {
             let polys = c.polys(id, load)?;
             let pat = ins.get("in").map(|r| r.as_ref());
+            let mask = ins.get("mask").map(|r| r.as_ref());
+            let rows = if kind == "path_splatter" { f("rows", 3.0).round().clamp(1.0, 32.0) as usize } else { 1 };
+            let row_gap = f("row_spacing", 24.0).clamp(0.0, 1024.0) * rs;
             let spacing = f("spacing", 24.0).clamp(1.0, 2048.0) * rs;
             let size = f("scale", 24.0).clamp(1.0, 2048.0) * rs;
             let (var, jal, jac) = (f("scale_variation", 0.2).clamp(0.0, 1.0), f("jitter_along", 0.0).clamp(0.0, 1.0), f("jitter_across", 0.0).clamp(0.0, 512.0) * rs);
@@ -384,15 +415,19 @@ pub fn compute(
             let mut budget: i64 = 400_000_000;
             'all: for (pi, poly) in polys.iter().enumerate() {
                 let step = fit_period(poly.length(), spacing, fit);
-                for (i, sm) in poly.resample(step, f("offset", 0.0) * rs).into_iter().enumerate() {
+                for (i0, sm) in poly.resample(step, f("offset", 0.0) * rs).into_iter().enumerate() {
+                  for row in 0..rows {
+                    let i = i0 * rows + row;
                     let key = (pi as i32) * 100_003 + i as i32;
                     let r = |k: i32| noise::rnd(key, k, seed);
-                    if r(1) > density {
+                    let row_off = (row as f32 - (rows as f32 - 1.0) * 0.5) * row_gap;
+                    let here = mask.map(|m| lum(m.sample((sm.p[0] - sm.t[1] * row_off) / s as f32, (sm.p[1] + sm.t[0] * row_off) / hs as f32))).unwrap_or(1.0);
+                    if r(1) > density * here {
                         continue;
                     }
                     let sz = (size * sm.w * (1.0 + var * (r(2) - 0.5) * 2.0)).max(0.5);
                     let nrm = [-sm.t[1], sm.t[0]];
-                    let (ja, jc) = (jal * step * (r(3) - 0.5), jac * (r(4) - 0.5) * 2.0);
+                    let (ja, jc) = (jal * step * (r(3) - 0.5), jac * (r(4) - 0.5) * 2.0 + row_off);
                     let (cx, cy) = (sm.p[0] + sm.t[0] * ja + nrm[0] * jc, sm.p[1] + sm.t[1] * ja + nrm[1] * jc);
                     let ang = match rot {
                         0 => sm.t[1].atan2(sm.t[0]) + ang0 + ang_var * (r(5) - 0.5),
@@ -426,9 +461,53 @@ pub fn compute(
                             dest[idx] = if blend == 1 { (dest[idx] + val).min(1.0) } else { dest[idx].max(val) };
                         }
                     }
+                  }
                 }
             }
             fin(Tex { w: s, h: hs, px: dest.into_iter().map(grey).collect() })
+        }
+        "path_sample" => {
+            // maps that carry what the path knows: position along it, its width, its height values and the side
+            let polys = c.polys(id, load)?;
+            let width = f("width", 40.0).clamp(0.5, 1024.0) * rs;
+            let wmax = max_wf(&polys).max(1e-3);
+            let field = Field::build(&polys, s, hs, width * 0.5 * wmax + 3.0);
+            fin(shade(&c, &field, |hit, _, _| {
+                let Some(h) = hit else { return if out_idx == 3 { 0.5 } else { 0.0 } };
+                let half = (width * 0.5 * h.wf).max(0.05);
+                let cov = aa(half - h.d);
+                match out_idx {
+                    1 => cov * (h.wf / wmax).clamp(0.0, 1.0),
+                    2 => cov * h.z.clamp(0.0, 1.0),
+                    3 => 0.5 + 0.5 * cov * h.side * (h.d / half).min(1.0),
+                    _ => cov * (h.s / h.plen).clamp(0.0, 1.0),
+                }
+            }))
+        }
+        "path_warp" => {
+            // pushes, pulls or slides the picture near the path (strongest on the line, fading out over `width`)
+            let src = ins.get("in").map(|r| r.as_ref()).ok_or_else(|| Error::MissingInput(id, "in".to_string()))?;
+            let polys = c.polys(id, load)?;
+            let width = f("width", 80.0).clamp(1.0, 1024.0) * rs;
+            let amount = f("amount", 24.0).clamp(-1024.0, 1024.0) * rs;
+            let mode = f("mode", 0.0).round() as u32; // 0 push away, 1 slide along, 2 swirl around the line
+            let field = Field::build(&polys, s, hs, width);
+            let (sf, hf) = (s as f32, hs as f32);
+            Tex::from_fn(s, hs, |u, v| {
+                let (x, y) = (u * sf, v * hf);
+                match field.query(x, y) {
+                    Some(h) if h.d < width => {
+                        let fall = 1.0 - smooth(0.0, 1.0, h.d / width);
+                        let d = match mode {
+                            1 => h.dir,
+                            2 => [-h.away[1] * h.side, h.away[0] * h.side],
+                            _ => h.away,
+                        };
+                        src.sample((x - d[0] * amount * fall) / sf, (y - d[1] * amount * fall) / hf)
+                    }
+                    _ => src.sample(u, v),
+                }
+            })
         }
         "path_track" => {
             let polys = c.polys(id, load)?;

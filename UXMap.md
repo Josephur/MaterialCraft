@@ -281,10 +281,11 @@
   - Spline resource text (`*.spl`)
     - `spline 1`
     - `path closed=0|1 smooth=0|1`
-    - `pt x y [hin=dx,dy] [hout=dx,dy] [w=factor]`
+    - `pt x y [hin=dx,dy] [hout=dx,dy] [w=factor] [z=height] [tan=auto|mirrored|free|corner]`
     - Coordinates are 0..1, y down
     - Handles are offsets from the point
     - A point without handles gets automatic ones when the path is smooth
+    - `z` is the height value read by Path Sample (0..1, default 1); `tan` is the tangent mode the editor uses (also written as 0..3)
     - `#` starts a comment
   - Function graph = subgraph with `meta kind "function"`
   - Pattern program = subgraph with `meta kind "fxmap"`
@@ -425,6 +426,11 @@
   - Words must all match name, tag, category or description
   - `--kind material|generator|filter`
   - `--export <id> <file.mcg>` writes one graph out to edit
+- `materialcraft trace <graph> <node id> <out.spl>`
+  - `--size N` (default 256)
+  - `--threshold T` (default 0.5)
+  - `--tolerance X` (default 0.002)
+  - Outlines the light areas of a node as a spline
 - `materialcraft nodes`
   - Prints every node with inputs and parameters
 - `materialcraft-gui [file.mcg|file.mca]`
@@ -977,6 +983,8 @@
 - "Duplicate"
 - "Delete"
 - "Open subgraph" (subgraph nodes only)
+- "Trace to spline" (not on Output or subgraph nodes)
+  - Outlines the light areas of the node's picture (256 px, threshold 0.5) as a new spline resource "traced.spl" and adds a Path Stroke node that draws it
 - "Create subgraph from selection"
 - "Add output node" >
   - One item per output usage
@@ -1044,6 +1052,7 @@
 - Drag pans
 - Spline editing
   - Starts with Properties > "Edit spline" on a path node
+  - Properties of a path node also has a "More splines to merge" group with three more spline dropdowns, and the shared path options (number of paths, scale, rotation, offset, mirror, reverse)
   - A node on a built-in shape gets a copy of it as a new embedded spline
   - Tool row above the image
     - Text "Spline <name>"
@@ -1059,15 +1068,15 @@
       - Shift flips it while dragging
     - For the selected point
       - Number "Width"
-      - Button "Corner"
-      - Button "Smooth point"
+      - Number "Height"
+      - Dropdown "Tangent: <mode>" with Auto, Mirrored, Free, Corner
       - Button "Delete point"
   - Click on the curve adds a point there
   - Click elsewhere adds a point at the end of the path
   - Click on a point selects it
   - Drag moves a point or a handle
-  - Handles mirror each other
-    - Alt while dragging breaks the mirror
+  - Handles follow the point's tangent mode: Auto and Mirrored points move both handles together, Free and Corner points one at a time
+    - Alt while dragging moves one handle only and makes the point Free
   - Double-click on a point
     - Switches between corner and smooth
   - Right-click on a point
@@ -1608,7 +1617,7 @@
   - `P` button
 - Counts below come from `materialcraft nodes`
 
-### Generators nodes (59)
+### Generators nodes (73)
 
 - Color (`color`)
   - Library: Generators > Patterns
@@ -3671,6 +3680,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Width (px at 512)
       - Control: slider
       - Default: 12
@@ -3731,6 +3767,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Even-odd fill
       - Control: checkbox
       - Default: off
@@ -3767,6 +3830,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Mode
       - Control: dropdown
       - Default: Falloff from the line
@@ -3808,6 +3898,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Width (px at 512)
       - Control: slider
       - Default: 32
@@ -3834,8 +3951,10 @@
 - Path Scatter (`path_scatter`)
   - Library: Generators > Paths
   - Tooltip: copies of a pattern along a spline
-  - Inputs: in
+  - Inputs: in, mask
     - in
+      - Left-edge socket
+    - mask
       - Left-edge socket
   - Outputs: output
   - Properties:
@@ -3855,6 +3974,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Spacing (px at 512)
       - Control: slider
       - Default: 24
@@ -3945,6 +4091,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Rail distance (px at 512)
       - Control: slider
       - Default: 60
@@ -4011,6 +4184,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Width (px at 512)
       - Control: slider
       - Default: 40
@@ -4060,6 +4260,33 @@
       - Control: int
       - Default: -1
       - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
     - Stitch length (px at 512)
       - Control: slider
       - Default: 18
@@ -4094,8 +4321,664 @@
     - Invert
       - Control: checkbox
       - Default: off
+- Herringbone (`herringbone`)
+  - Library: Generators > Patterns
+  - Tooltip: herringbone pavement
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Bricks across (multiple of 4)
+      - Control: int
+      - Default: 8
+      - Range: 4..64
+    - Gap (px at 512)
+      - Control: slider
+      - Default: 3
+      - Range: 0..32
+    - Bevel (px at 512)
+      - Control: slider
+      - Default: 6
+      - Range: 0.5..64
+    - Height variation
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Output
+      - Control: dropdown
+      - Default: Height
+      - Choices: Height / Brick id / Orientation
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Arc Pavement (`arc_pavement`)
+  - Library: Generators > Patterns
+  - Tooltip: fan-shaped arc pavement
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Fans across
+      - Control: int
+      - Default: 6
+      - Range: 2..64
+    - Stone rows per fan
+      - Control: int
+      - Default: 4
+      - Range: 1..12
+    - Stones on the outer row
+      - Control: slider
+      - Default: 9
+      - Range: 2..64
+    - Gap (px at 512)
+      - Control: slider
+      - Default: 2
+      - Range: 0..32
+    - Bevel (px at 512)
+      - Control: slider
+      - Default: 4
+      - Range: 0.5..64
+    - Height variation
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Output
+      - Control: dropdown
+      - Default: Height
+      - Choices: Height / Stone id
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Anisotropic Noise (`anisotropic_noise`)
+  - Library: Generators > Noises
+  - Tooltip: noise stretched along any direction, still tiling
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Cells across
+      - Control: int
+      - Default: 8
+      - Range: 1..128
+    - Stretch
+      - Control: slider
+      - Default: 6
+      - Range: 1..64
+    - Direction
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Octaves
+      - Control: int
+      - Default: 3
+      - Range: 1..8
+    - Gain
+      - Control: slider
+      - Default: 0.5
+      - Range: 0.1..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Fur Noise (`fur_noise`)
+  - Library: Generators > Noises
+  - Tooltip: fur-like hairs
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Hairs
+      - Control: int
+      - Default: 2500
+      - Range: 1..20000
+    - Length (px at 512)
+      - Control: slider
+      - Default: 70
+      - Range: 2..512
+    - Thickness (px at 512)
+      - Control: slider
+      - Default: 2.2
+      - Range: 0.4..32
+    - Direction
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Direction variation
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Curl
+      - Control: slider
+      - Default: 0.8
+      - Range: -8..8
+    - Tapered tips
+      - Control: slider
+      - Default: 0.8
+      - Range: 0..1
+    - Root darkness
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Brightness variation
+      - Control: slider
+      - Default: 0.35
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Moisture Noise (`moisture_noise`)
+  - Library: Generators > Noises
+  - Tooltip: damp patches with drips
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Patch scale
+      - Control: int
+      - Default: 4
+      - Range: 1..32
+    - Coverage
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Edge softness
+      - Control: slider
+      - Default: 0.15
+      - Range: 0.01..0.5
+    - Drips
+      - Control: slider
+      - Default: 0.7
+      - Range: 0..1
+    - Drip length (px at 512)
+      - Control: slider
+      - Default: 90
+      - Range: 1..512
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Microscope Noise (`microscope_noise`)
+  - Library: Generators > Noises
+  - Tooltip: cells seen through a microscope
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Cells across
+      - Control: int
+      - Default: 10
+      - Range: 1..64
+    - Irregularity
+      - Control: slider
+      - Default: 0.8
+      - Range: 0..1
+    - Membrane width
+      - Control: slider
+      - Default: 0.06
+      - Range: 0.005..0.5
+    - Nucleus size
+      - Control: slider
+      - Default: 0.28
+      - Range: 0.02..0.8
+    - Cytoplasm grain
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Output
+      - Control: dropdown
+      - Default: Combined
+      - Choices: Combined / Membranes / Nuclei / Cell id
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Worley Noise 3D (`worley_3d`)
+  - Library: Generators > Noises
+  - Tooltip: cellular noise in 3D, one slice per z
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Cells across
+      - Control: int
+      - Default: 6
+      - Range: 1..64
+    - Slice (z)
+      - Control: slider
+      - Default: 0
+      - Range: 0..8
+    - Irregularity
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Output
+      - Control: dropdown
+      - Default: Nearest
+      - Choices: Nearest / Second nearest / Edges (f2 - f1) / Cell id
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Fractal Noise 3D (`fbm_3d`)
+  - Library: Generators > Noises
+  - Tooltip: fractal noise in 3D, one slice per z
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Scale
+      - Control: int
+      - Default: 4
+      - Range: 1..64
+    - Slice (z)
+      - Control: slider
+      - Default: 0
+      - Range: 0..8
+    - Octaves
+      - Control: int
+      - Default: 5
+      - Range: 1..10
+    - Gain
+      - Control: slider
+      - Default: 0.5
+      - Range: 0.1..0.95
+    - Style
+      - Control: dropdown
+      - Default: Fractal
+      - Choices: Fractal / Ridged / Turbulence
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Volume Mask (`volume_mask`)
+  - Library: Generators > Shapes
+  - Tooltip: slice through a repeated 3D shape as a mask
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Shape
+      - Control: dropdown
+      - Default: Sphere
+      - Choices: Sphere / Box / Cylinder / Torus / Cone
+    - Size
+      - Control: slider
+      - Default: 0.35
+      - Range: 0.01..0.5
+    - Repeat
+      - Control: int
+      - Default: 1
+      - Range: 1..64
+    - Slice height
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Corner roundness
+      - Control: slider
+      - Default: 0
+      - Range: 0..0.3
+    - Edge softness
+      - Control: slider
+      - Default: 0.02
+      - Range: 0..0.5
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Gradient 3D (`gradient_3d`)
+  - Library: Generators > Shapes
+  - Tooltip: distance gradient of a repeated 3D shape slice
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Shape
+      - Control: dropdown
+      - Default: Sphere
+      - Choices: Sphere / Box / Cylinder / Torus / Cone
+    - Size
+      - Control: slider
+      - Default: 0.35
+      - Range: 0.01..0.5
+    - Repeat
+      - Control: int
+      - Default: 1
+      - Range: 1..64
+    - Slice height
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Corner roundness
+      - Control: slider
+      - Default: 0
+      - Range: 0..0.3
+    - Gradient range
+      - Control: slider
+      - Default: 0.5
+      - Range: 0.01..2
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Shape Extrude (`shape_extrude`)
+  - Library: Filters > Effects
+  - Tooltip: extrude shapes along a direction (outputs
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: height, walls
+    - height
+      - Right-edge socket
+    - walls
+      - Right-edge socket
+  - Properties:
+    - Length (px at 512)
+      - Control: slider
+      - Default: 60
+      - Range: 1..512
+    - Direction
+      - Control: slider
+      - Default: 0.125
+      - Range: 0..1
+    - Top height
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Wall falloff
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..8
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Shape Mapper (`shape_mapper`)
+  - Library: Filters > Masks and regions
+  - Tooltip: put a pattern into every flood-filled region
+  - Inputs: in, pattern
+    - in
+      - Left-edge socket
+    - pattern
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Pattern size
+      - Control: slider
+      - Default: 1
+      - Range: 0.1..4
+    - Random quarter turns
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Random flips
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Keep square
+      - Control: checkbox
+      - Default: off
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Splatter (`path_splatter`)
+  - Library: Generators > Paths
+  - Tooltip: several rows of copies of a pattern along a spline, thinned out by a mask
+  - Inputs: in, mask
+    - in
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
+    - Rows
+      - Control: int
+      - Default: 3
+      - Range: 1..32
+    - Row spacing (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: 0..512
+    - Spacing (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: 1..512
+    - Size (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: 1..512
+    - Size variation
+      - Control: slider
+      - Default: 0.2
+      - Range: 0..1
+    - Jitter along
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Jitter across (px)
+      - Control: slider
+      - Default: 0
+      - Range: 0..256
+    - Rotation
+      - Control: dropdown
+      - Default: Follow the path
+      - Choices: Follow the path / Fixed / Random
+    - Angle
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Angle variation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Density
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Opacity variation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Blend
+      - Control: dropdown
+      - Default: Max
+      - Choices: Max / Add
+    - Start offset (px)
+      - Control: slider
+      - Default: 0
+      - Range: 0..512
+    - Fit spacing to path length
+      - Control: checkbox
+      - Default: on
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Path Sample (`path_sample`)
+  - Library: Generators > Paths
+  - Tooltip: maps from a spline (outputs
+  - Inputs: none
+  - Outputs: position, width, height, side
+    - position
+      - Right-edge socket
+    - width
+      - Right-edge socket
+    - height
+      - Right-edge socket
+    - side
+      - Right-edge socket
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
+    - Width (px at 512)
+      - Control: slider
+      - Default: 40
+      - Range: 0.5..256
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
 
-### Filters nodes (94)
+### Filters nodes (101)
 
 - Curve (`curve`)
   - Library: Filters > Adjustments
@@ -6111,8 +6994,234 @@
       - Control: slider
       - Default: 0.1
       - Range: 0.005..2
+- Path Warp (`path_warp`)
+  - Library: Filters > Blur and warp
+  - Tooltip: push, slide or swirl a picture near a spline
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Built-in shape
+      - Control: dropdown
+      - Default: Wave
+      - Choices: Horizontal line / Diagonal line / Wave / Circle / Spiral / Zigzag / Figure eight
+    - Wave height
+      - Control: slider
+      - Default: 0.12
+      - Range: 0..0.5
+    - Wave count
+      - Control: slider
+      - Default: 2
+      - Range: 0.25..32
+    - Path (-1 = all)
+      - Control: int
+      - Default: -1
+      - Range: -1..63
+    - Paths from the chosen one (0 = rest)
+      - Control: int
+      - Default: 1
+      - Range: 0..63
+    - Path scale
+      - Control: slider
+      - Default: 1
+      - Range: 0.05..8
+    - Path rotation (turns)
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Path mirror
+      - Control: dropdown
+      - Default: None
+      - Choices: None / Horizontal / Vertical / Both
+    - Reverse path direction
+      - Control: checkbox
+      - Default: off
+    - Reach (px at 512)
+      - Control: slider
+      - Default: 80
+      - Range: 1..512
+    - Amount (px at 512)
+      - Control: slider
+      - Default: 24
+      - Range: -256..256
+    - Mode
+      - Control: dropdown
+      - Default: Push away
+      - Choices: Push away / Slide along / Swirl
+- Cross Section (`cross_section`)
+  - Library: Filters > Effects
+  - Tooltip: plot of the values along one row
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Row
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Height scale
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+    - Line width (px at 512)
+      - Control: slider
+      - Default: 3
+      - Range: 0.5..32
+    - Fill under the line
+      - Control: checkbox
+      - Default: on
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
+- Uber Emboss (`uber_emboss`)
+  - Library: Filters > Effects
+  - Tooltip: emboss with gloss (outputs
+  - Inputs: height, mask, gloss
+    - height
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+    - gloss
+      - Left-edge socket
+  - Outputs: emboss, highlight, shadow
+    - emboss
+      - Right-edge socket
+    - highlight
+      - Right-edge socket
+    - shadow
+      - Right-edge socket
+  - Properties:
+    - Intensity
+      - Control: slider
+      - Default: 3
+      - Range: 0..64
+    - Light direction
+      - Control: slider
+      - Default: 0.125
+      - Range: 0..1
+    - Light height
+      - Control: slider
+      - Default: 0.45
+      - Range: 0.05..1
+    - Gloss
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Highlight strength
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Gain
+      - Control: slider
+      - Default: 1
+      - Range: 0..8
+- Diffusion (`diffusion`)
+  - Library: Filters > Effects
+  - Tooltip: fill unknown pixels from the known ones (alpha or mask)
+  - Inputs: in, mask
+    - in
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Smoothing (px at 512)
+      - Control: slider
+      - Default: 0
+      - Range: 0..64
+    - Grayscale result
+      - Control: checkbox
+      - Default: off
+- Summed Area Table (`summed_area_table`)
+  - Library: Filters > Effects
+  - Tooltip: running sums of the image
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Per colour channel
+      - Control: checkbox
+      - Default: off
+    - Normalize to 0-1
+      - Control: checkbox
+      - Default: on
+- Vector Morph (`vector_morph`)
+  - Library: Filters > Blur and warp
+  - Tooltip: move pixels along a vector map and fill the holes
+  - Inputs: in, vector
+    - in
+      - Left-edge socket
+    - vector
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Amount (px at 512)
+      - Control: slider
+      - Default: 40
+      - Range: 0..512
+    - Flip Y of the vectors
+      - Control: checkbox
+      - Default: off
+- Safe Transform (`safe_transform`)
+  - Library: Filters > Transform
+  - Tooltip: transform that stays seamless
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Mode
+      - Control: dropdown
+      - Default: Tile-safe (integer)
+      - Choices: Tile-safe (integer) / Free
+    - Rotation
+      - Control: slider
+      - Default: 0
+      - Range: 0..1
+    - Scale X
+      - Control: slider
+      - Default: 1
+      - Range: 0.01..32
+    - Scale Y
+      - Control: slider
+      - Default: 1
+      - Range: 0.01..32
+    - Offset X
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Offset Y
+      - Control: slider
+      - Default: 0
+      - Range: -1..1
+    - Filtering
+      - Control: dropdown
+      - Default: Bilinear
+      - Choices: Nearest / Bilinear / Bicubic
+    - Edges (free mode)
+      - Control: dropdown
+      - Default: Repeat
+      - Choices: Repeat / Mirror / Clamp / Empty
+    - Rotate after scaling
+      - Control: checkbox
+      - Default: off
 
-### Material nodes (27)
+### Material nodes (30)
 
 - Curvature Smooth (`curvature_smooth`)
   - Library: Material tools
@@ -6734,6 +7843,160 @@
       - Control: slider
       - Default: 8
       - Range: 0..128
+- Snow (`snow_filter`)
+  - Library: Material tools
+  - Tooltip: snow on upward-facing surfaces (outputs
+  - Inputs: height, mask
+    - height
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: height, mask
+    - height
+      - Right-edge socket
+    - mask
+      - Right-edge socket
+  - Properties:
+    - Coverage
+      - Control: slider
+      - Default: 0.55
+      - Range: 0..1
+    - Slope that holds snow
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Slope sensitivity
+      - Control: slider
+      - Default: 6
+      - Range: 0.1..64
+    - Edge softness
+      - Control: slider
+      - Default: 0.2
+      - Range: 0.01..1
+    - Breakup
+      - Control: slider
+      - Default: 0.4
+      - Range: 0..1
+    - Prefer high places
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Snow depth
+      - Control: slider
+      - Default: 0.15
+      - Range: 0..1
+    - Breakup scale
+      - Control: int
+      - Default: 6
+      - Range: 1..64
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+- Season (`season_filter`)
+  - Library: Material tools
+  - Tooltip: recolour foliage for a season (0 spring,1 summer,2 autumn,3 winter)
+  - Inputs: in, mask
+    - in
+      - Left-edge socket
+    - mask
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Season (0 spring, 1 summer, 2 autumn, 3 winter)
+      - Control: slider
+      - Default: 2
+      - Range: 0..4
+    - Strength
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Leaf variation
+      - Control: slider
+      - Default: 0.4
+      - Range: 0..1
+    - Foliage hue
+      - Control: slider
+      - Default: 0.28
+      - Range: 0..1
+    - Hue range
+      - Control: slider
+      - Default: 0.14
+      - Range: 0.02..0.5
+    - Variation scale
+      - Control: int
+      - Default: 8
+      - Range: 1..64
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+- Water (`water_filter`)
+  - Library: Material tools
+  - Tooltip: water in the low parts (outputs
+  - Inputs: height, base
+    - height
+      - Left-edge socket
+    - base
+      - Left-edge socket
+  - Outputs: color, mask, height, roughness
+    - color
+      - Right-edge socket
+    - mask
+      - Right-edge socket
+    - height
+      - Right-edge socket
+    - roughness
+      - Right-edge socket
+  - Properties:
+    - Water level
+      - Control: slider
+      - Default: 0.35
+      - Range: 0..1
+    - Shore softness
+      - Control: slider
+      - Default: 0.03
+      - Range: 0.001..0.5
+    - Water red
+      - Control: slider
+      - Default: 0.1
+      - Range: 0..1
+    - Water green
+      - Control: slider
+      - Default: 0.25
+      - Range: 0..1
+    - Water blue
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Murkiness
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Wet ground width
+      - Control: slider
+      - Default: 0.08
+      - Range: 0..0.5
+    - Ripples
+      - Control: slider
+      - Default: 0.3
+      - Range: 0..1
+    - Ripple scale
+      - Control: int
+      - Default: 24
+      - Range: 1..128
+    - Dry roughness
+      - Control: slider
+      - Default: 0.7
+      - Range: 0..1
+    - Wet roughness
+      - Control: slider
+      - Default: 0.05
+      - Range: 0..1
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
 
 ### SDF nodes (4)
 

@@ -18,6 +18,7 @@ USAGE:
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
   materialcraft bake    <low.obj> <high.obj> <outdir> [--size N] [--dist D] [--ao-rays N] [--ao-dist D] [--padding N]
+  materialcraft trace   <graph.mcg> <node id> <out.spl> [--size N] [--threshold T] [--tolerance X]   outline the light areas of a node as a spline
   materialcraft testmesh <outdir>                   write a demo low/high-poly OBJ pair
   materialcraft example <outdir>
   materialcraft library [words...] [--kind material|generator|filter]   list or search the built-in ready-made graphs
@@ -44,14 +45,43 @@ fn load(path: &str) -> Result<Graph, String> {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("nodes") => {
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
             for s in SPECS.iter().chain(materialcraft::func::FUNC_SPECS).chain(materialcraft::fxmap::FXM_SPECS) {
-                println!("{:<18} {:<11} inputs: {:<22} {}", s.kind, materialcraft::graph::category(s.kind), [s.req, s.opt].concat().join(","), s.doc);
+                // a closed pipe (`| head`) ends the listing quietly
+                if writeln!(out, "{:<18} {:<11} inputs: {:<22} {}", s.kind, materialcraft::graph::category(s.kind), [s.req, s.opt].concat().join(","), s.doc).is_err() {
+                    break;
+                }
             }
             Ok(())
         }
         Some("check") => {
             let g = load(args.get(1).ok_or("usage: materialcraft check <graph.mcg>")?)?;
             println!("OK: {} nodes, {} subgraphs, {} outputs, {}x{}", g.nodes.len(), g.subgraphs.len(), g.outputs.len(), g.size, if g.is_square() { g.size } else { g.height });
+            Ok(())
+        }
+        Some("trace") => {
+            if args.len() < 4 {
+                return Err("usage: materialcraft trace <graph.mcg> <node id> <out.spl> [--size N] [--threshold T] [--tolerance X]".into());
+            }
+            let g = load(&args[1])?;
+            let id: u32 = args[2].trim_start_matches('@').parse().map_err(|_| "the node id must be a number")?;
+            let (mut size, mut thr, mut tol) = (256usize, 0.5f32, 0.002f32);
+            let mut i = 4;
+            while i < args.len() {
+                let v = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
+                match args[i].as_str() {
+                    "--size" => size = v.parse().map_err(|_| "bad --size")?,
+                    "--threshold" => thr = v.parse().map_err(|_| "bad --threshold")?,
+                    "--tolerance" => tol = v.parse().map_err(|_| "bad --tolerance")?,
+                    o => return Err(format!("unknown option '{o}'")),
+                }
+                i += 2;
+            }
+            let t = g.evaluate_node(id, size).map_err(|e| e.to_string())?;
+            let sp = materialcraft::spline::Spline::from_mask(&t, thr, tol)?;
+            materialcraft::safeio::write_file(Path::new(&args[3]), sp.to_text().as_bytes()).map_err(|e| format!("{}: {e}", args[3]))?;
+            println!("wrote {} paths with {} points to {}", sp.paths.len(), sp.point_count(), args[3]);
             Ok(())
         }
         Some("params") => {

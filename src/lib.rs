@@ -21,6 +21,8 @@ pub mod nodes3;
 pub mod nodes4;
 pub mod nodes5;
 pub mod nodes6;
+pub mod nodes7;
+pub mod nodes8;
 pub mod library;
 pub mod spline;
 pub mod ops;

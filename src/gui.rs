@@ -204,6 +204,7 @@ enum Act {
     ExitSub,
     SplineEdit(u32),
     SplineImportSvg(u32),
+    SplineTrace(u32),
     SplDelete,
     AutoLayout,
     FrameAll,

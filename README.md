@@ -21,10 +21,10 @@ Requires a current stable Rust toolchain (https://rustup.rs). On Windows the MSV
 The core library has zero dependencies; the editor uses egui/eframe + rfd (native file dialogs).
 
 ## Editor
-Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid of 182 texture nodes plus "Ready-made" generator and filter folders; all 30 finished graphs also open as examples from the start screen), Graph,
+Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid of 214 texture nodes plus "Ready-made" generator and filter folders; all 33 finished graphs also open as examples from the start screen), Graph,
 3D View, 2D View and Properties panels. Panels can be closed/reopened from the Windows menu.
 
-Path nodes (stroke, border, scatter, track, cable, seam) follow splines that you draw in the 2D view (select a path node > Edit spline) or import from an SVG.
+Path nodes (stroke, fill, distance, border, scatter, splatter, track, cable, seam, warp, sample) follow splines that you draw in the 2D view (select a path node > Edit spline), import from an SVG or trace from any node's picture (right-click > Trace to spline).
 
 Tab = add node at cursor · drag a link into empty space = add + auto-connect · Ctrl+Z/Y undo/redo ·
 Ctrl+C/X/V/D · rubber-band & Shift/Ctrl multi-select · C = comment frame · double-click a subgraph to edit it ·
@@ -62,7 +62,7 @@ path-traced 3D rendering and custom mesh import in the 3D viewer.
 See ROADMAP.md for the complete list.
 
 
-## Nodes (136 texture nodes, 84 function nodes, 5 pattern-program nodes)
+## Nodes (214 texture nodes, 84 function nodes, 5 pattern-program nodes)
 Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
 BnW spots, crystal, directional noise, grunge, grunge maps, plasma, voronoi, voronoi fractal, stripes, weave, weave generator, bricks, checker, gradients, star, SDF shapes.
 Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /

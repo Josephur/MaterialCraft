@@ -35,7 +35,59 @@ fn is_path_node(kind: &str) -> bool {
     kind.starts_with("path_")
 }
 
+/// Switch the tangent mode of point `si`: Auto drops the handles, Mirrored and Free freeze the current ones,
+/// Corner removes them.
+fn spl_set_tangent(path: &mut materialcraft::spline::SPath, si: usize, mode: u8) {
+    if si >= path.pts.len() {
+        return;
+    }
+    let (hi, ho) = path.handles(si);
+    let pt = &mut path.pts[si];
+    pt.tan = mode;
+    match mode {
+        0 => {
+            pt.hin = None;
+            pt.hout = None;
+        }
+        1 => {
+            pt.hin = Some(hi);
+            pt.hout = Some([-hi[0], -hi[1]]);
+        }
+        2 => {
+            pt.hin = Some(hi);
+            pt.hout = Some(ho);
+        }
+        _ => {
+            pt.hin = Some([0.0, 0.0]);
+            pt.hout = Some([0.0, 0.0]);
+        }
+    }
+}
+
 impl App {
+    /// Outline the light areas of node `node` as a new spline resource and show it with a new Path Stroke node.
+    fn spl_trace(&mut self, node: u32) {
+        let t = match self.g.evaluate_node(node, 256) {
+            Ok(t) => t,
+            Err(e) => return self.status(format!("Cannot trace: {e}"), false),
+        };
+        match Spline::from_mask(&t, 0.5, 0.002) {
+            Ok(sp) => {
+                let file = self.spl_unique_name("traced");
+                let at = self.g.nodes.get(&node).map(|n| pos2(n.pos[0] + CARD + 90.0, n.pos[1])).unwrap_or(pos2(0.0, 0.0));
+                self.snap();
+                self.g.resources.insert(file.clone(), sp.to_text().into_bytes());
+                let id = self.add_node_at("path_stroke", None, at);
+                if let Some(n) = self.g.nodes.get_mut(&id) {
+                    n.strs.insert("file".into(), file.clone());
+                    n.nums.insert("width".into(), 4.0);
+                }
+                self.status(format!("Traced {} outlines ({} points) into {file} and drew them with a new Path Stroke node", sp.paths.len(), sp.point_count()), true);
+            }
+            Err(e) => self.status(format!("Cannot trace: {e}"), false),
+        }
+    }
+
     fn spl_unique_name(&self, base: &str) -> String {
         let mut name = format!("{base}.spl");
         let mut k = 2;
@@ -197,16 +249,22 @@ impl App {
                         pt.w = w;
                         changed = true;
                     }
-                    if ui.button("Corner").on_hover_text("Sharp point: no handles").clicked() {
-                        snap_first = true;
-                        pt.hin = Some([0.0, 0.0]);
-                        pt.hout = Some([0.0, 0.0]);
+                    let mut z = pt.z;
+                    ui.label("Height");
+                    if ui.add(egui::DragValue::new(&mut z).speed(0.01).range(0.0..=1.0)).on_hover_text("Height value of the path at this point (read by the Path Sample node)").changed() {
+                        pt.z = z;
                         changed = true;
                     }
-                    if ui.button("Smooth point").on_hover_text("Automatic smooth handles").clicked() {
+                    let modes = ["Auto", "Mirrored", "Free", "Corner"];
+                    let mut tan = pt.tan.min(3);
+                    egui::ComboBox::from_id_salt("spl_tangent").selected_text(format!("Tangent: {}", modes[tan as usize])).show_ui(ui, |ui| {
+                        for (i, m) in modes.iter().enumerate() {
+                            ui.selectable_value(&mut tan, i as u8, *m);
+                        }
+                    }).response.on_hover_text("Auto: smooth handles from the neighbours. Mirrored: both handles move together. Free: each handle moves alone. Corner: sharp point.");
+                    if tan != pt.tan.min(3) {
                         snap_first = true;
-                        pt.hin = None;
-                        pt.hout = None;
+                        spl_set_tangent(&mut e.sp.paths[e.path], si, tan);
                         changed = true;
                     }
                     if ui.button("Delete point").clicked() {
@@ -325,14 +383,8 @@ impl App {
             if resp.double_clicked() && !pan_mode {
                 if let Some((0, pi, si)) = hit_at(&e, q) {
                     want_snap = true;
-                    let p = &mut e.sp.paths[pi].pts[si];
-                    if p.hin.is_none() && p.hout.is_none() {
-                        p.hin = Some([0.0, 0.0]);
-                        p.hout = Some([0.0, 0.0]);
-                    } else {
-                        p.hin = None;
-                        p.hout = None;
-                    }
+                    let corner = e.sp.paths[pi].pts[si].tan != 3;
+                    spl_set_tangent(&mut e.sp.paths[pi], si, if corner { 3 } else { 0 });
                     changed = true;
                 }
             }
@@ -354,12 +406,14 @@ impl App {
                                 want_snap = true;
                             }
                             let pt = &mut e.sp.paths[pi].pts[si];
+                            // Auto and Mirrored points move both handles together; Free and Corner points (or Alt) one at a time
+                            let together = !alt && pt.tan <= 1;
                             match k {
                                 0 => pt.p = uv,
                                 1 => {
                                     let h = [uv[0] - c[0], uv[1] - c[1]];
                                     pt.hin = Some(h);
-                                    if !alt {
+                                    if together {
                                         pt.hout = Some([-h[0], -h[1]]);
                                     } else if pt.hout.is_none() {
                                         pt.hout = Some(ho);
@@ -368,12 +422,15 @@ impl App {
                                 _ => {
                                     let h = [uv[0] - c[0], uv[1] - c[1]];
                                     pt.hout = Some(h);
-                                    if !alt {
+                                    if together {
                                         pt.hin = Some([-h[0], -h[1]]);
                                     } else if pt.hin.is_none() {
                                         pt.hin = Some(hi);
                                     }
                                 }
+                            }
+                            if k != 0 {
+                                pt.tan = if together { 1 } else { 2 };
                             }
                             e.drag = Some((k, si, true));
                             changed = true;
@@ -428,12 +485,8 @@ impl App {
                         if del_pt {
                             p.pts.remove(si);
                             e.sel = None;
-                        } else if corner {
-                            p.pts[si].hin = Some([0.0, 0.0]);
-                            p.pts[si].hout = Some([0.0, 0.0]);
                         } else {
-                            p.pts[si].hin = None;
-                            p.pts[si].hout = None;
+                            spl_set_tangent(p, si, if corner { 3 } else { 0 });
                         }
                     }
                 }

@@ -77,6 +77,9 @@ pub const ASSETS: &[Asset] = &[
     asset!("rope", "Rope", G, "Paths", ["cable", "twisted", "strands", "braid", "path", "height"], "Three-strand rope along a wavy path, with strand ids and normal.", "generators/rope.mcg"),
     asset!("railway_track", "Railway Track", G, "Paths", ["rails", "sleepers", "gravel", "ballast", "train", "path"], "Rails and sleepers on gravel, with masks for each part.", "generators/railway_track.mcg"),
     asset!("beaded_chain", "Beaded Chain", G, "Paths", ["beads", "pearls", "string", "necklace", "scatter", "path"], "Round beads threaded on a wavy string.", "generators/beaded_chain.mcg"),
+    asset!("herringbone_floor", "Herringbone Floor", G, "Architecture", ["parquet", "wood", "floor", "bricks", "pattern", "ids"], "Herringbone parquet with height, normal and brick ids.", "generators/herringbone_floor.mcg"),
+    asset!("fan_pavement", "Fan Pavement", G, "Architecture", ["arc", "paving", "fan", "stones", "street", "ids"], "Fan-shaped arcs of stones with height, normal and stone ids.", "generators/fan_pavement.mcg"),
+    asset!("cobbled_path", "Cobbled Path", G, "Paths", ["cobbles", "stones", "road", "splatter", "path", "warp"], "Rows of cobbles along a wavy path, bent by a path warp.", "generators/cobbled_path.mcg"),
     asset!("bevel_border", "Bevel Border", G, "Paths", ["frame", "border", "bevel", "edge", "closed", "path"], "Rounded bevel frame inside a closed shape, with a frame mask.", "generators/bevel_border.mcg"),
     // ------------------------------------------------------------ filters
     asset!("height_to_pbr", "Height To PBR", F, "Material utilities", ["normal", "ao", "curvature", "occlusion", "height"], "Normal map, ambient occlusion and curvature from a height map.", "filters/height_to_pbr.mcg"),
