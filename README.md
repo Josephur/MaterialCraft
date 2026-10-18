@@ -39,6 +39,10 @@ F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
     materialcraft resources <graph.mcg> [--embed] [--update] [--collect] [--prune]   # list / manage the files a graph uses
     materialcraft nodes | check | params | testmesh | example
 
+## AI control
+
+Assistants and scripts can build and edit graphs through an MCP server, a command line and a live editor bridge. See [AI_CONTROL.md](AI_CONTROL.md).
+
 ## Platforms
 Windows, Linux and macOS use the same code: `eframe` (glow / OpenGL 3.3 core) for the window and the 3D viewport, `rfd` for
 file dialogs, plus the shared Craft libraries (`craft-ui` docking, `craft-settings`, `craft-atomic`, `craft-cms`, `craft-quit`, from

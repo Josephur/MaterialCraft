@@ -27,6 +27,10 @@ USAGE:
   materialcraft library [words...] [--kind material|generator|filter]   list or search the built-in ready-made graphs
   materialcraft library --export <id> <file.mcg>                          write one of them out to edit
   materialcraft nodes
+  materialcraft mcp [--graph f.mcg] [--bridge]      MCP server for AI assistants (standard input / output); --bridge drives the open editor
+  materialcraft serve [--graph f.mcg] [--port N]    keep a graph in memory and accept commands on a local port (token protected)
+  materialcraft exec [options] <command> [name=value ...]   run one command (render_node, node_add, batch, ...); see: materialcraft exec --help
+  materialcraft commands [words]                    list all commands with their parameters
 
 The visual editor is a separate binary:  cargo run --release --features gui --bin materialcraft-gui
 ";
@@ -410,6 +414,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("wrote {dir}/low.obj and {dir}/high.obj");
             Ok(())
         }
+        Some(c @ ("mcp" | "serve" | "exec" | "commands")) => materialcraft::agent_cli::run(c, &args[1..]),
         Some("bake") => bake_cli(&args[1..]),
         Some("render3d") => materialcraft::cli3d::run(&args[1..], &load),
         Some("render") => {

@@ -201,6 +201,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [x] 32-bit float output: EXR, HDR and float TIFF export (graph clamps still to be reviewed)
 
 ### Publishing and automation
+- [x] AI control: command registry, MCP server, `exec` / `serve` CLI and live editor bridge (see AI_CONTROL.md)
 - [ ] Unreal / Unity plugins and a small runtime for published packages
 - [ ] Scripting API and batch automation
 - [ ] Engine-specific output templates (Unreal ORM packing and similar)

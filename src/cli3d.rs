@@ -37,6 +37,18 @@ fn list() {
 }
 
 pub fn run(args: &[String], load: &dyn Fn(&str) -> Result<Graph, String>) -> Result<(), String> {
+    run_inner(args, load, false)
+}
+
+/// Like [`run`] but never writes to standard output (the MCP server uses standard output for its protocol).
+pub fn run_quiet(args: &[String], load: &dyn Fn(&str) -> Result<Graph, String>) -> Result<(), String> {
+    run_inner(args, load, true)
+}
+
+fn run_inner(args: &[String], load: &dyn Fn(&str) -> Result<Graph, String>, quiet: bool) -> Result<(), String> {
+    if quiet && (args.iter().any(|a| a == "--list") || args.len() < 2 || args[0].starts_with("--")) {
+        return Err("usage: <graph> <out.png> [options]".into());
+    }
     if args.iter().any(|a| a == "--list") {
         list();
         return Ok(());
@@ -160,7 +172,9 @@ pub fn run(args: &[String], load: &dyn Fn(&str) -> Result<Graph, String>) -> Res
         let img = if mode == "pt" { crate::pt::render(&maps, &v, w, h, spp) } else { render3d::render(&maps, &v, w, h) };
         let path = if turn > 0 { Path::new(&out).join(format!("frame_{f:04}.png")) } else { Path::new(&out).to_path_buf() };
         crate::safeio::write_file(&path, &crate::png::encode(img.w, img.h, &img.px, 8)).map_err(|e| format!("{}: {e}", path.display()))?;
-        println!("wrote {}", path.display());
+        if !quiet {
+            println!("wrote {}", path.display());
+        }
     }
     Ok(())
 }

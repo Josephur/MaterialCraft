@@ -11,6 +11,7 @@ use materialcraft::render3d::{self, Maps, View};
 use materialcraft::tex::{self, Tex};
 use materialcraft::export::{self, Format};
 use materialcraft::gpu3d::{self, MapInputs};
+use materialcraft::params::{new_node_defaults, param_group, pdefs, PK};
 use materialcraft::{ops, png};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -387,6 +388,10 @@ struct App {
     res: ResUi,
     res_dirs: Vec<PathBuf>,
     show_about: bool,
+    /// the AI control window is open
+    show_ai: bool,
+    /// listening for assistants on a local port
+    ctl: Option<ControlLink>,
     link_pick: Option<(PathBuf, Vec<String>)>,
     screen: Screen,
     new_dlg: NewDlg,
@@ -509,6 +514,8 @@ impl App {
             res: ResUi::new(),
             res_dirs: Vec::new(),
             show_about: false,
+            show_ai: false,
+            ctl: None,
             link_pick: None,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
             new_dlg: NewDlg { open: false, sel: 1, name: "Graph".into(), size: 2048, height: 0, depth16: false, dest: None },
@@ -1924,6 +1931,7 @@ fn apply_theme(ctx: &egui::Context) {
 }
 
 include!("gui_params.rs");
+include!("gui_control.rs");
 include!("gui_spline.rs");
 include!("gui_bake.rs");
 include!("gui_res.rs");
