@@ -235,6 +235,51 @@ fn shade(c: &Ctx6, field: &Field, f: impl Fn(Option<Hit>, usize, usize) -> f32 +
     Tex { w, h, px }
 }
 
+/// Like [`shade`] for a node with several outputs: the path is looked up once per pixel and `f(hit, x, y, k)` gives
+/// output `k` for every output whose bit is set in `want`. Returns the outputs in index order (None = not wanted).
+fn shade_multi(c: &Ctx6, field: &Field, want: u32, nout: usize, f: impl Fn(Option<Hit>, usize, usize, usize) -> f32 + Sync) -> Vec<Option<Tex>> {
+    let (w, h) = (c.s, c.hs);
+    let ks: Vec<usize> = (0..nout).filter(|k| want & (1 << k) != 0).collect();
+    let m = ks.len().max(1);
+    let mut vals = vec![0.0f32; w * h * m];
+    let rows_per = crate::pool::rows_per_piece(w, h);
+    let my = crate::tex::my_job();
+    crate::pool::for_chunks(&mut vals, rows_per * w * m, &|ci, piece| {
+        for (ry, row) in piece.chunks_mut(w * m).enumerate() {
+            if crate::tex::stale(my) {
+                return;
+            }
+            let y = ci * rows_per + ry;
+            for x in 0..w {
+                let hit = field.query(x as f32 + 0.5, y as f32 + 0.5);
+                for (j, &k) in ks.iter().enumerate() {
+                    row[x * m + j] = f(hit, x, y, k);
+                }
+            }
+        }
+    });
+    let mut out: Vec<Option<Tex>> = (0..nout).map(|_| None).collect();
+    for (j, &k) in ks.iter().enumerate() {
+        out[k] = Some(Tex { w, h, px: vals.iter().skip(j).step_by(m).map(|v| grey(*v)).collect() });
+    }
+    out
+}
+
+/// Output `out_idx` of a multi-output node; the other wanted outputs go to the graph, which hands them to their own
+/// requests in this pass instead of running the node again.
+fn take_outputs(outs: Vec<Option<Tex>>, out_idx: usize, fin: &dyn Fn(Tex) -> Tex) -> Tex {
+    let mut mine = None;
+    for (k, t) in outs.into_iter().enumerate() {
+        let Some(t) = t else { continue };
+        if k == out_idx {
+            mine = Some(fin(t));
+        } else {
+            crate::graph::emit_sibling(k, fin(t));
+        }
+    }
+    mine.unwrap_or_else(|| Tex::solid(1, 1, [0.0, 0.0, 0.0, 1.0]))
+}
+
 /// Inside mask (coverage) of the closed paths, drawn with wrapped copies so it tiles.
 fn inside_mask(polys: &[Polyline], w: usize, h: usize, even_odd: bool) -> Vec<f32> {
     let mut vp: Vec<crate::vector::Poly> = Vec::new();
@@ -271,6 +316,8 @@ pub fn compute(
     let c = Ctx6 { kind, n, s, hs };
     let f = |k: &str, d: f32| c.f(k, d);
     let out_idx = f("_out", 0.0).round() as usize;
+    // the outputs this evaluation reads: a multi-output node computes them all in one go (bit k = output k)
+    let want = (f("_want", 0.0).max(0.0) as u32) | (1u32 << out_idx.min(31));
     let (con, inv) = (f("contrast", 1.0).clamp(0.0, 16.0), f("invert", 0.0) > 0.5);
     let fin = |t: Tex| -> Tex {
         if (con - 1.0).abs() > 1e-4 || inv {
@@ -372,8 +419,8 @@ pub fn compute(
             let flat = f("flat", 0.0).clamp(0.0, 0.95);
             let field = Field::build(&polys, s, hs, width);
             let inside = inside_mask(&polys, s, hs, false);
-            let mask_out = out_idx == 1;
-            fin(shade(&c, &field, |hit, x, y| {
+            let outs = shade_multi(&c, &field, want, 2, |hit, x, y, k| {
+                let mask_out = k == 1;
                 let Some(h) = hit else { return 0.0 };
                 let ins_v = inside[y * s + x] > 0.5;
                 let ok = match side {
@@ -396,7 +443,8 @@ pub fn compute(
                     _ => 1.0 - r,
                 };
                 hgt * aa(width - h.d)
-            }))
+            });
+            take_outputs(outs, out_idx, &fin)
         }
         "path_scatter" | "path_splatter" => {
             let polys = c.polys(id, load)?;
@@ -472,17 +520,18 @@ pub fn compute(
             let width = f("width", 40.0).clamp(0.5, 1024.0) * rs;
             let wmax = max_wf(&polys).max(1e-3);
             let field = Field::build(&polys, s, hs, width * 0.5 * wmax + 3.0);
-            fin(shade(&c, &field, |hit, _, _| {
-                let Some(h) = hit else { return if out_idx == 3 { 0.5 } else { 0.0 } };
+            let outs = shade_multi(&c, &field, want, 4, |hit, _, _, k| {
+                let Some(h) = hit else { return if k == 3 { 0.5 } else { 0.0 } };
                 let half = (width * 0.5 * h.wf).max(0.05);
                 let cov = aa(half - h.d);
-                match out_idx {
+                match k {
                     1 => cov * (h.wf / wmax).clamp(0.0, 1.0),
                     2 => cov * h.z.clamp(0.0, 1.0),
                     3 => 0.5 + 0.5 * cov * h.side * (h.d / half).min(1.0),
                     _ => cov * (h.s / h.plen).clamp(0.0, 1.0),
                 }
-            }))
+            });
+            take_outputs(outs, out_idx, &fin)
         }
         "path_warp" => {
             // pushes, pulls or slides the picture near the path (strongest on the line, fading out over `width`)
@@ -516,15 +565,16 @@ pub fn compute(
             let (spacing, sl, sw) = (f("sleeper_spacing", 28.0).clamp(2.0, 1024.0) * rs, f("sleeper_length", 110.0).clamp(2.0, 2048.0) * rs, f("sleeper_width", 14.0).clamp(1.0, 512.0) * rs);
             let (rh, sh) = (f("rail_height", 0.9).clamp(0.0, 1.0), f("sleeper_height", 0.55).clamp(0.0, 1.0));
             let field = Field::build(&polys, s, hs, (sl * 0.5).max(gauge * 0.5 + rw) + 3.0);
-            fin(shade(&c, &field, |hit, _, _| {
+            let outs = shade_multi(&c, &field, want, 3, |hit, _, _, k| {
                 let Some(h) = hit else { return 0.0 };
                 let (rail, sleeper) = track_parts(&h, gauge, rw, spacing, sl, sw, fit);
-                match out_idx {
+                match k {
                     1 => rail,
                     2 => sleeper,
                     _ => (rh * rail.max(0.0) * track_dome(&h, gauge, rw)).max(sh * sleeper),
                 }
-            }))
+            });
+            take_outputs(outs, out_idx, &fin)
         }
         "path_cable" => {
             let polys = c.polys(id, load)?;
@@ -533,7 +583,7 @@ pub fn compute(
             let size = f("strand_size", 0.5).clamp(0.15, 0.95);
             let twist = f("twist", 3.0).clamp(0.0, 64.0);
             let field = Field::build(&polys, s, hs, width * 0.5 * max_wf(&polys) + 3.0);
-            fin(shade(&c, &field, |hit, _, _| {
+            let outs = shade_multi(&c, &field, want, 3, |hit, _, _, k| {
                 let Some(h) = hit else { return 0.0 };
                 let half = width * 0.5 * h.wf;
                 if half < 0.05 {
@@ -555,12 +605,13 @@ pub fn compute(
                     }
                 }
                 let edge = aa((1.0 - u.abs()) * half);
-                match out_idx {
+                match k {
                     1 => if best.0 > 0.0 { edge } else { 0.0 },
                     2 => if best.0 > 0.0 { (best.1 + 1) as f32 / strands as f32 * edge } else { 0.0 },
                     _ => best.0 * edge,
                 }
-            }))
+            });
+            take_outputs(outs, out_idx, &fin)
         }
         "path_seam" => {
             let polys = c.polys(id, load)?;
@@ -568,21 +619,22 @@ pub fn compute(
             let (sw, gw) = (f("stitch_width", 5.0).clamp(0.5, 256.0) * rs, f("groove_width", 12.0).clamp(0.0, 512.0) * rs);
             let (depth, sh) = (f("groove_depth", 0.5).clamp(0.0, 1.0), f("stitch_height", 0.7).clamp(0.0, 1.0));
             let field = Field::build(&polys, s, hs, (gw * 0.5).max(len * 0.5 + sw) + 3.0);
-            fin(shade(&c, &field, |hit, _, _| {
-                let Some(h) = hit else { return if out_idx == 1 { 0.0 } else { 0.5 } };
+            let outs = shade_multi(&c, &field, want, 2, |hit, _, _, k| {
+                let Some(h) = hit else { return if k == 1 { 0.0 } else { 0.5 } };
                 let period = fit_period(h.plen, len + gap, fit);
                 let l = (period - gap).min(period).max(0.5);
                 let a = ((h.s % period) - period * 0.5).abs();
                 let excess = (a - l * 0.5).max(0.0);
                 let dd = (excess * excess + h.d * h.d).sqrt();
                 let cov = aa(sw * 0.5 - dd);
-                if out_idx == 1 {
+                if k == 1 {
                     return cov;
                 }
                 let dome = (1.0 - (dd / (sw * 0.5)).min(1.0).powi(2)).sqrt() * cov;
                 let groove = if gw > 0.0 { (1.0 - (h.d / (gw * 0.5)).min(1.0).powi(2)).max(0.0) } else { 0.0 };
                 (0.5 + 0.5 * sh * dome - 0.5 * depth * groove).clamp(0.0, 1.0)
-            }))
+            });
+            take_outputs(outs, out_idx, &fin)
         }
         _ => return Ok(None),
     };

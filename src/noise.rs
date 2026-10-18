@@ -45,6 +45,27 @@ fn grad_at(x: i32, y: i32, seed: u32) -> [f32; 2] {
     grad_table()[(hash2(x, y, seed) >> 20) as usize]
 }
 
+/// `i` wrapped into `0..p` (p > 0): a compare in the common case instead of an integer division.
+#[inline(always)]
+fn wrap_i(i: i32, p: i32) -> i32 {
+    if (i as u32) < (p as u32) {
+        i
+    } else {
+        i.rem_euclid(p)
+    }
+}
+
+/// `x` wrapped into `0..1` exactly like `x.rem_euclid(1.0)`, without the `fmod` call for ordinary coordinates
+/// (for |x| < 2^23 both are the correctly rounded value of the same real number).
+#[inline(always)]
+pub fn wrap01(x: f32) -> f32 {
+    if x.abs() < 8_388_608.0 {
+        x - crate::tex::ffloor(x)
+    } else {
+        x.rem_euclid(1.0)
+    }
+}
+
 /// Tileable gradient (Perlin) noise in 0..1. `px`,`py` are integer lattice periods.
 pub fn perlin(u: f32, v: f32, px: i32, py: i32, seed: u32) -> f32 {
     let px = px.max(1);
@@ -58,14 +79,19 @@ pub fn perlin(u: f32, v: f32, px: i32, py: i32, seed: u32) -> f32 {
     let fx = x - fxl;
     let fy = y - fyl;
     let tab = grad_table();
+    // wrap the two lattice columns and rows once instead of once per corner
+    let x0 = wrap_i(ix, px);
+    let y0 = wrap_i(iy, py);
+    let x1 = if x0 + 1 == px { 0 } else { x0 + 1 };
+    let y1 = if y0 + 1 == py { 0 } else { y0 + 1 };
     let g = |cx: i32, cy: i32, dx: f32, dy: f32| {
-        let c = tab[(hash2(cx.rem_euclid(px), cy.rem_euclid(py), seed) >> 20) as usize];
+        let c = tab[(hash2(cx, cy, seed) >> 20) as usize];
         c[0] * dx + c[1] * dy
     };
-    let n00 = g(ix, iy, fx, fy);
-    let n10 = g(ix + 1, iy, fx - 1.0, fy);
-    let n01 = g(ix, iy + 1, fx, fy - 1.0);
-    let n11 = g(ix + 1, iy + 1, fx - 1.0, fy - 1.0);
+    let n00 = g(x0, y0, fx, fy);
+    let n10 = g(x1, y0, fx - 1.0, fy);
+    let n01 = g(x0, y1, fx, fy - 1.0);
+    let n11 = g(x1, y1, fx - 1.0, fy - 1.0);
     let sx = fade(fx);
     let sy = fade(fy);
     let n = lerp(lerp(n00, n10, sx), lerp(n01, n11, sx), sy);
@@ -94,8 +120,8 @@ pub fn fbm(u: f32, v: f32, px: i32, py: i32, octaves: u32, gain: f32, seed: u32,
         amp *= gain;
         let (na, nb) = (2.0 * a - b, a + 2.0 * b);
         // keep the coordinates small: whole periods do not change a periodic function
-        a = na.rem_euclid(1.0);
-        b = nb.rem_euclid(1.0);
+        a = wrap01(na);
+        b = wrap01(nb);
     }
     if norm > 0.0 {
         // averaged octaves cluster around mid grey; stretch them so the result uses most of the 0..1 range
@@ -180,8 +206,8 @@ pub fn voronoi(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> (f32
         for dx in -1..=1 {
             let cx = ix + dx;
             let cy = iy + dy;
-            let wx = cx.rem_euclid(px);
-            let wy = cy.rem_euclid(py);
+            let wx = wrap_i(cx, px);
+            let wy = wrap_i(cy, py);
             let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5) * jitter;
             let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5) * jitter;
             let d = ((fx - x).powi(2) + (fy - y).powi(2)).sqrt();
@@ -210,7 +236,7 @@ pub fn spots<F: Fn(f32) -> (f32, f32)>(u: f32, v: f32, px: i32, py: i32, seed: u
     for dy in -1..=1 {
         for dx in -1..=1 {
             let (cx, cy) = (ix + dx, iy + dy);
-            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let (wx, wy) = (wrap_i(cx, px), wrap_i(cy, py));
             let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5);
             let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5);
             let d = (((fx - x).powi(2) + (fy - y).powi(2)).sqrt() * k + grain).max(0.0);
@@ -242,7 +268,7 @@ pub fn voronoi_ext(u: f32, v: f32, px: i32, py: i32, seed: u32, jitter: f32) -> 
     for dy in -1..=1 {
         for dx in -1..=1 {
             let (cx, cy) = (ix + dx, iy + dy);
-            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let (wx, wy) = (wrap_i(cx, px), wrap_i(cy, py));
             let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5) * jitter;
             let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5) * jitter;
             let d = ((fx - x).powi(2) + (fy - y).powi(2)).sqrt();
@@ -295,8 +321,9 @@ impl GradGrid {
         let (fxl, fyl) = (crate::tex::ffloor(x), crate::tex::ffloor(y));
         let (fx, fy) = (x - fxl, y - fyl);
         // wrap the two lattice columns / rows once instead of once per corner
-        let x0 = (fxl as i64).rem_euclid(self.px as i64) as usize;
-        let y0 = (fyl as i64).rem_euclid(self.py as i64) as usize;
+        let (ix, iy) = (fxl as i64, fyl as i64);
+        let x0 = if (ix as u64) < (self.px as u64) { ix as usize } else { ix.rem_euclid(self.px as i64) as usize };
+        let y0 = if (iy as u64) < (self.py as u64) { iy as usize } else { iy.rem_euclid(self.py as i64) as usize };
         let x1 = if x0 + 1 == self.px as usize { 0 } else { x0 + 1 };
         let y1 = if y0 + 1 == self.py as usize { 0 } else { y0 + 1 };
         let row0 = y0 * self.px as usize;
@@ -391,7 +418,7 @@ pub fn voronoi_gen(u: f32, v: f32, px: i32, py: i32, seed: u32, id_seed: u32, ji
     for dy in -1..=1 {
         for dx in -1..=1 {
             let (cx, cy) = (ix + dx, iy + dy);
-            let (wx, wy) = (cx.rem_euclid(px), cy.rem_euclid(py));
+            let (wx, wy) = (wrap_i(cx, px), wrap_i(cy, py));
             let fx = cx as f32 + 0.5 + (rnd(wx, wy, seed) - 0.5) * jitter;
             let fy = cy as f32 + 0.5 + (rnd(wx, wy, seed.wrapping_add(77)) - 0.5) * jitter;
             let d = metric.dist(fx - x, fy - y);

@@ -115,6 +115,12 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Responsive previews: editing cancels the running evaluation (it stops within a few rows, even inside a heavy node) and starts the new one immediately; previews are progressive (256, 512, 1024 ... up to the preview size) so a change shows in a fraction of a second; the 2D image and GPU textures are prepared on the worker thread, so the editor never stalls; switching or entering a graph clears the old previews at once
 - Interactive vs settled passes: while a value is being dragged the editor evaluates only the subgraph feeding the 2D view and the material outputs — off-screen branches, disconnected experiments, thumbnails and the 3D maps cost nothing until the input stops moving. About 110 ms after the last change one full pass rebuilds every thumbnail and the 3D view. So a change on a large graph with many unrelated nodes stays responsive, and the GPU material maps are prepared on the worker thread instead of the main thread
 - Memory: intermediate textures are freed as soon as every node that reads them has finished, so large graphs at 4K fit
+- Speed pass (October 2026; every output checked bit for bit against a snapshot of all node demo graphs and library graphs, except the directional noise change below). Measured on all library graphs at 1024 px on 2 cores: a cold evaluation 25.3 s to 15.9 s in total, a pass with nothing changed 2.2 s to 4 ms, the full pass after an edit 2.5 s to 0.09 s; `cargo run --release --example profile -- 1024` measures it
+  - Cache passes: a cached grayscale result that is still on screen is handed out again instead of being expanded from its one-channel copy; nodes the pass only shows as a card take their thumbnail without their pixels; a node already evaluated as another node's input is not evaluated a second time for its card
+  - Persistent worker pool (`src/pool.rs`, no new dependency): the per-pixel loops no longer start operating-system threads for every node (0.1-0.6 ms each, more than a whole node at the quick 256 px pass), and work is handed out in small pieces so uneven rows balance out; image loops walk rows instead of dividing per pixel
+  - Multi-output nodes: the outputs a pass reads are produced by one run (Path Track, Cable, Border, Seam and Sample: about 2.4x for Railway Track and Rope), and a node's inputs are kept until all of its outputs are done (before, they could be freed after the first output and computed again)
+  - Kernels: Grunge Map builds its noise lattices once (1.5x); fractal and cellular noises wrap without integer divisions (1.15-1.25x); Directional Noise takes at most 4 samples per lattice cell along a streak (up to 3.5x; no pixel changes by more than one 8-bit step); small-radius Blur runs on all cores; Ambient Occlusion samples one channel and converts once; Blend no longer copies the background first; Output and Dot nodes pass their input on without copying it
+  - Editor: cards and links outside the view are neither drawn nor hit-tested; a thumbnail is uploaded again only when its pixels changed; with displacement in the Floor, Look-dev and Pedestal scenes the floor follows the displaced object without the scene mesh being rebuilt on every edit
 
 ### Quality checks
 - 69 automated tests, including: a wrap-around check that rolls the input of 30 filters and requires the output to roll identically (proves every filter wraps at the borders), seam checks on every node, every node at four resolutions (finite, sane range, not blank), every documented parameter fuzzed with extreme values (no panics/NaN), and whole-graph import and per-output links
@@ -174,7 +180,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
   - Gradient Dynamic
   - Auto Levels
   - Cube Map tools
-- [x] Built-in library of ready-made graphs (15 materials with Stitched Leather, 13 generators, 5 filters) with thumbnails, tag search, categories, `materialcraft library` ; templates open as examples from the start screen (own tab, not part of the project, no duplicate tabs, "Add to project" / File > Package > Add template to copy), ready-made generators and filters drag in as one template node with right-click "Edit template" (more entries to come)
+- [x] Built-in library of ready-made graphs (26 materials: the first 15 plus Pink Granite, Asphalt, Gravel, Snow, Cracked Ice, Tree Bark, Brushed Steel, Diamond Plate, Sci-Fi Panels, Dungeon Wall and Cooling Lava; 13 generators, 5 filters; every output is checked to tile by `tests/seam.rs`) with thumbnails, tag search, categories, `materialcraft library` ; templates open as examples from the start screen (own tab, not part of the project, no duplicate tabs, "Add to project" / File > Package > Add template to copy), ready-made generators and filters drag in as one template node with right-click "Edit template" (more entries to come)
 
 ### 3D and rendering
 - Custom light rigs (several lights, HDR environment images), a true seamless-edge check in the 3D view
@@ -209,6 +215,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Test the GPU viewport on real GPUs (NVIDIA, AMD, Intel, Apple)
 - [x] CPU fallback renderer lights with the same environment as the GPU viewport
 - [ ] GPU viewport: wireframe at mesh resolution 256+ renders as a solid blob
+- [ ] Clouds at scale 1-3 and Fractal Noise at scale 1-2 show faint diagonal streaks: every octave reuses the base lattice (rotated and scaled), so a 2x2 lattice repeats only four gradients. The fix changes the pixels of existing graphs that use those scales, so it waits for a decision
 
 ---
 

@@ -197,7 +197,12 @@ impl App {
             // the handles follow the distance: close nodes get a short, tight wire; a wire that has to turn back gets a wider loop
             let (adx, ady) = ((b.x - a.x).abs(), (b.y - a.y).abs());
             let dx = if b.x >= a.x { (adx * 0.5).max(ady * 0.2).max(3.0 * z) } else { (adx * 0.25 + ady * 0.2 + 28.0 * z).min(120.0 * z) };
-            painter.add(CubicBezierShape::from_points_stroke([a, a + vec2(dx, 0.0), b - vec2(dx, 0.0), b], false, Color32::TRANSPARENT, Stroke::new(w * z.max(0.7), col)));
+            let pts = [a, a + vec2(dx, 0.0), b - vec2(dx, 0.0), b];
+            // the curve stays inside the hull of its control points: a wire whose hull is off screen is not drawn
+            if !Rect::from_points(&pts).expand(4.0).intersects(rect) {
+                return;
+            }
+            painter.add(CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, Stroke::new(w * z.max(0.7), col)));
         };
 
         // links
@@ -229,6 +234,11 @@ impl App {
             let id = s.id;
             let card = Rect::from_min_size(ts(s.pos), if s.dot { vec2(24.0, 24.0) } else { vec2(CARD, BAR + body_of(s)) } * z);
             cards.push(card);
+            // a card outside the view (with room for its socket labels and size caption) is neither drawn nor hit-tested;
+            // a large graph then costs only what is on screen
+            if !card.expand2(vec2(90.0, 30.0) * z.max(0.5)).intersects(rect) {
+                continue;
+            }
             let selected = self.sel.contains(&id);
             let err = self.node_err.get(&id).cloned();
             if s.dot {

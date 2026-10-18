@@ -561,6 +561,7 @@ impl App {
                 self.file = Some(p.clone());
                 self.clear_history();
                 self.thumbs.clear();
+                self.thumb_px.clear();
                 self.modified = false;
                 self.screen = Screen::Editor;
                 self.fit_view();

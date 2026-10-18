@@ -354,6 +354,8 @@ struct App {
     pass_size: usize,
     tile_preview: bool,
     thumbs: HashMap<u32, egui::TextureHandle>,
+    /// pixels behind each thumbnail texture (an unchanged thumbnail is not uploaded again)
+    thumb_px: HashMap<u32, Vec<u8>>,
     node_err: HashMap<u32, String>,
     tex2d: Option<egui::TextureHandle>,
     tex2d_size: (usize, usize),
@@ -477,6 +479,7 @@ impl App {
             pass_size: 0,
             tile_preview: false,
             thumbs: HashMap::new(),
+            thumb_px: HashMap::new(),
             node_err: HashMap::new(),
             tex2d: None,
             tex2d_size: (0, 0),
@@ -827,6 +830,7 @@ impl App {
         self.modified = p.modified;
         self.clear_history();
         self.thumbs.clear();
+        self.thumb_px.clear();
         self.screen = Screen::Editor;
         self.fit_view();
         self.active = self.g.nodes.keys().next().copied();
@@ -1335,6 +1339,7 @@ impl App {
         self.maps.clear();
         self.tex2d = None;
         self.thumbs.clear();
+        self.thumb_px.clear();
         self.node_err.clear();
         self.dirty3d = true;
         self.gpu_maps_dirty = true;
@@ -1722,14 +1727,20 @@ impl App {
                 // thumbnails are produced only by the full (settled) pass; an interactive pass keeps the ones on screen
                 if r.full {
                     self.thumbs.retain(|id, _| r.thumbs.contains_key(id));
-                    for (id, bytes) in &r.thumbs {
-                        let img = ColorImage::from_rgba_unmultiplied([THUMB, THUMB], bytes);
-                        match self.thumbs.get_mut(id) {
+                    self.thumb_px.retain(|id, _| r.thumbs.contains_key(id));
+                    for (id, bytes) in r.thumbs {
+                        // most cards are unchanged after an edit: only a thumbnail whose pixels differ is uploaded again
+                        if self.thumbs.contains_key(&id) && self.thumb_px.get(&id) == Some(&bytes) {
+                            continue;
+                        }
+                        let img = ColorImage::from_rgba_unmultiplied([THUMB, THUMB], &bytes);
+                        match self.thumbs.get_mut(&id) {
                             Some(h) => h.set(img, egui::TextureOptions::LINEAR),
                             None => {
-                                self.thumbs.insert(*id, ctx.load_texture(format!("thumb{id}"), img, egui::TextureOptions::LINEAR));
+                                self.thumbs.insert(id, ctx.load_texture(format!("thumb{id}"), img, egui::TextureOptions::LINEAR));
                             }
                         }
+                        self.thumb_px.insert(id, bytes);
                     }
                 }
                 if self.g.graph_kind() != "texture" {

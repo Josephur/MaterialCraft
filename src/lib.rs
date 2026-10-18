@@ -52,6 +52,7 @@ pub mod dec_dds;
 pub mod dds_tables;
 pub mod webp_tables;
 pub mod dec_webp;
+pub mod pool;
 pub mod tex;
 pub mod v3;
 pub mod vector;

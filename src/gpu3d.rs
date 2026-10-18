@@ -224,6 +224,10 @@ struct MeshGl {
     objects: Vec<scene::Instance>,
     /// radius of the part of the scene that casts shadows
     radius: f32,
+    /// lowest vertices of the displaced object (height, uv, vertical displacement, fade) and their undisplaced lowest
+    /// point: a new height map only moves the floor, which these give without building the scene again
+    bottom: Vec<(f32, [f32; 2], f32, f32)>,
+    ymin0: f32,
 }
 
 #[derive(Clone, PartialEq)]
@@ -233,8 +237,8 @@ struct MeshKey {
     tiling: u32,
     scene: scene::SceneKind,
     custom: usize,
-    /// changes when the height map, or the settings that move the floor with the displacement, change
-    height_gen: u64,
+    /// where the floor sits under the displaced object (quantised), when displacement moves it
+    floor: i64,
     disp: (u32, u32),
 }
 
@@ -638,37 +642,52 @@ fn sample_height(h: &(usize, usize, Arc<Vec<f32>>), u: f32, v: f32) -> f32 {
     a + (b - a) * fy
 }
 
-unsafe fn upload_mesh(gl: &glow::Context, r: &mut Res, v: &View, height: &Option<(usize, usize, Arc<Vec<f32>>)>, height_gen: u64) {
+unsafe fn upload_mesh(gl: &glow::Context, r: &mut Res, v: &View, height: &Option<(usize, usize, Arc<Vec<f32>>)>, _height_gen: u64) {
     let displacing = v.relief == RELIEF_DISPLACE && v.height_scale > 0.0 && height.is_some();
-    let key = MeshKey {
+    let moves_floor = displacing && v.scene != scene::SceneKind::Single;
+    let mut key = MeshKey {
         shape: v.shape,
         tess: v.tess.clamp(8, 768),
         tiling: (v.tiling.max(0.1) * 1000.0) as u32,
         scene: v.scene,
         custom: v.custom.as_ref().map(|c| std::sync::Arc::as_ptr(c) as usize).unwrap_or(0),
-        height_gen: if displacing && v.scene != scene::SceneKind::Single { height_gen } else { 0 },
-        disp: if displacing && v.scene != scene::SceneKind::Single { (v.height_scale.to_bits(), v.height_level.to_bits()) } else { (0, 0) },
+        floor: 0,
+        disp: if moves_floor { (v.height_scale.to_bits(), v.height_level.to_bits()) } else { (0, 0) },
     };
+    // lowest point of the displaced object for this height map, from the bottom vertices of a built scene
+    let lowest = |bottom: &[(f32, [f32; 2], f32, f32)], ymin0: f32, hm: &(usize, usize, Arc<Vec<f32>>)| -> f32 {
+        bottom.iter().fold(ymin0, |m, &(y, uv, dy, fade)| m.min(y + dy * (sample_height(hm, uv[0], uv[1]) - v.height_level) * v.height_scale * fade))
+    };
+    // the floor follows the displaced object in steps of 1/2048 (a smaller move is invisible and not worth a rebuild)
+    let quant = |y: f32| (y * 2048.0).round() as i64;
+    if moves_floor {
+        if let (Some(old), Some(hm)) = (r.mesh.as_ref(), height.as_ref()) {
+            let same_mesh = MeshKey { floor: old.key.floor, ..key.clone() } == old.key;
+            if same_mesh {
+                let y = lowest(&old.bottom, old.ymin0, hm);
+                key.floor = if (y - old.ymin0).abs() > 1e-5 { quant(y) } else { 0 };
+                if key.floor == old.key.floor {
+                    return;
+                }
+            }
+        }
+    }
     if r.mesh.as_ref().map(|m| m.key == key).unwrap_or(false) {
         return;
     }
     let mut sm = objects::build_scene_ex(v, None, None);
-    if displacing && v.scene != scene::SceneKind::Single {
+    let (mut bottom, mut ymin0) = (Vec::new(), 0.0f32);
+    if moves_floor {
         // the vertex shader displaces, so work out the lowest point of the displaced object here and put the floor
         // under it, like the software renderer does
         let hm = height.as_ref().unwrap();
         let m = &sm.mesh;
         let n0 = m.obj.iter().position(|&o| o != 0).map(|t| m.tris[t][0] as usize).unwrap_or(m.pos.len());
-        let ymin0 = (0..n0).map(|i| m.pos[i][1]).fold(f32::MAX, f32::min);
-        let mut ymin = ymin0;
-        for i in 0..n0 {
-            if m.pos[i][1] < ymin0 + v.height_scale.abs() * 1.05 + 1e-4 {
-                let hv = sample_height(hm, m.uv[i][0], m.uv[i][1]);
-                let y = m.pos[i][1] + m.disp[i][1] * (hv - v.height_level) * v.height_scale * m.fade[i];
-                ymin = ymin.min(y);
-            }
-        }
+        ymin0 = (0..n0).map(|i| m.pos[i][1]).fold(f32::MAX, f32::min);
+        bottom = (0..n0).filter(|&i| m.pos[i][1] < ymin0 + v.height_scale.abs() * 1.05 + 1e-4).map(|i| (m.pos[i][1], m.uv[i], m.disp[i][1], m.fade[i])).collect();
+        let ymin = lowest(&bottom, ymin0, hm);
         if (ymin - ymin0).abs() > 1e-5 {
+            key.floor = quant(ymin);
             sm = objects::build_scene_ex(v, None, Some(ymin));
         }
     }
@@ -711,7 +730,7 @@ unsafe fn upload_mesh(gl: &glow::Context, r: &mut Res, v: &View, height: &Option
     }
     gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
     gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes_of(&m.tris), glow::STATIC_DRAW);
-    r.mesh = Some(MeshGl { key, vao, vbo, ebo, index_count: (m.tris.len() * 3) as i32, objects: sm.objects, radius: radius + displace_pad });
+    r.mesh = Some(MeshGl { key, vao, vbo, ebo, index_count: (m.tris.len() * 3) as i32, objects: sm.objects, radius: radius + displace_pad, bottom, ymin0 });
 }
 
 // ------------------------------------------------------------------------------------------------ paint

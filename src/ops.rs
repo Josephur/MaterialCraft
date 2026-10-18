@@ -78,44 +78,39 @@ pub(crate) fn gauss_boxes(sigma: f32) -> [i64; 3] {
 /// One wrapping box blur along the rows of `src` (width w, height h), radius r, in parallel over rows.
 fn box_rows(src: &[[f32; 4]], w: usize, h: usize, r: i64) -> Vec<[f32; 4]> {
     let mut dst = vec![[0.0f32; 4]; w * h];
-    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let rows_per = (h + n - 1) / n;
+    let rows_per = crate::pool::rows_per_piece(w, h);
     let inv = 1.0 / (2 * r + 1) as f32;
     let my = crate::tex::my_job();
-    std::thread::scope(|sc| {
-        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * w).enumerate() {
-            sc.spawn(move || {
-                for (ri, out) in chunk.chunks_mut(w).enumerate() {
-                    if crate::tex::stale(my) {
-                        return;
-                    }
-                    let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
-                    let wi = w as i64;
-                    let mut acc = [0.0f32; 4];
-                    for k in -r..=r {
-                        let p = row[k.rem_euclid(wi) as usize];
-                        for c in 0..4 {
-                            acc[c] += p[c];
-                        }
-                    }
-                    let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
-                    for x in 0..w {
-                        out[x] = [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv];
-                        let (add, sub) = (row[ia as usize], row[is as usize]);
-                        for c in 0..4 {
-                            acc[c] += add[c] - sub[c];
-                        }
-                        ia += 1;
-                        if ia == wi {
-                            ia = 0;
-                        }
-                        is += 1;
-                        if is == wi {
-                            is = 0;
-                        }
-                    }
+    crate::pool::for_chunks(&mut dst, rows_per.max(1) * w, &|ci, chunk| {
+        for (ri, out) in chunk.chunks_mut(w).enumerate() {
+            if crate::tex::stale(my) {
+                return;
+            }
+            let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
+            let wi = w as i64;
+            let mut acc = [0.0f32; 4];
+            for k in -r..=r {
+                let p = row[k.rem_euclid(wi) as usize];
+                for c in 0..4 {
+                    acc[c] += p[c];
                 }
-            });
+            }
+            let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
+            for x in 0..w {
+                out[x] = [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv];
+                let (add, sub) = (row[ia as usize], row[is as usize]);
+                for c in 0..4 {
+                    acc[c] += add[c] - sub[c];
+                }
+                ia += 1;
+                if ia == wi {
+                    ia = 0;
+                }
+                is += 1;
+                if is == wi {
+                    is = 0;
+                }
+            }
         }
     });
     dst
@@ -124,84 +119,77 @@ fn box_rows(src: &[[f32; 4]], w: usize, h: usize, r: i64) -> Vec<[f32; 4]> {
 /// Single-channel version of `box_rows` (grayscale images need a quarter of the memory traffic).
 fn box_rows1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
     let mut dst = vec![0.0f32; w * h];
-    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let rows_per = (h + n - 1) / n;
+    let rows_per = crate::pool::rows_per_piece(w, h);
     let inv = 1.0 / (2 * r + 1) as f32;
     let my = crate::tex::my_job();
-    std::thread::scope(|sc| {
-        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * w).enumerate() {
-            sc.spawn(move || {
-                for (ri, out) in chunk.chunks_mut(w).enumerate() {
-                    if crate::tex::stale(my) {
-                        return;
-                    }
-                    let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
-                    let wi = w as i64;
-                    let mut acc = 0.0f32;
-                    for k in -r..=r {
-                        acc += row[k.rem_euclid(wi) as usize];
-                    }
-                    let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
-                    for x in 0..w {
-                        out[x] = acc * inv;
-                        acc += row[ia as usize] - row[is as usize];
-                        ia += 1;
-                        if ia == wi {
-                            ia = 0;
-                        }
-                        is += 1;
-                        if is == wi {
-                            is = 0;
-                        }
-                    }
+    crate::pool::for_chunks(&mut dst, rows_per.max(1) * w, &|ci, chunk| {
+        for (ri, out) in chunk.chunks_mut(w).enumerate() {
+            if crate::tex::stale(my) {
+                return;
+            }
+            let row = &src[(ci * rows_per + ri) * w..(ci * rows_per + ri + 1) * w];
+            let wi = w as i64;
+            let mut acc = 0.0f32;
+            for k in -r..=r {
+                acc += row[k.rem_euclid(wi) as usize];
+            }
+            let (mut ia, mut is) = ((r + 1).rem_euclid(wi), (-r).rem_euclid(wi));
+            for x in 0..w {
+                out[x] = acc * inv;
+                acc += row[ia as usize] - row[is as usize];
+                ia += 1;
+                if ia == wi {
+                    ia = 0;
                 }
-            });
+                is += 1;
+                if is == wi {
+                    is = 0;
+                }
+            }
         }
     });
     dst
 }
 
-/// Vertical wrapping box blur of a single-channel image without transposing it: every thread owns a band of columns and
+/// Vertical wrapping box blur of a single-channel image without transposing it: every piece owns a band of columns and
 /// slides a running sum down the rows, reading whole row segments (cache friendly).
 fn box_cols1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
     let mut dst = vec![0.0f32; w * h];
-    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let band = ((w + n - 1) / n).max(1);
+    let n = crate::pool::threads();
+    let band = w.div_ceil(n).max(1);
     let inv = 1.0 / (2 * r + 1) as f32;
     let my = crate::tex::my_job();
-    // each thread writes its own columns: split the destination into column bands through raw row pointers
+    // each piece writes its own columns: split the destination into column bands through raw row pointers
     struct Ptr(*mut f32);
     unsafe impl Send for Ptr {}
     unsafe impl Sync for Ptr {}
     let base = Ptr(dst.as_mut_ptr());
     let basep = &base;
-    std::thread::scope(|sc| {
-        for x0 in (0..w).step_by(band) {
-            let x1 = (x0 + band).min(w);
-            sc.spawn(move || {
-                let hi = h as i64;
-                let mut acc = vec![0.0f32; x1 - x0];
-                for k in -r..=r {
-                    let row = &src[(k.rem_euclid(hi) as usize) * w + x0..(k.rem_euclid(hi) as usize) * w + x1];
-                    for (a, v) in acc.iter_mut().zip(row) {
-                        *a += *v;
-                    }
-                }
-                for y in 0..h {
-                    if y % 32 == 0 && crate::tex::stale(my) {
-                        return;
-                    }
-                    // SAFETY: the bands are disjoint column ranges, so no two threads write the same element
-                    let out = unsafe { std::slice::from_raw_parts_mut(basep.0.add(y * w + x0), x1 - x0) };
-                    let ia = ((y as i64 + r + 1).rem_euclid(hi)) as usize;
-                    let is = ((y as i64 - r).rem_euclid(hi)) as usize;
-                    let (add, sub) = (&src[ia * w + x0..ia * w + x1], &src[is * w + x0..is * w + x1]);
-                    for i in 0..acc.len() {
-                        out[i] = acc[i] * inv;
-                        acc[i] += add[i] - sub[i];
-                    }
-                }
-            });
+    crate::pool::for_each(w.div_ceil(band), &|bi| {
+        let x0 = bi * band;
+        let x1 = (x0 + band).min(w);
+        let hi = h as i64;
+        let mut acc = vec![0.0f32; x1 - x0];
+        for k in -r..=r {
+            let row = &src[(k.rem_euclid(hi) as usize) * w + x0..(k.rem_euclid(hi) as usize) * w + x1];
+            for (a, v) in acc.iter_mut().zip(row) {
+                *a += *v;
+            }
+        }
+        for y in 0..h {
+            if y % 32 == 0 && crate::tex::stale(my) {
+                return;
+            }
+            // SAFETY: the bands are disjoint column ranges, so no two pieces write the same element, and `dst` outlives
+            // the loop (`for_each` returns only when every piece is done)
+            let out = unsafe { std::slice::from_raw_parts_mut(basep.0.add(y * w + x0), x1 - x0) };
+            let ia = ((y as i64 + r + 1).rem_euclid(hi)) as usize;
+            let is = ((y as i64 - r).rem_euclid(hi)) as usize;
+            let (add, sub) = (&src[ia * w + x0..ia * w + x1], &src[is * w + x0..is * w + x1]);
+            for i in 0..acc.len() {
+                out[i] = acc[i] * inv;
+                acc[i] += add[i] - sub[i];
+            }
         }
     });
     dst
@@ -209,18 +197,14 @@ fn box_cols1(src: &[f32], w: usize, h: usize, r: i64) -> Vec<f32> {
 
 fn transpose(src: &[[f32; 4]], w: usize, h: usize) -> Vec<[f32; 4]> {
     let mut dst = vec![[0.0f32; 4]; w * h];
-    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let rows_per = (w + n - 1) / n; // rows of the transposed image (= columns of the source)
-    std::thread::scope(|sc| {
-        for (ci, chunk) in dst.chunks_mut(rows_per.max(1) * h).enumerate() {
-            sc.spawn(move || {
-                for (ri, out) in chunk.chunks_mut(h).enumerate() {
-                    let x = ci * rows_per + ri;
-                    for (y, o) in out.iter_mut().enumerate() {
-                        *o = src[y * w + x];
-                    }
-                }
-            });
+    // rows of the transposed image (= columns of the source)
+    let rows_per = crate::pool::rows_per_piece(h, w);
+    crate::pool::for_chunks(&mut dst, rows_per.max(1) * h, &|ci, chunk| {
+        for (ri, out) in chunk.chunks_mut(h).enumerate() {
+            let x = ci * rows_per + ri;
+            for (y, o) in out.iter_mut().enumerate() {
+                *o = src[y * w + x];
+            }
         }
     });
     dst
@@ -259,33 +243,42 @@ pub fn blur(t: &Tex, sigma: f32) -> Tex {
     let mut k: Vec<f32> = (-r..=r).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
     let s: f32 = k.iter().sum();
     k.iter_mut().for_each(|x| *x /= s);
-    let mut tmp = t.clone();
-    for y in 0..h {
-        for x in 0..w {
-            let mut a = [0.0f32; 4];
-            for (i, kv) in k.iter().enumerate() {
-                let p = t.at(x as i64 + i as i64 - r, y as i64);
-                for c in 0..4 {
-                    a[c] += p[c] * kv;
+    // exact kernel, rows then columns, on all cores; the taps are added in the same order as a plain loop would
+    let wrap = |i: i64, n: usize| if i >= 0 && (i as usize) < n { i as usize } else { i.rem_euclid(n as i64) as usize };
+    let mut tmp = vec![[0.0f32; 4]; w * h];
+    crate::tex::par_rows(&mut tmp, w, |start, piece| {
+        for (ry, out) in piece.chunks_mut(w).enumerate() {
+            let y = start / w + ry;
+            let row = &t.px[y * w..(y + 1) * w];
+            for (x, o) in out.iter_mut().enumerate() {
+                let mut a = [0.0f32; 4];
+                for (i, kv) in k.iter().enumerate() {
+                    let p = row[wrap(x as i64 + i as i64 - r, w)];
+                    for c in 0..4 {
+                        a[c] += p[c] * kv;
+                    }
                 }
+                *o = a;
             }
-            tmp.px[y * w + x] = a;
         }
-    }
-    let mut out = tmp.clone();
-    for y in 0..h {
-        for x in 0..w {
-            let mut a = [0.0f32; 4];
-            for (i, kv) in k.iter().enumerate() {
-                let p = tmp.at(x as i64, y as i64 + i as i64 - r);
-                for c in 0..4 {
-                    a[c] += p[c] * kv;
+    });
+    let mut out = vec![[0.0f32; 4]; w * h];
+    crate::tex::par_rows(&mut out, w, |start, piece| {
+        for (ry, orow) in piece.chunks_mut(w).enumerate() {
+            let y = start / w + ry;
+            for (x, o) in orow.iter_mut().enumerate() {
+                let mut a = [0.0f32; 4];
+                for (i, kv) in k.iter().enumerate() {
+                    let p = tmp[wrap(y as i64 + i as i64 - r, h) * w + x];
+                    for c in 0..4 {
+                        a[c] += p[c] * kv;
+                    }
                 }
+                *o = a;
             }
-            out.px[y * w + x] = a;
         }
-    }
-    out
+    });
+    Tex { w, h, px: out }
 }
 
 pub fn directional_blur(t: &Tex, angle: f32, length: f32) -> Tex {
@@ -527,7 +520,8 @@ pub fn blend(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32) ->
 /// Blend with alpha handling and cropping area. `alpha_mode`: 0 use source alpha, 1 ignore alpha, 2 straight alpha
 /// blending, 3 premultiplied alpha blending. `crop` = [x0, y0, x1, y1] in 0..1; outside it only the background shows.
 pub fn blend_ex(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32, alpha_mode: u32, crop: [f32; 4]) -> Tex {
-    let mut out = bg.clone();
+    // every channel of every pixel is written below, so the background is read, not copied first
+    let mut out = Tex { w: bg.w, h: bg.h, px: vec![[0.0f32; 4]; bg.px.len()] };
     let (ow, oh) = (out.w, out.h);
     let cropped = crop != [0.0, 0.0, 1.0, 1.0];
     crate::tex::par_rows(&mut out.px, ow, |start, chunk| {
@@ -553,7 +547,7 @@ pub fn blend_ex(fg: &Tex, bg: &Tex, mask: Option<&Tex>, mode: u32, opacity: f32,
                 dst[3] = f[3] * m_plain + b[3] * (1.0 - f[3] * m_plain);
                 m *= f[3];
             }
-            _ => {}
+            _ => dst[3] = b[3],
         }
         if (17..=19).contains(&mode) {
             // 17 color (hue+saturation of the foreground, brightness of the background), 18 luminosity, 19 dissolve
@@ -756,25 +750,27 @@ pub fn normal_blend_ex(a: &Tex, b: &Tex, opacity: f32, mask: Option<&Tex>) -> Te
 }
 
 pub fn ambient_occlusion(h: &Tex, radius: f32, intensity: f32) -> Tex {
-    let b = blur(&to_gray(h), radius);
     let g = to_gray(h);
-    let mut o = g.clone();
-    for i in 0..o.px.len() {
-        let v = (1.0 - (b.px[i][0] - g.px[i][0]) * intensity).clamp(0.0, 1.0);
-        o.px[i] = [v, v, v, 1.0];
-    }
-    o
+    let b = blur(&g, radius);
+    gray_combine(&g, &b, |g, b| (1.0 - (b - g) * intensity).clamp(0.0, 1.0))
 }
 
 pub fn curvature(h: &Tex, radius: f32, intensity: f32) -> Tex {
     let g = to_gray(h);
     let b = blur(&g, radius);
-    let mut o = g.clone();
-    for i in 0..o.px.len() {
-        let v = (0.5 + (g.px[i][0] - b.px[i][0]) * intensity).clamp(0.0, 1.0);
-        o.px[i] = [v, v, v, 1.0];
-    }
-    o
+    gray_combine(&g, &b, |g, b| (0.5 + (g - b) * intensity).clamp(0.0, 1.0))
+}
+
+/// Gray image from the first channels of two equally sized images, on all cores.
+fn gray_combine(a: &Tex, b: &Tex, f: impl Fn(f32, f32) -> f32 + Sync) -> Tex {
+    let mut px = vec![[0.0f32; 4]; a.px.len()];
+    crate::tex::par_rows(&mut px, a.w.max(1), |start, piece| {
+        for (j, o) in piece.iter_mut().enumerate() {
+            let v = f(a.px[start + j][0], b.px[start + j][0]);
+            *o = [v, v, v, 1.0];
+        }
+    });
+    Tex { w: a.w, h: a.h, px }
 }
 
 pub fn edge_detect(t: &Tex, intensity: f32) -> Tex {
@@ -1488,23 +1484,20 @@ pub fn slope_blur(t: &Tex, slope: &Tex, samples: u32, intensity: f32, mode: u32)
     // slope direction (central differences) as a two-channel plane
     let mut gv = vec![[0.0f32; 2]; sw * sh];
     {
-        let rows_per = ((sh + 7) / 8).max(1);
+        let rows_per = crate::pool::rows_per_piece(sw, sh);
         let gray = &gray;
         let my = crate::tex::my_job();
-        std::thread::scope(|sc| {
-            for (ci, chunk) in gv.chunks_mut(rows_per * sw).enumerate() {
-                sc.spawn(move || {
-                    for (j, dst) in chunk.iter_mut().enumerate() {
-                        if j % sw == 0 && crate::tex::stale(my) {
-                            return;
-                        }
-                        let idx = ci * rows_per * sw + j;
-                        let (x, y) = (idx % sw, idx / sw);
-                        let (xm, xp) = (if x == 0 { sw - 1 } else { x - 1 }, if x + 1 == sw { 0 } else { x + 1 });
-                        let (ym, yp) = (if y == 0 { sh - 1 } else { y - 1 }, if y + 1 == sh { 0 } else { y + 1 });
-                        *dst = [gray[y * sw + xp] - gray[y * sw + xm], gray[yp * sw + x] - gray[ym * sw + x]];
-                    }
-                });
+        crate::pool::for_chunks(&mut gv, rows_per * sw, &|ci, chunk| {
+            for (ry, row) in chunk.chunks_mut(sw).enumerate() {
+                if crate::tex::stale(my) {
+                    return;
+                }
+                let y = ci * rows_per + ry;
+                let (ym, yp) = (if y == 0 { sh - 1 } else { y - 1 }, if y + 1 == sh { 0 } else { y + 1 });
+                for (x, dst) in row.iter_mut().enumerate() {
+                    let (xm, xp) = (if x == 0 { sw - 1 } else { x - 1 }, if x + 1 == sw { 0 } else { x + 1 });
+                    *dst = [gray[y * sw + xp] - gray[y * sw + xm], gray[yp * sw + x] - gray[ym * sw + x]];
+                }
             }
         });
     }
@@ -1897,24 +1890,32 @@ pub fn color_swap(t: &Tex, c: &ColorSwap) -> (Tex, Tex) {
 pub fn hbao(h: &Tex, radius_uv: f32, height_scale: f32, dirs: u32, intensity: f32) -> Tex {
     let g = to_gray(h);
     let (w, hh) = (g.w, g.h);
+    // the height as one channel: every step samples a quarter of the memory (same values as sampling the texture)
+    let p = crate::tex::Plane::of(&g, 0);
+    drop(g);
     let dirs = dirs.clamp(2, 64) as usize;
     let steps = 14usize;
     let tab: Vec<(f32, f32)> = (0..dirs).map(|k| ((k as f32 / dirs as f32 * std::f32::consts::TAU).cos(), (k as f32 / dirs as f32 * std::f32::consts::TAU).sin())).collect();
+    // distance, squared distance and falloff of every step, computed once instead of once per pixel and direction
+    let st: Vec<(f32, f32, f32)> = (1..=steps)
+        .map(|j| {
+            let t = j as f32 / steps as f32;
+            let d = radius_uv * t;
+            (d, d * d, 1.0 - t * t)
+        })
+        .collect();
     let rows = crate::tex::par_map(hh, |y| {
         let mut row = vec![[0.0f32; 4]; w];
         for x in 0..w {
             let (u, v) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / hh as f32);
-            let h0 = g.px[y * w + x][0];
+            let h0 = p.v[y * w + x];
             let mut occ = 0.0f32;
             for &(dx, dy) in &tab {
                 let mut best = 0.0f32;
-                for j in 1..=steps {
-                    let t = j as f32 / steps as f32;
-                    let d = radius_uv * t;
-                    let hs = g.sample(u + dx * d, v + dy * d)[0];
+                for &(d, d2, falloff) in &st {
+                    let hs = p.sample(u + dx * d, v + dy * d);
                     let dz = (hs - h0) * height_scale;
-                    let s = dz / (dz * dz + d * d).sqrt().max(1e-9);
-                    let falloff = 1.0 - t * t;
+                    let s = dz / (dz * dz + d2).sqrt().max(1e-9);
                     best = best.max(s * falloff);
                 }
                 occ += best;
@@ -1924,11 +1925,7 @@ pub fn hbao(h: &Tex, radius_uv: f32, height_scale: f32, dirs: u32, intensity: f3
         }
         row
     });
-    let mut o = g.clone();
-    for (y, r) in rows.into_iter().enumerate() {
-        o.px[y * w..(y + 1) * w].copy_from_slice(&r);
-    }
-    o
+    Tex { w, h: hh, px: rows.concat() }
 }
 
 // ---------- colour quantisation (k-means) ----------

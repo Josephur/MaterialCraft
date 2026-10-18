@@ -952,40 +952,37 @@ pub(crate) fn rasterize(mesh: &Mesh, cam: &Cam) -> Vec<Frag> {
     let mut frags = vec![none; w * h];
     let view: Vec<V> = mesh.pos.iter().map(|p| cam.view(*p)).collect();
     let proj: Vec<[f32; 3]> = view.iter().map(|v| if v[2] >= NEAR { cam.project(*v) } else { [0.0, 0.0, 0.0] }).collect();
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
-    let rows_per = (h + threads - 1) / threads;
+    // one band of rows per core (every band walks the triangle list), run on the shared workers
+    let threads = crate::pool::threads();
+    let rows_per = h.div_ceil(threads).max(1);
     let (view, proj) = (&view, &proj);
-    std::thread::scope(|s| {
-        for (ci, band) in frags.chunks_mut(rows_per * w).enumerate() {
-            s.spawn(move || {
-                let y_start = ci * rows_per;
-                let y_end = y_start + band.len() / w;
-                for (ti, t) in mesh.tris.iter().enumerate() {
-                    let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
-                    if mesh.cull[mesh.object_of(ti)] {
-                        // walls whose (smoothed) normal faces away from the camera are not drawn
-                        let nn = add(add(mesh.base_nrm[i0], mesh.base_nrm[i1]), mesh.base_nrm[i2]);
-                        if dot(nn, sub(cam.eye, mesh.pos[i0])) <= 0.0 {
-                            continue;
-                        }
-                    }
-                    if view[i0][2] >= NEAR && view[i1][2] >= NEAR && view[i2][2] >= NEAR {
-                        let (p0, p1, p2) = (proj[i0], proj[i1], proj[i2]);
-                        if p0[1].max(p1[1]).max(p2[1]) < y_start as f32 || p0[1].min(p1[1]).min(p2[1]) > y_end as f32 {
-                            continue;
-                        }
-                        raster(
-                            band,
-                            y_start,
-                            w,
-                            ti as u32,
-                            [Pv { s: p0, a: [1.0, 0.0, 0.0] }, Pv { s: p1, a: [0.0, 1.0, 0.0] }, Pv { s: p2, a: [0.0, 0.0, 1.0] }],
-                        );
-                    } else if view[i0][2] >= NEAR || view[i1][2] >= NEAR || view[i2][2] >= NEAR {
-                        raster_clipped(band, y_start, w, cam, ti as u32, [view[i0], view[i1], view[i2]]);
-                    }
+    crate::pool::for_chunks(&mut frags, rows_per * w.max(1), &|ci, band| {
+        let y_start = ci * rows_per;
+        let y_end = y_start + band.len() / w;
+        for (ti, t) in mesh.tris.iter().enumerate() {
+            let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
+            if mesh.cull[mesh.object_of(ti)] {
+                // walls whose (smoothed) normal faces away from the camera are not drawn
+                let nn = add(add(mesh.base_nrm[i0], mesh.base_nrm[i1]), mesh.base_nrm[i2]);
+                if dot(nn, sub(cam.eye, mesh.pos[i0])) <= 0.0 {
+                    continue;
                 }
-            });
+            }
+            if view[i0][2] >= NEAR && view[i1][2] >= NEAR && view[i2][2] >= NEAR {
+                let (p0, p1, p2) = (proj[i0], proj[i1], proj[i2]);
+                if p0[1].max(p1[1]).max(p2[1]) < y_start as f32 || p0[1].min(p1[1]).min(p2[1]) > y_end as f32 {
+                    continue;
+                }
+                raster(
+                    band,
+                    y_start,
+                    w,
+                    ti as u32,
+                    [Pv { s: p0, a: [1.0, 0.0, 0.0] }, Pv { s: p1, a: [0.0, 1.0, 0.0] }, Pv { s: p2, a: [0.0, 0.0, 1.0] }],
+                );
+            } else if view[i0][2] >= NEAR || view[i1][2] >= NEAR || view[i2][2] >= NEAR {
+                raster_clipped(band, y_start, w, cam, ti as u32, [view[i0], view[i1], view[i2]]);
+            }
         }
     });
     frags
