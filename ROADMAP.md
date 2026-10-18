@@ -178,7 +178,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 ### 3D and rendering
 - Custom light rigs (several lights, HDR environment images), a true seamless-edge check in the 3D view
 - [ ] HDRI and image-based lighting (only an analytic studio light today)
-- [ ] Load custom meshes and 3D scenes into the viewport
+- [x] Load custom meshes and 3D scenes into the viewport (Milestone 5; path-traced mode, HDRI, light rigs, post chain and `render3d` CLI also done)
 - [ ] Path-traced rendering and post-processing (bloom, DOF, SSAO)
 - [ ] GPU tessellation (displacement is per vertex on a pre-built mesh today)
 - [ ] Camera and light presets, turntable rendering
@@ -261,9 +261,8 @@ We have 216 texture node types. Missing, by area (described by function; `NODES.
 - Tiling modes (none / horizontal / vertical)
 
 ### 3D view and rendering
-- HDRI / image-based lighting and HDRI tool nodes (blackbody, exposure, HDR merge, physical sun / sky, area lights, panorama tools)
-- Path-traced renderer, post-processing (bloom, DOF, SSAO, tone-mapping choices), camera and light presets, turntable
-- Custom mesh and 3D scene loading, several meshes at once
+- Done in Milestone 5: HDRI / image-based lighting, path-traced renderer, post-processing, camera and light presets, turntable, custom meshes and scenes
+- Still open: HDRI tool nodes (blackbody, exposure, HDR merge, physical sun / sky, area lights, panorama tools), area-light shapes, real-GPU testing, tessellation shaders, user-assembled multi-mesh scenes
 
 ### Import, export, colour, automation
 - JPEG, TIFF, EXR, HDR bitmap import; SVG gradients; OpenType (CFF) fonts

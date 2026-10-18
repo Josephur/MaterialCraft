@@ -57,9 +57,15 @@ logic, variables, random, image sampling, calls) and **pattern programs** (`meta
 marker nodes, run by the Pattern Program Map node). Any parameter can be driven by a function, and the pixel processor and
 value processor run function graphs. Also: curve node, SVG and text nodes (own rasteriser and TrueType reader).
 
+## 3D viewer and renderer
+Lights (directional, point, spot, shadows), HDR environments (.hdr, .exr, .png, presets; rotation, exposure, blur), camera presets and
+turntable, 16 shapes plus custom meshes (OBJ, glTF, PLY, STL), scenes (floor, look-dev, pedestal), displacement / parallax / bump,
+tone mapping and post (SSAO, DOF, bloom, grading, vignette), channel isolation, and a progressive path tracer (View > Render > Path tracer).
+Headless: `materialcraft render3d graph.mcg out.png --mode pt --spp 256 --env sunset --rig three_point --turntable 36`.
+
 ## Not implemented (honest list)
-Splines/paths, AxF import, OCIO/ACE colour management, scripting API, SVG gradients, OpenType (CFF) fonts,
-path-traced 3D rendering and custom mesh import in the 3D viewer.
+AxF import, OCIO/ACE colour management, scripting API, SVG gradients, OpenType (CFF) fonts,
+PIZ-compressed EXR, and any testing of the 3D viewer on real GPUs (only a software GL driver was available).
 See ROADMAP.md for the complete list.
 
 

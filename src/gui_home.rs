@@ -1575,6 +1575,8 @@ impl App {
                     }
                 }
                 ch |= ui.checkbox(&mut self.view3d.wireframe, "Show wireframe").changed();
+                ui.separator();
+                self.scene_extras(ui, &mut ch);
             });
             ui.menu_button("Materials", |ui| {
                 if self.maps.contains_key("height") {
@@ -1605,35 +1607,7 @@ impl App {
                     ui.label(format!("  {k}"));
                 }
             });
-            ui.menu_button("Lights", |ui| {
-                ch |= ui.checkbox(&mut self.view3d.light_follows_camera, "Light follows the camera").changed();
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.light_intensity, 0.0..=10.0).text("Intensity")).changed();
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.light_yaw, -3.14..=3.14).text("Azimuth")).changed();
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.light_pitch, -1.4..=1.4).text("Elevation")).changed();
-            });
-            ui.menu_button("Camera", |ui| {
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.dist, 1.6..=9.0).text("Distance")).changed();
-                if ui.button("Reset camera").clicked() {
-                    let d = View::default();
-                    self.view3d.yaw = d.yaw;
-                    self.view3d.pitch = d.pitch;
-                    self.view3d.dist = d.dist;
-                    self.view3d.pan_x = d.pan_x;
-                    self.view3d.pan_y = d.pan_y;
-                    self.view3d.light_yaw = d.light_yaw;
-                    self.view3d.light_pitch = d.light_pitch;
-                    ch = true;
-                    ui.close();
-                }
-            });
-            ui.menu_button("Environment", |ui| {
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.exposure, 0.1..=4.0).text("Exposure")).changed();
-                ch |= ui.add(egui::Slider::new(&mut self.view3d.ambient, 0.0..=3.0).text("Ambient light")).changed();
-            });
-            ui.menu_button("Display", |ui| {
-                ui.label(if self.gpu_ready() { "Tone mapping: ACES filmic" } else { "Tone mapping: filmic (Reinhard)" });
-                ui.label("Color space: sRGB");
-            });
+            self.view3d_menus(ui, &mut ch);
             ui.menu_button("Renderer", |ui| {
                 if ui.checkbox(&mut self.gpu_on, "GPU rendering (OpenGL)").changed() {
                     self.gpu_maps_dirty = true;
@@ -1654,7 +1628,8 @@ impl App {
                         }
                     }
                 }
-                if !self.gpu_on {
+                self.render_extras(ui, &mut ch);
+                if !self.gpu_on || self.v3.pt_on {
                     ui.separator();
                     ui.label("CPU software PBR (GGX, normal mapping)");
                     let b = self.r3d_size;
@@ -1686,8 +1661,11 @@ impl App {
                 self.view3d.pan_x = self.view3d.pan_x.clamp(-3.0, 3.0);
                 self.view3d.pan_y = self.view3d.pan_y.clamp(-3.0, 3.0);
             } else if shift {
-                self.view3d.light_yaw -= d.x * 0.01;
-                self.view3d.light_pitch = (self.view3d.light_pitch + d.y * 0.01).clamp(-1.4, 1.4);
+                let sel = self.v3.sel_light.min(self.view3d.lights.len().saturating_sub(1));
+                if let Some(l) = self.view3d.lights.get_mut(sel) {
+                    l.yaw -= d.x * 0.01;
+                    l.pitch = (l.pitch + d.y * 0.01).clamp(-1.4, 1.4);
+                }
             } else {
                 self.view3d.yaw -= d.x * 0.01;
                 self.view3d.pitch = (self.view3d.pitch + d.y * 0.01).clamp(-1.4, 1.4);
@@ -1701,7 +1679,8 @@ impl App {
                 self.dirty3d = true;
             }
         }
-        if self.gpu_ready() {
+        self.view3d_tick(ui.ctx());
+        if self.gpu_ready() && !self.v3.pt_on {
             let (g, v) = (self.gpu.clone(), self.view3d.clone());
             ui.painter().add(egui::PaintCallback {
                 rect,
@@ -1709,6 +1688,10 @@ impl App {
             });
         } else if let Some(t) = &self.tex3d {
             ui.painter().image(t.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        if self.v3.pt_on {
+            let msg = format!("Path tracing: {} / {} samples", self.v3.pt_samples, self.v3.pt_target);
+            ui.painter().text(rect.right_top() + vec2(-8.0, 6.0), Align2::RIGHT_TOP, msg, FontId::proportional(11.0), Color32::from_gray(170));
         }
         ui.painter().text(rect.left_bottom() + vec2(6.0, -5.0), Align2::LEFT_BOTTOM, "drag: orbit   Alt+drag / middle: move   Shift+drag: light   wheel: zoom", FontId::proportional(10.0), Color32::from_gray(110));
         ui.horizontal(|ui| {

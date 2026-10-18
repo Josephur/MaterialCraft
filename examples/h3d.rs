@@ -5,7 +5,7 @@ use materialcraft::tex::Tex;
 fn main() {
     let g = Graph::parse(EXAMPLE).unwrap();
     let out = g.evaluate(Some(512)).unwrap();
-    let m = Maps { base: &out["basecolor"], normal: &out["normal"], rough: &out["roughness"], metal: &out["metallic"], ao: &out["ambient_occlusion"], emissive: None, height: Some(&out["height"]) };
+    let m = Maps { base: &out["basecolor"], normal: &out["normal"], rough: &out["roughness"], metal: &out["metallic"], ao: &out["ambient_occlusion"], emissive: None, height: Some(&out["height"]), env: None };
     let mut sheet: Vec<Tex> = Vec::new();
     for (hs, bump, shape) in [(0.0, 0.0, 0u32), (0.08, 1.0, 0), (0.25, 3.0, 0), (0.25, 3.0, 2)] {
         let v = View { height_scale: hs, bump, shape, yaw: 0.9, pitch: 0.25, ..View::default() };

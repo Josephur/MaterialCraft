@@ -39,9 +39,9 @@ fn every_shape_builds_a_consistent_mesh() {
 
 #[test]
 fn closed_shapes_point_outwards() {
-    for id in [0u32, 1, 3, 9, 10, 11, 12] {
+    for id in [0u32, 1, 3, 9, 10, 11, 12, 13, 14] {
         let m = build_mesh(id, 24, 1.0, None, 0.0, 0.0);
-        let bad = (0..m.pos.len()).filter(|&i| dot(m.nrm[i], m.pos[i]) < -1e-3 && id != 12).count();
+        let bad = (0..m.pos.len()).filter(|&i| dot(m.nrm[i], m.pos[i]) < -1e-3 && id != 12 && id != 15).count();
         assert!(bad == 0, "shape {id}: {bad} normals point inwards");
     }
 }

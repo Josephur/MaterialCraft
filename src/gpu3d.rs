@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! GPU PBR viewport (OpenGL 3.3 core through glow / egui_glow paint callbacks).
 //!
-//! Every shape is a tessellated triangle mesh. The height map displaces the vertices in the vertex shader (true
-//! displacement), the fragment shader does GGX PBR with normal mapping, outward parallax relief, height-field contact
-//! shadows, an analytic studio environment and ACES tone mapping. Textures are mip-mapped with anisotropic filtering
-//! and the window is multisampled, so fine texture detail stays sharp at any zoom level.
-use crate::render3d::{build_mesh, View, RELIEF_BUMP, RELIEF_DISPLACE, RELIEF_PARALLAX};
+//! The scene (the shape, optionally with floor, reference balls or a pedestal) is one tessellated triangle mesh. The
+//! height map displaces the vertices in the vertex shader (true displacement); the fragment shader does GGX PBR with
+//! normal mapping, outward parallax relief, a light rig with shadow maps and image based lighting from an HDR
+//! environment (prefiltered levels plus spherical harmonics). The frame is rendered 4x multisampled into a floating
+//! point target and then goes through the post chain (ambient occlusion, depth of field, bloom, grading, tone
+//! mapping), a line by line port of `post.rs`, so the CPU renderer (`raster.rs`) shows the same picture.
+use crate::hdri::Env;
+use crate::objects;
+use crate::render3d::{View, RELIEF_BUMP, RELIEF_DISPLACE, RELIEF_PARALLAX};
+use crate::scene::{self, Background, Channel, LightKind};
+use crate::v3::*;
 use crate::tex::{lum, par_map, Tex};
 use eframe::egui::PaintCallbackInfo;
 use eframe::egui_glow::{self, glow};
@@ -47,7 +53,7 @@ pub struct GpuMaps {
     /// sRGB RGBA8, absent when the graph has no emissive output
     pub emissive: Option<Vec<u8>>,
     /// luminance height (w, h, values)
-    pub height: Option<(usize, usize, Vec<f32>)>,
+    pub height: Option<(usize, usize, Arc<Vec<f32>>)>,
 }
 
 pub struct MapInputs<'a> {
@@ -125,6 +131,7 @@ pub fn prepare(m: &MapInputs) -> GpuMaps {
     };
     let emissive = m.emissive.map(|e| rgba(5, Some(e), [0.0, 0.0, 0.0, 1.0]));
     let height = m.height.map(|h| (h.w, h.h, h.px.iter().map(|p| lum(*p)).collect::<Vec<f32>>()));
+    let height = height.map(|(w, h, v)| (w, h, Arc::new(v)));
     GpuMaps { size, base, normal, rma, emissive, height }
 }
 
@@ -135,22 +142,122 @@ struct Tx {
     h: usize,
 }
 
-struct Res {
-    prog: glow::Program,
-    bg_prog: glow::Program,
-    locs: HashMap<&'static str, glow::UniformLocation>,
+struct Prog {
+    id: glow::Program,
+    locs: HashMap<String, glow::UniformLocation>,
+}
+
+impl Prog {
+    fn loc(&self, n: &str) -> Option<&glow::UniformLocation> {
+        self.locs.get(n)
+    }
+}
+
+/// The names of the uniforms a GLSL source declares (`uniform float uName[8];` gives `uName`).
+fn uniform_names(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("uniform ") {
+            let mut it = rest.split_whitespace();
+            let _ty = it.next();
+            if let Some(n) = it.next() {
+                let n = n.trim_end_matches(';');
+                let n = n.split('[').next().unwrap_or(n);
+                out.push(n.to_string());
+            }
+        }
+    }
+    out
+}
+
+const SCENE_VS: &str = include_str!("shaders/scene.vert");
+const SCENE_FS: &str = include_str!("shaders/scene.frag");
+const DEPTH_FS: &str = include_str!("shaders/depth.frag");
+const WIRE_FS: &str = include_str!("shaders/wire.frag");
+const BG_VS: &str = include_str!("shaders/bg.vert");
+const BG_FS: &str = include_str!("shaders/bg.frag");
+const POST_FS: &str = include_str!("shaders/post.frag");
+
+/// Fullscreen triangle vertex shader for the post passes.
+const FS_VS: &str = r#"#version 330 core
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+/// Render targets of one viewport size.
+struct Targets {
+    w: usize,
+    h: usize,
+    /// multisampled scene target (absent when the driver cannot do it; the scene then renders into `res_fbo`)
+    ms_fbo: Option<glow::Framebuffer>,
+    ms_color: Option<glow::Renderbuffer>,
+    ms_depth: Option<glow::Renderbuffer>,
+    res_fbo: glow::Framebuffer,
+    hdr: glow::Texture,
+    depth: glow::Texture,
+    ping: [(glow::Framebuffer, glow::Texture); 2],
+    bright: (glow::Framebuffer, glow::Texture),
+}
+
+struct EnvTex {
+    key: String,
+    tex: glow::Texture,
+    levels: usize,
+    sh: Vec<f32>,
+}
+
+struct ShadowMaps {
+    fbo: glow::Framebuffer,
+    tex: glow::Texture,
+    size: i32,
+}
+
+struct MeshGl {
+    key: MeshKey,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     ebo: glow::Buffer,
     index_count: i32,
-    mesh_key: (u32, u32, u32),
+    objects: Vec<scene::Instance>,
+    /// radius of the part of the scene that casts shadows
+    radius: f32,
+}
+
+#[derive(Clone, PartialEq)]
+struct MeshKey {
+    shape: u32,
+    tess: u32,
+    tiling: u32,
+    scene: scene::SceneKind,
+    custom: usize,
+    /// changes when the height map, or the settings that move the floor with the displacement, change
+    height_gen: u64,
+    disp: (u32, u32),
+}
+
+struct Res {
+    prog: Prog,
+    depth_prog: Prog,
+    wire_prog: Prog,
+    bg_prog: Prog,
+    post_prog: Prog,
+    mesh: Option<MeshGl>,
+    empty_vao: glow::VertexArray,
     base: Tx,
     normal: Tx,
     rma: Tx,
     emis: Option<Tx>,
     height: Option<Tx>,
     dummy_h: Tx,
+    dummy_shadow: glow::Texture,
     max_aniso: f32,
+    max_samples: i32,
+    targets: Option<Targets>,
+    env: Option<EnvTex>,
+    shadows: Option<ShadowMaps>,
 }
 
 #[derive(Default)]
@@ -160,303 +267,31 @@ pub struct Gpu {
     pub error: Option<String>,
     /// Maps waiting to be uploaded on the next paint.
     pending: Option<GpuMaps>,
+    /// Height luminance of the uploaded maps (for placing the floor under a displaced object).
+    height_cpu: Option<(usize, usize, Arc<Vec<f32>>)>,
+    height_gen: u64,
     /// Request a pixel read-back of the next frame (screenshots, tests).
     pub want_shot: bool,
     /// Result of a read-back: (width, height, RGBA8 rows from the TOP).
     pub shot: Option<(usize, usize, Vec<u8>)>,
     /// GPU name reported by the driver, for the UI.
     pub renderer: String,
+    /// Why the chosen environment file could not be used (the studio is shown instead).
+    pub env_error: Option<String>,
     res: Option<Res>,
     pub frames: u64,
 }
 
 impl Gpu {
     pub fn set_maps(&mut self, maps: GpuMaps) {
+        self.height_cpu = maps.height.clone();
+        self.height_gen += 1;
         self.pending = Some(maps);
     }
     pub fn ready(&self) -> bool {
         self.error.is_none()
     }
 }
-
-// ------------------------------------------------------------------------------------------------ shaders
-const VS: &str = r#"#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNrm;
-layout(location = 2) in vec3 aTan;
-layout(location = 3) in vec2 aUv;
-layout(location = 4) in vec3 aMisc; // su, sv, displacement fade
-uniform mat4 uVP;
-uniform sampler2D uHeight;
-uniform float uDisp;
-uniform float uLevel;
-uniform float uVtxLod;
-out vec3 vPos;
-out vec3 vN;
-out vec3 vT;
-out vec2 vUv;
-out vec2 vScale;
-void main() {
-    vec3 p = aPos;
-    if (uDisp != 0.0) {
-        float h = textureLod(uHeight, aUv, uVtxLod).r;
-        p += aNrm * (h - uLevel) * uDisp * aMisc.z;
-    }
-    vPos = p;
-    vN = aNrm;
-    vT = aTan;
-    vUv = aUv;
-    vScale = aMisc.xy;
-    gl_Position = uVP * vec4(p, 1.0);
-}
-"#;
-
-const FS: &str = r#"#version 330 core
-in vec3 vPos;
-in vec3 vN;
-in vec3 vT;
-in vec2 vUv;
-in vec2 vScale;
-uniform sampler2D uBase;
-uniform sampler2D uNormal;
-uniform sampler2D uRma;
-uniform sampler2D uEmis;
-uniform sampler2D uHeight;
-uniform vec3 uEye;
-uniform vec3 uL;
-uniform vec3 uFill;
-uniform float uLightI;
-uniform float uExposure;
-uniform float uAmbient;
-uniform float uNormalAmt;
-uniform float uBump;
-uniform float uDepth;
-uniform float uLevel;
-uniform float uTexel;
-uniform int uMode;
-uniform int uHasHeight;
-uniform int uHasEmis;
-uniform int uWire;
-uniform int uShadow;
-uniform int uCull;
-out vec4 oColor;
-
-const float PI = 3.14159265;
-vec2 gdx;
-vec2 gdy;
-
-// Smooth gradient only: used for diffuse ambient light.
-vec3 envSoft(vec3 d) {
-    vec3 sky = vec3(0.30, 0.34, 0.42);
-    vec3 hor = vec3(0.52, 0.52, 0.53);
-    vec3 ground = vec3(0.20, 0.19, 0.18);
-    return d.y > 0.0 ? mix(hor, sky, pow(d.y, 0.6)) : mix(hor, ground, pow(-d.y, 0.5));
-}
-
-// Studio environment for reflections: softboxes, a rim strip and a horizon line on a dark floor. The boxes soften and
-// dim with roughness, so a smooth surface mirrors clear shapes and a rough one only shows a broad sheen.
-vec3 env(vec3 d, float r) {
-    float soft = r * r;
-    vec3 col = mix(envSoft(d), vec3(0.30), soft * 0.5);
-    float w = 0.015 + soft * 0.9;
-    float keyI = 4.5 / (1.0 + soft * 14.0);
-    float key = smoothstep(0.93 - w, 0.93 + 0.015, dot(d, uL));
-    col += vec3(1.0, 0.96, 0.90) * key * keyI;
-    // tall side strip opposite the key
-    vec3 side = normalize(vec3(-uL.z, 0.0, uL.x));
-    float sdot = dot(normalize(vec3(d.x, 0.0, d.z) + 1e-5), side);
-    float strip = smoothstep(0.93 - w, 0.97, sdot) * smoothstep(0.02 - w, 0.12, d.y) * (1.0 - smoothstep(0.55, 0.75 + w, d.y));
-    col += vec3(0.85, 0.92, 1.0) * strip * 1.5 / (1.0 + soft * 10.0);
-    // top panel
-    float top = smoothstep(0.90 - w, 0.97, d.y);
-    col += vec3(1.0) * top * 1.0 / (1.0 + soft * 10.0);
-    // bright horizon line
-    float hl = exp(-pow(d.y / (0.035 + soft * 0.4), 2.0));
-    col += vec3(0.9) * hl * 0.25 / (1.0 + soft * 8.0);
-    return col;
-}
-
-vec3 aces(vec3 x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
-}
-
-// Tone map on luminance so saturated colours keep their hue (a per-channel curve turns bright oranges pink and white),
-// then let only the very brightest highlights roll off per channel.
-float acesL(float x) {
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
-}
-vec3 tonemap(vec3 c) {
-    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    vec3 hue = c * (acesL(l) / max(l, 1e-4));
-    hue = min(hue, vec3(1.0)) ;
-    return mix(hue, aces(c), smoothstep(2.0, 8.0, l) * 0.7);
-}
-
-vec3 envBrdf(vec3 f0, float rough, float ndv) {
-    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
-    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
-    vec4 r = rough * c0 + c1;
-    float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
-    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
-    return f0 * ab.x + ab.y;
-}
-
-float hAt(vec2 uv) {
-    return textureGrad(uHeight, uv, gdx, gdy).r;
-}
-
-// Outward relief mapping: the height field is a slab of thickness uDepth sitting on the surface; uLevel is flush with
-// the polygon and brighter texels rise out of it. Returns the shifted uv and how deep (0..1) the hit lies below the top.
-vec2 pom(vec2 uv, vec3 vt, out float cav) {
-    float depth = uDepth;
-    float vz = max(vt.z, 0.2);
-    vec2 d = vec2(-vt.x / vz / vScale.x, vt.y / vz / vScale.y);
-    float top = (1.0 - clamp(uLevel, 0.0, 1.0)) * depth;
-    cav = 0.0;
-    float f0 = (1.0 - hAt(uv + d * (0.0 - top))) * depth;
-    if (f0 <= 0.0) return uv + d * (0.0 - top);
-    const int STEPS = 64;
-    float prevD = 0.0;
-    for (int i = 1; i <= STEPS; i++) {
-        float dd = depth * float(i) / float(STEPS);
-        float f = (1.0 - hAt(uv + d * (dd - top))) * depth - dd;
-        if (f <= 0.0) {
-            float lo = prevD;
-            float hi = dd;
-            for (int k = 0; k < 6; k++) {
-                float mid = 0.5 * (lo + hi);
-                float fm = (1.0 - hAt(uv + d * (mid - top))) * depth - mid;
-                if (fm > 0.0) lo = mid; else hi = mid;
-            }
-            float dh = 0.5 * (lo + hi);
-            cav = clamp(dh / depth, 0.0, 1.0);
-            return uv + d * (dh - top);
-        }
-        prevD = dd;
-    }
-    cav = 1.0;
-    return uv + d * (depth - top);
-}
-
-// Contact shadow: march from the shaded point towards the light through the height field.
-float hshadow(vec2 uv, vec3 lt) {
-    if (lt.z <= 0.02) return 1.0;
-    float depth = uDepth;
-    float h0 = (hAt(uv) - uLevel) * depth + 0.01 * depth;
-    float slope = lt.z / max(length(lt.xy), 1e-3);
-    vec2 hd = lt.xy / max(length(lt.xy), 1e-4);
-    float maxS = ((1.0 - uLevel) * depth - h0) / slope;
-    if (maxS <= 0.0) return 1.0;
-    float res = 1.0;
-    const int N = 32;
-    // interleaved gradient noise: turns the stepping bands of the march into fine noise
-    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-    for (int i = 1; i <= N; i++) {
-        float s = maxS * (float(i) - 1.0 + jit) / float(N);
-        vec2 u2 = uv + vec2(hd.x / vScale.x, -hd.y / vScale.y) * s;
-        float hs = (hAt(u2) - uLevel) * depth;
-        float ray = h0 + s * slope;
-        res = min(res, 1.0 - smoothstep(0.0, 0.10 * depth + 1e-5, hs - ray));
-    }
-    return mix(0.55, 1.0, res);
-}
-
-void main() {
-    if (uWire == 1) {
-        oColor = vec4(1.0, 0.62, 0.12, 1.0);
-        return;
-    }
-    vec3 N = normalize(vN);
-    // shapes seen from the inside: walls that face away from the camera are not drawn
-    if (uCull == 1 && dot(N, uEye - vPos) < 0.0) discard;
-    vec3 T = normalize(vT - N * dot(vT, N));
-    vec3 B = cross(N, T);
-    vec3 V = normalize(uEye - vPos);
-    bool back = !gl_FrontFacing;
-    gdx = dFdx(vUv);
-    gdy = dFdy(vUv);
-    vec2 uv = vUv;
-    float cav = 1.0;
-    bool hasH = uHasHeight == 1 && uDepth > 0.0;
-    if (uMode == 2 && hasH) {
-        vec3 vt = vec3(dot(V, T), dot(V, B), dot(V, N) * (back ? -1.0 : 1.0));
-        float dep;
-        uv = pom(uv, vt, dep);
-        cav = 1.0 - 0.45 * dep;
-    }
-    vec3 albedo = textureGrad(uBase, uv, gdx, gdy).rgb; // sRGB texture: already linear here
-    vec3 rma = textureGrad(uRma, uv, gdx, gdy).rgb;
-    float rough = clamp(rma.r, 0.04, 1.0);
-    float metal = clamp(rma.g, 0.0, 1.0);
-    float ao = mix(1.0, clamp(rma.b, 0.0, 1.0), 0.85) * cav;
-    vec3 nm = textureGrad(uNormal, uv, gdx, gdy).xyz;
-    vec3 tn = vec3((nm.xy * 2.0 - 1.0) * uNormalAmt, max(nm.z * 2.0 - 1.0, 0.05));
-    if (uMode == 1 && uHasHeight == 1 && uBump > 0.0) {
-        float e = uTexel;
-        float dhu = (hAt(uv + vec2(e, 0.0)) - hAt(uv - vec2(e, 0.0))) / (2.0 * e);
-        float dhv = (hAt(uv + vec2(0.0, e)) - hAt(uv - vec2(0.0, e))) / (2.0 * e);
-        float k = uBump * 0.12;
-        tn.x -= k * dhu / vScale.x;
-        tn.y += k * dhv / vScale.y;
-    }
-    tn = normalize(tn);
-    vec3 n = normalize(T * tn.x + B * tn.y + N * tn.z);
-    if (back) n = -n;
-
-    float ndv = max(dot(n, V), 1e-3);
-    vec3 f0 = mix(vec3(0.04), albedo, metal);
-    float a = rough * rough;
-    vec3 hv = normalize(uL + V);
-    float ndl = max(dot(n, uL), 0.0);
-    float ndh = max(dot(n, hv), 0.0);
-    float vdh = max(dot(V, hv), 0.0);
-    float dd = a * a / (PI * pow(ndh * ndh * (a * a - 1.0) + 1.0, 2.0) + 1e-6);
-    float kk = (rough + 1.0) * (rough + 1.0) / 8.0;
-    float g = (ndl / (ndl * (1.0 - kk) + kk)) * (ndv / (ndv * (1.0 - kk) + kk));
-    float fr = pow(1.0 - vdh, 5.0);
-    float sh = 1.0;
-    if (uShadow == 1 && hasH && (uMode == 2 || uMode == 3) && !back) {
-        vec3 lt = vec3(dot(uL, T), dot(uL, B), dot(uL, N));
-        sh = hshadow(uv, lt);
-    }
-    vec3 f = f0 + (1.0 - f0) * fr;
-    vec3 spec = dd * g * f / (4.0 * max(ndl, 1e-3) * ndv) * ndl;
-    vec3 diff = albedo * (1.0 - metal) * (1.0 - f) / PI * ndl * uLightI * 1.15;
-    float ndl2 = max(dot(n, uFill), 0.0);
-    vec3 diffFill = albedo * (1.0 - metal) / PI * ndl2 * uLightI * 0.5;
-    vec3 refl = reflect(-V, n);
-    vec3 envR = env(refl, rough);
-    vec3 envD = envSoft(n);
-    vec3 ambD = albedo * (1.0 - metal) * envD * uAmbient;
-    float specOcc = clamp(pow(ndv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
-    float horizon = clamp(1.0 + 1.2 * dot(refl, back ? -N : N), 0.0, 1.0);
-    vec3 ambS = envR * envBrdf(f0, rough, ndv) * uAmbient * specOcc * horizon * horizon;
-    vec3 col = ((diff + spec * uLightI * 1.2) * sh + diffFill + (ambD * ao + ambS)) * uExposure;
-    if (uHasEmis == 1) col += textureGrad(uEmis, uv, gdx, gdy).rgb;
-    col = tonemap(col);
-    col = pow(col, vec3(1.0 / 2.2));
-    oColor = vec4(col, 1.0);
-}
-"#;
-
-const BG_VS: &str = r#"#version 330 core
-out float vY;
-void main() {
-    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-    vY = p.y;
-    gl_Position = vec4(p * 2.0 - 1.0, 0.9999, 1.0);
-}
-"#;
-
-const BG_FS: &str = r#"#version 330 core
-in float vY;
-out vec4 oColor;
-void main() {
-    float t = clamp(vY, 0.0, 1.0);
-    float g = 0.12 + 0.08 * (1.0 - t);
-    oColor = vec4(vec3(g, g, g * 1.05), 1.0);
-}
-"#;
 
 // ------------------------------------------------------------------------------------------------ matrices
 type M4 = [f32; 16]; // column-major
@@ -475,52 +310,54 @@ fn m_mul(a: &M4, b: &M4) -> M4 {
     o
 }
 
-struct CamOut {
-    vp: M4,
-    eye: [f32; 3],
-}
-
-fn camera(v: &View, aspect: f32) -> CamOut {
-    use crate::v3::*;
-    let (sy, cy) = v.yaw.sin_cos();
-    let (sp, cp) = v.pitch.sin_cos();
-    let eye0 = [v.dist * sy * cp, v.dist * sp, v.dist * cy * cp];
-    let fwd = norm(mul(eye0, -1.0));
-    let right = norm(cross(fwd, [0.0, 1.0, 0.0]));
+fn look_at(eye: V, target: V, up_hint: V) -> M4 {
+    let fwd = norm(sub(target, eye));
+    let up_hint = if cross(fwd, up_hint).iter().map(|x| x * x).sum::<f32>() < 1e-6 { [0.0, 0.0, 1.0] } else { up_hint };
+    let right = norm(cross(fwd, up_hint));
     let up = cross(right, fwd);
-    let eye = add(eye0, add(mul(right, v.pan_x), mul(up, v.pan_y)));
-    // view: rows right, up, -fwd
-    let view: M4 = [
+    [
         right[0], up[0], -fwd[0], 0.0, //
         right[1], up[1], -fwd[1], 0.0, //
         right[2], up[2], -fwd[2], 0.0, //
         -dot(right, eye), -dot(up, eye), dot(fwd, eye), 1.0,
-    ];
-    let tf = (20.0f32).to_radians().tan();
-    let (n, f) = (0.03f32, 60.0f32);
-    let proj: M4 = [
-        1.0 / (aspect * tf), 0.0, 0.0, 0.0, //
-        0.0, 1.0 / tf, 0.0, 0.0, //
+    ]
+}
+
+fn perspective(tan_half: f32, aspect: f32, n: f32, f: f32) -> M4 {
+    [
+        1.0 / (aspect * tan_half), 0.0, 0.0, 0.0, //
+        0.0, 1.0 / tan_half, 0.0, 0.0, //
         0.0, 0.0, -(f + n) / (f - n), -1.0, //
         0.0, 0.0, -2.0 * f * n / (f - n), 0.0,
-    ];
-    CamOut { vp: m_mul(&proj, &view), eye }
+    ]
 }
+
+fn ortho(half: f32, n: f32, f: f32) -> M4 {
+    [
+        1.0 / half, 0.0, 0.0, 0.0, //
+        0.0, 1.0 / half, 0.0, 0.0, //
+        0.0, 0.0, -2.0 / (f - n), 0.0, //
+        0.0, 0.0, -(f + n) / (f - n), 1.0,
+    ]
+}
+
+const NEAR: f32 = 0.03;
+const FAR: f32 = 80.0;
 
 // ------------------------------------------------------------------------------------------------ GL helpers
 const ANISO_PARAM: u32 = 0x84FE;
 const ANISO_MAX: u32 = 0x84FF;
 
-unsafe fn compile(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Program, String> {
+unsafe fn compile(gl: &glow::Context, vs: &str, fs: &str) -> Result<Prog, String> {
     let prog = gl.create_program()?;
     let mut shaders = Vec::new();
-    for (kind, src) in [(glow::VERTEX_SHADER, vs), (glow::FRAGMENT_SHADER, fs)] {
+    for (kind, src, what) in [(glow::VERTEX_SHADER, vs, "vertex"), (glow::FRAGMENT_SHADER, fs, "fragment")] {
         let sh = gl.create_shader(kind)?;
         gl.shader_source(sh, src);
         gl.compile_shader(sh);
         if !gl.get_shader_compile_status(sh) {
             let log = gl.get_shader_info_log(sh);
-            return Err(format!("shader compile failed: {log}"));
+            return Err(format!("{what} shader compile failed: {log}"));
         }
         gl.attach_shader(prog, sh);
         shaders.push(sh);
@@ -533,7 +370,15 @@ unsafe fn compile(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Progra
         gl.detach_shader(prog, sh);
         gl.delete_shader(sh);
     }
-    Ok(prog)
+    let mut locs = HashMap::new();
+    for src in [vs, fs] {
+        for n in uniform_names(src) {
+            if let Some(l) = gl.get_uniform_location(prog, &n) {
+                locs.insert(n, l);
+            }
+        }
+    }
+    Ok(Prog { id: prog, locs })
 }
 
 unsafe fn make_tex(gl: &glow::Context, internal: u32, fmt: u32, ty: u32, w: usize, h: usize, data: &[u8], aniso: f32) -> Result<Tx, String> {
@@ -557,27 +402,152 @@ fn bytes_of<T>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-const UNIFORMS: &[&str] = &[
-    "uVP", "uHeight", "uDisp", "uLevel", "uVtxLod", "uBase", "uNormal", "uRma", "uEmis", "uEye", "uL", "uFill", "uLightI", "uExposure", "uAmbient", "uNormalAmt", "uBump",
-    "uDepth", "uTexel", "uMode", "uHasHeight", "uHasEmis", "uWire", "uShadow", "uCull",
-];
+unsafe fn float_target(gl: &glow::Context, w: usize, h: usize, mips: bool) -> Result<(glow::Framebuffer, glow::Texture), String> {
+    let tex = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA16F as i32, w as i32, h as i32, 0, glow::RGBA, glow::HALF_FLOAT, glow::PixelUnpackData::Slice(None));
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, if mips { glow::LINEAR_MIPMAP_LINEAR } else { glow::LINEAR } as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+    let fbo = gl.create_framebuffer()?;
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
+    if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+        return Err("the floating point render target is not supported by this driver".into());
+    }
+    Ok((fbo, tex))
+}
 
-unsafe fn init(gl: &glow::Context, maps: &GpuMaps, aniso_req: f32) -> Result<Res, String> {
-    let prog = compile(gl, VS, FS)?;
-    let bg_prog = compile(gl, BG_VS, BG_FS)?;
-    let mut locs = HashMap::new();
-    for name in UNIFORMS {
-        if let Some(l) = gl.get_uniform_location(prog, name) {
-            locs.insert(*name, l);
+unsafe fn make_targets(gl: &glow::Context, w: usize, h: usize, max_samples: i32) -> Result<Targets, String> {
+    // resolved scene target: colour + depth textures
+    let (res_fbo, hdr) = float_target(gl, w, h, false)?;
+    let depth = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D, Some(depth));
+    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::DEPTH_COMPONENT32F as i32, w as i32, h as i32, 0, glow::DEPTH_COMPONENT, glow::FLOAT, glow::PixelUnpackData::Slice(None));
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(res_fbo));
+    gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::TEXTURE_2D, Some(depth), 0);
+    if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+        return Err("the depth render target is not supported by this driver".into());
+    }
+    // multisampled twin
+    let samples = max_samples.min(4);
+    let (mut ms_fbo, mut ms_color, mut ms_depth) = (None, None, None);
+    if samples >= 2 {
+        let attempt = || -> Result<(glow::Framebuffer, glow::Renderbuffer, glow::Renderbuffer), String> {
+            let c = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(c));
+            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, glow::RGBA16F, w as i32, h as i32);
+            let d = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(d));
+            gl.renderbuffer_storage_multisample(glow::RENDERBUFFER, samples, glow::DEPTH_COMPONENT32F, w as i32, h as i32);
+            let f = gl.create_framebuffer()?;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(f));
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::RENDERBUFFER, Some(c));
+            gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(d));
+            if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(f);
+                gl.delete_renderbuffer(c);
+                gl.delete_renderbuffer(d);
+                return Err("multisampled target incomplete".into());
+            }
+            Ok((f, c, d))
+        };
+        if let Ok((f, c, d)) = attempt() {
+            ms_fbo = Some(f);
+            ms_color = Some(c);
+            ms_depth = Some(d);
         }
     }
+    let ping = [float_target(gl, w, h, false)?, float_target(gl, w, h, false)?];
+    let bright = float_target(gl, w, h, true)?;
+    Ok(Targets { w, h, ms_fbo, ms_color, ms_depth, res_fbo, hdr, depth, ping, bright })
+}
+
+unsafe fn free_targets(gl: &glow::Context, t: &Targets) {
+    if let Some(f) = t.ms_fbo {
+        gl.delete_framebuffer(f);
+    }
+    if let Some(r) = t.ms_color {
+        gl.delete_renderbuffer(r);
+    }
+    if let Some(r) = t.ms_depth {
+        gl.delete_renderbuffer(r);
+    }
+    gl.delete_framebuffer(t.res_fbo);
+    gl.delete_texture(t.hdr);
+    gl.delete_texture(t.depth);
+    for (f, x) in &t.ping {
+        gl.delete_framebuffer(*f);
+        gl.delete_texture(*x);
+    }
+    gl.delete_framebuffer(t.bright.0);
+    gl.delete_texture(t.bright.1);
+}
+
+unsafe fn upload_env(gl: &glow::Context, env: &Env, key: String) -> Result<EnvTex, String> {
+    // the chain must be a proper mip chain (each level half the previous); keep the prefix that is
+    let mut levels = 0;
+    let (w0, h0) = (env.levels[0].w, env.levels[0].h);
+    for (k, l) in env.levels.iter().enumerate() {
+        if l.w == (w0 >> k).max(1) && l.h == (h0 >> k).max(1) {
+            levels = k + 1;
+        } else {
+            break;
+        }
+    }
+    let tex = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+    gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+    for (k, l) in env.levels.iter().take(levels).enumerate() {
+        let flat: Vec<f32> = l.px.iter().flat_map(|p| [p[0].min(60000.0), p[1].min(60000.0), p[2].min(60000.0)]).collect();
+        gl.tex_image_2d(glow::TEXTURE_2D, k as i32, glow::RGB16F as i32, l.w as i32, l.h as i32, 0, glow::RGB, glow::FLOAT, glow::PixelUnpackData::Slice(Some(bytes_of(&flat))));
+    }
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, levels as i32 - 1);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR_MIPMAP_LINEAR as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+    let sh: Vec<f32> = env.sh.iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
+    Ok(EnvTex { key, tex, levels, sh })
+}
+
+unsafe fn make_shadow_maps(gl: &glow::Context, size: i32) -> Result<ShadowMaps, String> {
+    let tex = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(tex));
+    gl.tex_image_3d(glow::TEXTURE_2D_ARRAY, 0, glow::DEPTH_COMPONENT32F as i32, size, size, 3, 0, glow::DEPTH_COMPONENT, glow::FLOAT, glow::PixelUnpackData::Slice(None));
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    let fbo = gl.create_framebuffer()?;
+    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+    gl.framebuffer_texture_layer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, Some(tex), 0, 0);
+    gl.draw_buffers(&[glow::NONE]);
+    gl.read_buffer(glow::NONE);
+    if gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+        return Err("the shadow map target is not supported by this driver".into());
+    }
+    Ok(ShadowMaps { fbo, tex, size })
+}
+
+unsafe fn init(gl: &glow::Context, maps: &GpuMaps, aniso_req: f32) -> Result<Res, String> {
+    let prog = compile(gl, SCENE_VS, SCENE_FS)?;
+    let depth_prog = compile(gl, SCENE_VS, DEPTH_FS)?;
+    let wire_prog = compile(gl, SCENE_VS, WIRE_FS)?;
+    let bg_prog = compile(gl, BG_VS, BG_FS)?;
+    let post_prog = compile(gl, FS_VS, POST_FS)?;
     let ext = gl.supported_extensions();
     let has_aniso = ext.contains("GL_EXT_texture_filter_anisotropic") || ext.contains("GL_ARB_texture_filter_anisotropic");
     let max_aniso = if has_aniso { gl.get_parameter_f32(ANISO_MAX).max(1.0) } else { 1.0 };
     let aniso = if aniso_req <= 0.0 { max_aniso } else { aniso_req.min(max_aniso) };
-    let vao = gl.create_vertex_array()?;
-    let vbo = gl.create_buffer()?;
-    let ebo = gl.create_buffer()?;
+    let max_samples = gl.get_parameter_i32(glow::MAX_SAMPLES);
+    let empty_vao = gl.create_vertex_array()?;
     let s = maps.size;
     let base = make_tex(gl, glow::SRGB8_ALPHA8, glow::RGBA, glow::UNSIGNED_BYTE, s, s, &maps.base, aniso)?;
     let normal = make_tex(gl, glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE, s, s, &maps.normal, aniso)?;
@@ -587,11 +557,37 @@ unsafe fn init(gl: &glow::Context, maps: &GpuMaps, aniso_req: f32) -> Result<Res
         None => None,
     };
     let height = match &maps.height {
-        Some((w, h, v)) => Some(make_tex(gl, glow::R16F, glow::RED, glow::FLOAT, *w, *h, bytes_of(v), aniso)?),
+        Some((w, h, v)) => Some(make_tex(gl, glow::R16F, glow::RED, glow::FLOAT, *w, *h, bytes_of(&v[..]), aniso)?),
         None => None,
     };
     let dummy_h = make_tex(gl, glow::R16F, glow::RED, glow::FLOAT, 1, 1, bytes_of(&[0.0f32]), 1.0)?;
-    Ok(Res { prog, bg_prog, locs, vao, vbo, ebo, index_count: 0, mesh_key: (u32::MAX, 0, 0), base, normal, rma, emis, height, dummy_h, max_aniso })
+    // 1x1 stand-in so the shadow sampler is always complete
+    let dummy_shadow = gl.create_texture()?;
+    gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(dummy_shadow));
+    gl.tex_image_3d(glow::TEXTURE_2D_ARRAY, 0, glow::DEPTH_COMPONENT32F as i32, 1, 1, 1, 0, glow::DEPTH_COMPONENT, glow::FLOAT, glow::PixelUnpackData::Slice(Some(bytes_of(&[1.0f32]))));
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+    Ok(Res {
+        prog,
+        depth_prog,
+        wire_prog,
+        bg_prog,
+        post_prog,
+        mesh: None,
+        empty_vao,
+        base,
+        normal,
+        rma,
+        emis,
+        height,
+        dummy_h,
+        dummy_shadow,
+        max_aniso,
+        max_samples,
+        targets: None,
+        env: None,
+        shadows: None,
+    })
 }
 
 unsafe fn free_tex(gl: &glow::Context, t: &Tx) {
@@ -609,7 +605,7 @@ unsafe fn upload_maps(gl: &glow::Context, r: &mut Res, maps: &GpuMaps, aniso_req
         None => None,
     };
     let height = match &maps.height {
-        Some((w, h, v)) => Some(make_tex(gl, glow::R16F, glow::RED, glow::FLOAT, *w, *h, bytes_of(v), aniso)?),
+        Some((w, h, v)) => Some(make_tex(gl, glow::R16F, glow::RED, glow::FLOAT, *w, *h, bytes_of(&v[..]), aniso)?),
         None => None,
     };
     free_tex(gl, &r.base);
@@ -629,35 +625,148 @@ unsafe fn upload_maps(gl: &glow::Context, r: &mut Res, maps: &GpuMaps, aniso_req
     Ok(())
 }
 
-unsafe fn upload_mesh(gl: &glow::Context, r: &mut Res, v: &View) {
-    let key = (v.shape, v.tess.clamp(8, 768), (v.tiling.max(0.1) * 1000.0) as u32);
-    if r.mesh_key == key {
+fn sample_height(h: &(usize, usize, Arc<Vec<f32>>), u: f32, v: f32) -> f32 {
+    let (w, hh, d) = (h.0 as i64, h.1 as i64, &h.2);
+    let x = u * w as f32 - 0.5;
+    let y = v * hh as f32 - 0.5;
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |xi: i64, yi: i64| d[(yi.rem_euclid(hh) as usize) * w as usize + xi.rem_euclid(w) as usize];
+    let (xi, yi) = (x0 as i64, y0 as i64);
+    let a = at(xi, yi) + (at(xi + 1, yi) - at(xi, yi)) * fx;
+    let b = at(xi, yi + 1) + (at(xi + 1, yi + 1) - at(xi, yi + 1)) * fx;
+    a + (b - a) * fy
+}
+
+unsafe fn upload_mesh(gl: &glow::Context, r: &mut Res, v: &View, height: &Option<(usize, usize, Arc<Vec<f32>>)>, height_gen: u64) {
+    let displacing = v.relief == RELIEF_DISPLACE && v.height_scale > 0.0 && height.is_some();
+    let key = MeshKey {
+        shape: v.shape,
+        tess: v.tess.clamp(8, 768),
+        tiling: (v.tiling.max(0.1) * 1000.0) as u32,
+        scene: v.scene,
+        custom: v.custom.as_ref().map(|c| std::sync::Arc::as_ptr(c) as usize).unwrap_or(0),
+        height_gen: if displacing && v.scene != scene::SceneKind::Single { height_gen } else { 0 },
+        disp: if displacing && v.scene != scene::SceneKind::Single { (v.height_scale.to_bits(), v.height_level.to_bits()) } else { (0, 0) },
+    };
+    if r.mesh.as_ref().map(|m| m.key == key).unwrap_or(false) {
         return;
     }
-    let m = build_mesh(v.shape, key.1, v.tiling, None, 0.0, 0.0);
-    let mut data: Vec<f32> = Vec::with_capacity(m.pos.len() * 14);
-    for i in 0..m.pos.len() {
+    let mut sm = objects::build_scene_ex(v, None, None);
+    if displacing && v.scene != scene::SceneKind::Single {
+        // the vertex shader displaces, so work out the lowest point of the displaced object here and put the floor
+        // under it, like the software renderer does
+        let hm = height.as_ref().unwrap();
+        let m = &sm.mesh;
+        let n0 = m.obj.iter().position(|&o| o != 0).map(|t| m.tris[t][0] as usize).unwrap_or(m.pos.len());
+        let ymin0 = (0..n0).map(|i| m.pos[i][1]).fold(f32::MAX, f32::min);
+        let mut ymin = ymin0;
+        for i in 0..n0 {
+            if m.pos[i][1] < ymin0 + v.height_scale.abs() * 1.05 + 1e-4 {
+                let hv = sample_height(hm, m.uv[i][0], m.uv[i][1]);
+                let y = m.pos[i][1] + m.disp[i][1] * (hv - v.height_level) * v.height_scale * m.fade[i];
+                ymin = ymin.min(y);
+            }
+        }
+        if (ymin - ymin0).abs() > 1e-5 {
+            sm = objects::build_scene_ex(v, None, Some(ymin));
+        }
+    }
+    let m = &sm.mesh;
+    let nv = m.pos.len();
+    let mut data: Vec<f32> = Vec::with_capacity(nv * 18);
+    let mut vert_obj = vec![0u32; nv];
+    for (ti, t) in m.tris.iter().enumerate() {
+        let o = m.object_of(ti) as u32;
+        for &i in t {
+            vert_obj[i as usize] = o;
+        }
+    }
+    let mut radius = 1.0f32;
+    for i in 0..nv {
         data.extend_from_slice(&m.pos[i]);
         data.extend_from_slice(&m.nrm[i]);
         data.extend_from_slice(&m.tan[i]);
         data.extend_from_slice(&m.uv[i]);
         data.extend_from_slice(&[m.su[i], m.sv[i], m.fade[i]]);
+        data.extend_from_slice(&m.disp[i]);
+        data.push(vert_obj[i] as f32);
+        // planes (floor, backdrop) only receive shadows
+        if sm.objects[vert_obj[i] as usize].shape != 2 {
+            radius = radius.max(len(m.pos[i]));
+        }
     }
-    gl.bind_vertex_array(Some(r.vao));
-    gl.bind_buffer(glow::ARRAY_BUFFER, Some(r.vbo));
+    let displace_pad = if displacing { v.height_scale.abs() } else { 0.0 };
+    let (vao, vbo, ebo) = match &r.mesh {
+        Some(old) => (old.vao, old.vbo, old.ebo),
+        None => (gl.create_vertex_array().unwrap(), gl.create_buffer().unwrap(), gl.create_buffer().unwrap()),
+    };
+    gl.bind_vertex_array(Some(vao));
+    gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
     gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes_of(&data), glow::STATIC_DRAW);
-    let stride = 14 * 4;
-    for (loc, size, off) in [(0u32, 3, 0), (1, 3, 3), (2, 3, 6), (3, 2, 9), (4, 3, 11)] {
+    let stride = 18 * 4;
+    for (loc, size, off) in [(0u32, 3, 0), (1, 3, 3), (2, 3, 6), (3, 2, 9), (4, 3, 11), (5, 3, 14), (6, 1, 17)] {
         gl.enable_vertex_attrib_array(loc);
         gl.vertex_attrib_pointer_f32(loc, size, glow::FLOAT, false, stride, off * 4);
     }
-    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(r.ebo));
+    gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
     gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes_of(&m.tris), glow::STATIC_DRAW);
-    r.index_count = (m.tris.len() * 3) as i32;
-    r.mesh_key = key;
+    r.mesh = Some(MeshGl { key, vao, vbo, ebo, index_count: (m.tris.len() * 3) as i32, objects: sm.objects, radius: radius + displace_pad });
 }
 
 // ------------------------------------------------------------------------------------------------ paint
+fn fb_from(id: i32) -> Option<glow::Framebuffer> {
+    std::num::NonZeroU32::new(id as u32).map(glow::NativeFramebuffer)
+}
+
+struct LightGl {
+    axis: Vec<f32>,
+    info: Vec<f32>,
+    col: Vec<f32>,
+    shadow: Vec<i32>,
+    /// (view-projection, index of the light) per shadow layer
+    vps: Vec<(M4, usize)>,
+}
+
+fn light_uniforms(v: &View, radius: f32, shadows_on: bool) -> LightGl {
+    let cf = v.cam_frame();
+    let mut o = LightGl { axis: vec![], info: vec![], col: vec![], shadow: vec![], vps: vec![] };
+    for l in v.lights.iter().filter(|l| l.enabled && l.intensity > 0.0).take(scene::MAX_LIGHTS) {
+        let axis = scene::light_axis(l, &cf);
+        let dist = l.distance.max(0.2);
+        let kind = match l.kind {
+            LightKind::Directional => 0.0,
+            LightKind::Point => 1.0,
+            LightKind::Spot => 2.0,
+        };
+        let cos_out = l.cone.clamp(0.05, 1.5).cos();
+        let cos_in = (l.cone * (1.0 - 0.6 * l.softness.clamp(0.0, 1.0))).clamp(0.02, 1.5).cos();
+        o.axis.extend_from_slice(&[axis[0], axis[1], axis[2], dist]);
+        o.info.extend_from_slice(&[kind, cos_out, cos_in, l.softness]);
+        o.col.extend_from_slice(&[l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]);
+        let idx = o.shadow.len();
+        let mut layer = -1;
+        if shadows_on && l.shadows && o.vps.len() < 3 {
+            let r = radius * 1.05 + 0.3;
+            let vp = match l.kind {
+                LightKind::Directional => {
+                    let eye = mul(axis, r * 3.0);
+                    m_mul(&ortho(r + 1.0, 0.1, r * 6.0), &look_at(eye, [0.0; 3], [0.0, 1.0, 0.0]))
+                }
+                LightKind::Point | LightKind::Spot => {
+                    let eye = mul(axis, dist);
+                    let fov = if l.kind == LightKind::Spot { (2.0 * l.cone + 0.25).clamp(0.35, 2.1) } else { 1.9 };
+                    m_mul(&perspective((fov * 0.5).tan(), 1.0, 0.3, dist + r * 3.0), &look_at(eye, [0.0; 3], [0.0, 1.0, 0.0]))
+                }
+            };
+            layer = o.vps.len() as i32;
+            o.vps.push((vp, idx));
+        }
+        o.shadow.push(layer);
+    }
+    o
+}
+
 /// Draw the viewport into the rectangle of the paint callback. Call from an `egui_glow::CallbackFn`.
 pub fn paint(shared: &Shared, info: &PaintCallbackInfo, painter: &egui_glow::Painter, view: &View) {
     let mut g = match shared.lock() {
@@ -691,16 +800,51 @@ pub fn paint(shared: &Shared, info: &PaintCallbackInfo, painter: &egui_glow::Pai
             return;
         }
     }
+    // the lighting environment
+    let want_key = view.env.image_key();
+    let need_env = g.res.as_ref().unwrap().env.as_ref().map(|e| e.key != want_key).unwrap_or(true);
+    if need_env {
+        let loaded = crate::hdri::load_env(&view.env.preset, view.env.file.as_deref());
+        let env = match loaded {
+            Ok(e) => {
+                g.env_error = None;
+                e
+            }
+            Err(msg) => {
+                g.env_error = Some(msg);
+                crate::hdri::load_env("studio", None).expect("built-in environment")
+            }
+        };
+        let tex = unsafe { upload_env(gl, &env, want_key.clone()) };
+        match tex {
+            Ok(t) => {
+                let r = g.res.as_mut().unwrap();
+                if let Some(old) = r.env.take() {
+                    unsafe { gl.delete_texture(old.tex) };
+                }
+                r.env = Some(t);
+            }
+            Err(e) => {
+                g.error = Some(e);
+                return;
+            }
+        }
+    }
     let self_shadow = g.opts.self_shadow;
     let want_shot = std::mem::take(&mut g.want_shot);
+    let height_cpu = g.height_cpu.clone();
+    let height_gen = g.height_gen;
     let r = g.res.as_mut().unwrap();
     let vp_px = info.viewport_in_pixels();
+    let clip_px = info.clip_rect_in_pixels();
     if vp_px.width_px <= 0 || vp_px.height_px <= 0 {
         return;
     }
-    let aspect = vp_px.width_px as f32 / vp_px.height_px as f32;
-    let cam = camera(view, aspect);
-    let (ldir, fill) = crate::render3d::light_dirs(view);
+    let (w, h) = (vp_px.width_px as usize, vp_px.height_px as usize);
+    let cam = view.cam();
+    let aspect = w as f32 / h as f32;
+    let view_m = look_at(cam.eye, add(cam.eye, cam.fwd), [0.0, 1.0, 0.0]);
+    let vp = m_mul(&perspective(cam.tan_half, aspect, NEAR, FAR), &view_m);
     let has_h = r.height.is_some();
     let disp = if has_h && view.relief == RELIEF_DISPLACE { view.height_scale } else { 0.0 };
     let mesh_n = {
@@ -722,90 +866,343 @@ pub fn paint(shared: &Shared, info: &PaintCallbackInfo, painter: &egui_glow::Pai
     } else {
         0
     };
+    let lit = view.channel == Channel::Lit;
     let mut result: Result<(), String> = Ok(());
     unsafe {
-        upload_mesh(gl, r, view);
+        // remember what egui had set up
+        let saved_fb = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
+        let scissor_was_on = gl.is_enabled(glow::SCISSOR_TEST);
+        upload_mesh(gl, r, view, &height_cpu, height_gen);
+        // render targets
+        if r.targets.as_ref().map(|t| t.w != w || t.h != h).unwrap_or(true) {
+            if let Some(t) = r.targets.take() {
+                free_targets(gl, &t);
+            }
+            match make_targets(gl, w, h, r.max_samples) {
+                Ok(t) => r.targets = Some(t),
+                Err(e) => {
+                    g.error = Some(e);
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, fb_from(saved_fb));
+                    return;
+                }
+            }
+        }
+        let radius = r.mesh.as_ref().map(|m| m.radius).unwrap_or(1.0);
+        let lg = light_uniforms(view, radius, lit);
+        if !lg.vps.is_empty() && r.shadows.is_none() {
+            match make_shadow_maps(gl, 2048) {
+                Ok(s) => r.shadows = Some(s),
+                Err(e) => {
+                    g.error = Some(e);
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, fb_from(saved_fb));
+                    return;
+                }
+            }
+        }
+        let mesh = r.mesh.as_ref().unwrap();
+        let tg = r.targets.as_ref().unwrap();
+        gl.disable(glow::SCISSOR_TEST);
+        gl.disable(glow::BLEND);
+        gl.disable(glow::CULL_FACE);
+        // per-object material table
+        let mut obj_a = [0.0f32; 32];
+        let mut obj_c = [0.0f32; 24];
+        for (i, o) in mesh.objects.iter().take(8).enumerate() {
+            let (kind, ro, me, col) = match o.material {
+                scene::Material::Graph => (0.0, 0.5, 0.0, [0.0; 3]),
+                scene::Material::Fixed(c, ro, me) => (1.0, ro, me, c),
+            };
+            let cull = if o.material == scene::Material::Graph && crate::render3d::shape_culls(view.shape) { 1.0 } else { 0.0 };
+            obj_a[i * 4..i * 4 + 4].copy_from_slice(&[kind, ro, me, cull]);
+            obj_c[i * 3..i * 3 + 3].copy_from_slice(&col);
+        }
+        let bind_maps = |gl: &glow::Context, r: &Res| {
+            let units: [glow::Texture; 5] = [r.base.id, r.normal.id, r.rma.id, r.emis.as_ref().map(|t| t.id).unwrap_or(r.base.id), r.height.as_ref().map(|t| t.id).unwrap_or(r.dummy_h.id)];
+            for (i, tex) in units.iter().enumerate() {
+                gl.active_texture(glow::TEXTURE0 + i as u32);
+                gl.bind_texture(glow::TEXTURE_2D, Some(*tex));
+            }
+        };
+        // ---------------------------------------------------------------- shadow maps
+        if let Some(sm) = &r.shadows {
+            if !lg.vps.is_empty() {
+                let p = &r.depth_prog;
+                gl.use_program(Some(p.id));
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(sm.fbo));
+                gl.viewport(0, 0, sm.size, sm.size);
+                gl.enable(glow::DEPTH_TEST);
+                gl.depth_func(glow::LESS);
+                gl.depth_mask(true);
+                gl.enable(glow::POLYGON_OFFSET_FILL);
+                gl.polygon_offset(1.5, 2.0);
+                gl.uniform_1_f32(p.loc("uDisp"), disp);
+                gl.uniform_1_f32(p.loc("uLevel"), view.height_level);
+                gl.uniform_1_f32(p.loc("uVtxLod"), vtx_lod);
+                gl.uniform_4_f32_slice(p.loc("uObjA"), &obj_a);
+                bind_maps(gl, r);
+                gl.uniform_1_i32(p.loc("uHeight"), 4);
+                gl.bind_vertex_array(Some(mesh.vao));
+                for (layer, (lvp, _)) in lg.vps.iter().enumerate() {
+                    gl.framebuffer_texture_layer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, Some(sm.tex), 0, layer as i32);
+                    gl.clear_depth_f32(1.0);
+                    gl.clear(glow::DEPTH_BUFFER_BIT);
+                    gl.uniform_matrix_4_f32_slice(p.loc("uVP"), false, lvp);
+                    gl.draw_elements(glow::TRIANGLES, mesh.index_count, glow::UNSIGNED_INT, 0);
+                }
+                gl.disable(glow::POLYGON_OFFSET_FILL);
+            }
+        }
+        // ---------------------------------------------------------------- scene into the HDR target
+        let scene_fbo = tg.ms_fbo.unwrap_or(tg.res_fbo);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(scene_fbo));
+        gl.viewport(0, 0, w as i32, h as i32);
+        gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        gl.depth_mask(true);
+        gl.clear_depth_f32(1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        let env = r.env.as_ref().unwrap();
+        let (sr, cr) = view.env.rotation.sin_cos();
+        let bg_gain = view.env.exposure.exp2();
+        // background (no depth test, no depth write)
+        gl.disable(glow::DEPTH_TEST);
+        gl.depth_mask(false);
+        {
+            let p = &r.bg_prog;
+            gl.use_program(Some(p.id));
+            gl.active_texture(glow::TEXTURE5);
+            gl.bind_texture(glow::TEXTURE_2D, Some(env.tex));
+            gl.uniform_1_i32(p.loc("uEnv"), 5);
+            gl.uniform_1_i32(p.loc("uBgMode"), match view.env.background {
+                Background::Gradient => 0,
+                Background::Color => 1,
+                Background::Environment => 2,
+            });
+            gl.uniform_1_i32(p.loc("uChannel"), view.channel.index());
+            let bc = view.env.bg_color;
+            gl.uniform_3_f32(p.loc("uBgColor"), bc[0].max(0.0).powf(2.2), bc[1].max(0.0).powf(2.2), bc[2].max(0.0).powf(2.2));
+            gl.uniform_2_f32(p.loc("uEnvRot"), cr, sr);
+            gl.uniform_1_f32(p.loc("uBgGain"), bg_gain * view.exposure);
+            gl.uniform_1_f32(p.loc("uBgLod"), view.env.blur.clamp(0.0, 1.0) * (env.levels.max(1) - 1) as f32);
+            gl.uniform_1_f32(p.loc("uTanHalf"), cam.tan_half);
+            gl.uniform_1_f32(p.loc("uAspect"), aspect);
+            gl.uniform_3_f32(p.loc("uCamR"), cam.right[0], cam.right[1], cam.right[2]);
+            gl.uniform_3_f32(p.loc("uCamU"), cam.up[0], cam.up[1], cam.up[2]);
+            gl.uniform_3_f32(p.loc("uCamF"), cam.fwd[0], cam.fwd[1], cam.fwd[2]);
+            gl.bind_vertex_array(Some(r.empty_vao));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        }
         gl.enable(glow::DEPTH_TEST);
         gl.depth_func(glow::LESS);
         gl.depth_mask(true);
-        gl.clear_depth_f32(1.0);
-        gl.clear(glow::DEPTH_BUFFER_BIT);
-        // background gradient (no depth write)
-        gl.depth_mask(false);
-        gl.use_program(Some(r.bg_prog));
-        gl.bind_vertex_array(Some(r.vao));
-        gl.draw_arrays(glow::TRIANGLES, 0, 3);
-        gl.depth_mask(true);
-        // material pass
-        gl.use_program(Some(r.prog));
-        let loc = |n: &str| r.locs.get(n);
-        gl.uniform_matrix_4_f32_slice(loc("uVP"), false, &cam.vp);
-        gl.uniform_3_f32(loc("uEye"), cam.eye[0], cam.eye[1], cam.eye[2]);
-        gl.uniform_3_f32(loc("uL"), ldir[0], ldir[1], ldir[2]);
-        gl.uniform_3_f32(loc("uFill"), fill[0], fill[1], fill[2]);
-        gl.uniform_1_f32(loc("uLightI"), view.light_intensity);
-        gl.uniform_1_f32(loc("uExposure"), view.exposure);
-        gl.uniform_1_f32(loc("uAmbient"), view.ambient);
-        gl.uniform_1_f32(loc("uNormalAmt"), view.normal_amt.clamp(0.0, 1.0));
-        gl.uniform_1_f32(loc("uBump"), view.bump);
-        gl.uniform_1_f32(loc("uDepth"), view.height_scale);
-        gl.uniform_1_f32(loc("uLevel"), view.height_level);
-        gl.uniform_1_f32(loc("uDisp"), disp);
-        gl.uniform_1_f32(loc("uVtxLod"), vtx_lod);
-        gl.uniform_1_f32(loc("uTexel"), 1.0 / hw.max(hh).max(1) as f32);
-        gl.uniform_1_i32(loc("uMode"), mode);
-        gl.uniform_1_i32(loc("uHasHeight"), has_h as i32);
-        gl.uniform_1_i32(loc("uHasEmis"), r.emis.is_some() as i32);
-        gl.uniform_1_i32(loc("uShadow"), self_shadow as i32);
-        gl.uniform_1_i32(loc("uCull"), crate::render3d::shape_culls(view.shape) as i32);
-        gl.uniform_1_i32(loc("uWire"), 0);
-        let units: [(&str, glow::Texture); 5] = [
-            ("uBase", r.base.id),
-            ("uNormal", r.normal.id),
-            ("uRma", r.rma.id),
-            ("uEmis", r.emis.as_ref().map(|t| t.id).unwrap_or(r.base.id)),
-            ("uHeight", r.height.as_ref().map(|t| t.id).unwrap_or(r.dummy_h.id)),
-        ];
-        for (i, (name, tex)) in units.iter().enumerate() {
-            gl.active_texture(glow::TEXTURE0 + i as u32);
-            gl.bind_texture(glow::TEXTURE_2D, Some(*tex));
-            gl.uniform_1_i32(loc(name), i as i32);
+        {
+            let p = &r.prog;
+            gl.use_program(Some(p.id));
+            gl.uniform_matrix_4_f32_slice(p.loc("uVP"), false, &vp);
+            gl.uniform_3_f32(p.loc("uEye"), cam.eye[0], cam.eye[1], cam.eye[2]);
+            gl.uniform_1_f32(p.loc("uExposure"), view.exposure);
+            gl.uniform_1_f32(p.loc("uNormalAmt"), view.normal_amt.clamp(0.0, 1.0));
+            gl.uniform_1_f32(p.loc("uBump"), view.bump);
+            gl.uniform_1_f32(p.loc("uDepth"), view.height_scale);
+            gl.uniform_1_f32(p.loc("uLevel"), view.height_level);
+            gl.uniform_1_f32(p.loc("uDisp"), disp);
+            gl.uniform_1_f32(p.loc("uVtxLod"), vtx_lod);
+            gl.uniform_1_f32(p.loc("uTexel"), 1.0 / hw.max(hh).max(1) as f32);
+            gl.uniform_1_i32(p.loc("uMode"), mode);
+            gl.uniform_1_i32(p.loc("uHasHeight"), has_h as i32);
+            gl.uniform_1_i32(p.loc("uHasEmis"), r.emis.is_some() as i32);
+            gl.uniform_1_i32(p.loc("uShadow"), self_shadow as i32);
+            gl.uniform_1_i32(p.loc("uChannel"), view.channel.index());
+            gl.uniform_4_f32_slice(p.loc("uObjA"), &obj_a);
+            gl.uniform_3_f32_slice(p.loc("uObjC"), &obj_c);
+            // lights and environment
+            let nl = lg.shadow.len();
+            gl.uniform_1_i32(p.loc("uNLights"), nl as i32);
+            let pad4 = |v: &Vec<f32>| -> Vec<f32> {
+                let mut o = v.clone();
+                o.resize(scene::MAX_LIGHTS * 4, 0.0);
+                o
+            };
+            gl.uniform_4_f32_slice(p.loc("uLAxis"), &pad4(&lg.axis));
+            gl.uniform_4_f32_slice(p.loc("uLInfo"), &pad4(&lg.info));
+            let mut col = lg.col.clone();
+            col.resize(scene::MAX_LIGHTS * 3, 0.0);
+            gl.uniform_3_f32_slice(p.loc("uLCol"), &col);
+            let mut sh = lg.shadow.clone();
+            sh.resize(scene::MAX_LIGHTS, -1);
+            gl.uniform_1_i32_slice(p.loc("uLShadow"), &sh);
+            let mut vps = [0.0f32; 48];
+            for (i, (m, _)) in lg.vps.iter().enumerate() {
+                vps[i * 16..i * 16 + 16].copy_from_slice(m);
+            }
+            gl.uniform_matrix_4_f32_slice(p.loc("uLVP"), false, &vps);
+            gl.uniform_3_f32_slice(p.loc("uSH"), &env.sh);
+            gl.uniform_2_f32(p.loc("uEnvRot"), cr, sr);
+            gl.uniform_1_f32(p.loc("uEnvGain"), bg_gain * view.ambient);
+            gl.uniform_1_f32(p.loc("uEnvLevels"), env.levels as f32);
+            bind_maps(gl, r);
+            for (i, n) in ["uBase", "uNormal", "uRma", "uEmis", "uHeight"].iter().enumerate() {
+                gl.uniform_1_i32(p.loc(n), i as i32);
+            }
+            gl.active_texture(glow::TEXTURE5);
+            gl.bind_texture(glow::TEXTURE_2D, Some(env.tex));
+            gl.uniform_1_i32(p.loc("uEnv"), 5);
+            gl.active_texture(glow::TEXTURE6);
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(r.shadows.as_ref().map(|s| s.tex).unwrap_or(r.dummy_shadow)));
+            gl.uniform_1_i32(p.loc("uShadowMap"), 6);
+            gl.bind_vertex_array(Some(mesh.vao));
+            gl.draw_elements(glow::TRIANGLES, mesh.index_count, glow::UNSIGNED_INT, 0);
         }
-        gl.bind_vertex_array(Some(r.vao));
-        gl.draw_elements(glow::TRIANGLES, r.index_count, glow::UNSIGNED_INT, 0);
+        // resolve the multisampled target
+        if let Some(ms) = tg.ms_fbo {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(ms));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(tg.res_fbo));
+            gl.blit_framebuffer(0, 0, w as i32, h as i32, 0, 0, w as i32, h as i32, glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT, glow::NEAREST);
+        }
+        // ---------------------------------------------------------------- post chain
+        gl.disable(glow::DEPTH_TEST);
+        gl.depth_mask(false);
+        let pp = &r.post_prog;
+        gl.use_program(Some(pp.id));
+        gl.bind_vertex_array(Some(r.empty_vao));
+        gl.uniform_2_f32(pp.loc("uSize"), w as f32, h as f32);
+        gl.uniform_2_f32(pp.loc("uOrigin"), 0.0, 0.0);
+        gl.uniform_1_f32(pp.loc("uNear"), NEAR);
+        gl.uniform_1_f32(pp.loc("uFar"), FAR);
+        gl.uniform_1_f32(pp.loc("uTanHalf"), cam.tan_half);
+        gl.uniform_1_f32(pp.loc("uAspect"), aspect);
+        gl.uniform_1_f32(pp.loc("uCentreDist"), cam.dist);
+        let po = &view.post;
+        let (ssao_on, dof_on, bloom_on) = (lit && po.ssao > 0.0, lit && po.dof > 0.0, lit && po.bloom > 0.0);
+        gl.uniform_1_f32(pp.loc("uSsao"), po.ssao);
+        gl.uniform_1_f32(pp.loc("uSsaoRadius"), po.ssao_radius);
+        gl.uniform_1_f32(pp.loc("uDof"), po.dof);
+        gl.uniform_1_f32(pp.loc("uFocus"), po.focus);
+        gl.uniform_1_f32(pp.loc("uBloom"), po.bloom);
+        gl.uniform_1_f32(pp.loc("uBloomThreshold"), po.bloom_threshold);
+        gl.uniform_1_f32(pp.loc("uVignette"), po.vignette);
+        gl.uniform_1_f32(pp.loc("uContrast"), po.contrast);
+        gl.uniform_1_f32(pp.loc("uSaturation"), po.saturation);
+        gl.uniform_3_f32(pp.loc("uWb"), 1.0 + 0.25 * po.temperature - 0.1 * po.tint, 1.0 + 0.2 * po.tint, 1.0 - 0.25 * po.temperature - 0.1 * po.tint);
+        gl.uniform_1_i32(pp.loc("uTone"), po.tonemap.index());
+        gl.uniform_1_i32(pp.loc("uBypass"), (!lit) as i32);
+        // bloom weights, as in post.rs
+        let mut nb = 1usize;
+        let (mut bw, mut bh) = (w, h);
+        for _ in 0..6 {
+            if bw <= 2 || bh <= 2 {
+                break;
+            }
+            bw = (bw / 2).max(1);
+            bh = (bh / 2).max(1);
+            nb += 1;
+        }
+        let rr = po.bloom_radius.clamp(0.0, 1.0);
+        let mut wts = [0.0f32; 8];
+        for (k, wk) in wts.iter_mut().enumerate().take(nb) {
+            let centre = 1.5 + rr * 3.0;
+            *wk = (-((k as f32 - centre) / 1.1).powi(2)).exp();
+        }
+        let wsum: f32 = wts.iter().sum::<f32>().max(1e-6);
+        for wk in wts.iter_mut() {
+            *wk /= wsum;
+        }
+        gl.uniform_1_i32(pp.loc("uBloomLevels"), nb as i32);
+        gl.uniform_1_f32_slice(pp.loc("uBloomW"), &wts);
+        for (i, n) in ["uSrc", "uDepthTex", "uBright"].iter().enumerate() {
+            gl.uniform_1_i32(pp.loc(n), i as i32);
+        }
+        let pass = |gl: &glow::Context, stage: i32, src: glow::Texture, dst: Option<glow::Framebuffer>| {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, dst);
+            gl.uniform_1_i32(pp.loc("uStage"), stage);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(src));
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(tg.depth));
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+        };
+        let mut cur = tg.hdr;
+        if ssao_on {
+            pass(gl, 0, cur, Some(tg.ping[0].0));
+            cur = tg.ping[0].1;
+        }
+        if dof_on {
+            let dst = if cur == tg.ping[0].1 { 1 } else { 0 };
+            pass(gl, 1, cur, Some(tg.ping[dst].0));
+            cur = tg.ping[dst].1;
+        }
+        if bloom_on {
+            pass(gl, 2, cur, Some(tg.bright.0));
+            gl.bind_texture(glow::TEXTURE_2D, Some(tg.bright.1));
+            gl.generate_mipmap(glow::TEXTURE_2D);
+            gl.active_texture(glow::TEXTURE2);
+            gl.bind_texture(glow::TEXTURE_2D, Some(tg.bright.1));
+        }
+        // final pass into the window, inside the rectangle egui gave us
+        gl.viewport(vp_px.left_px, vp_px.from_bottom_px, w as i32, h as i32);
+        gl.enable(glow::SCISSOR_TEST);
+        gl.scissor(clip_px.left_px, clip_px.from_bottom_px, clip_px.width_px, clip_px.height_px);
+        // the shader addresses pixels relative to the target, so the final pass reads gl_FragCoord offset by the viewport
+        gl.uniform_2_f32(pp.loc("uOrigin"), vp_px.left_px as f32, vp_px.from_bottom_px as f32);
+        pass(gl, 3, cur, fb_from(saved_fb));
+        // wireframe overlay, hidden lines removed with the resolved depth
         if view.wireframe {
-            gl.uniform_1_i32(loc("uWire"), 1);
+            let p = &r.wire_prog;
+            gl.use_program(Some(p.id));
+            gl.uniform_matrix_4_f32_slice(p.loc("uVP"), false, &vp);
+            gl.uniform_1_f32(p.loc("uDisp"), disp);
+            gl.uniform_1_f32(p.loc("uLevel"), view.height_level);
+            gl.uniform_1_f32(p.loc("uVtxLod"), vtx_lod);
+            gl.uniform_4_f32_slice(p.loc("uObjA"), &obj_a);
+            gl.uniform_1_f32(p.loc("uNear"), NEAR);
+            gl.uniform_1_f32(p.loc("uFar"), FAR);
+            bind_maps(gl, r);
+            gl.uniform_1_i32(p.loc("uHeight"), 4);
+            gl.active_texture(glow::TEXTURE7);
+            gl.bind_texture(glow::TEXTURE_2D, Some(tg.depth));
+            gl.uniform_1_i32(p.loc("uDepthTex"), 7);
+            gl.uniform_2_f32(p.loc("uOrigin"), vp_px.left_px as f32, vp_px.from_bottom_px as f32);
+            gl.enable(glow::BLEND);
+            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::LINE);
-            gl.enable(glow::POLYGON_OFFSET_LINE);
-            gl.polygon_offset(-1.0, -1.0);
-            gl.depth_func(glow::LEQUAL);
-            gl.draw_elements(glow::TRIANGLES, r.index_count, glow::UNSIGNED_INT, 0);
-            gl.disable(glow::POLYGON_OFFSET_LINE);
+            gl.bind_vertex_array(Some(mesh.vao));
+            gl.draw_elements(glow::TRIANGLES, mesh.index_count, glow::UNSIGNED_INT, 0);
             gl.polygon_mode(glow::FRONT_AND_BACK, glow::FILL);
-            gl.depth_func(glow::LESS);
+            gl.disable(glow::BLEND);
+        }
+        if !scissor_was_on {
+            gl.disable(glow::SCISSOR_TEST);
         }
         // leave the state the way egui expects it
+        for u in [7u32, 6, 5, 4, 3, 2, 1] {
+            gl.active_texture(glow::TEXTURE0 + u);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+        gl.active_texture(glow::TEXTURE6);
+        gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, None);
         gl.bind_vertex_array(None);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, fb_from(saved_fb));
         gl.disable(glow::DEPTH_TEST);
+        gl.depth_mask(true);
         let e = gl.get_error();
         if e != glow::NO_ERROR {
             result = Err(format!("OpenGL error 0x{e:x} while drawing the 3D view"));
         }
     }
     if want_shot && result.is_ok() {
-        let (w, h) = (vp_px.width_px as usize, vp_px.height_px as usize);
-        let mut buf = vec![0u8; w * h * 4];
+        let buf_w = vp_px.width_px as usize;
+        let buf_h = vp_px.height_px as usize;
+        let mut buf = vec![0u8; buf_w * buf_h * 4];
         unsafe {
-            gl.read_pixels(vp_px.left_px, vp_px.from_bottom_px, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut buf)));
+            gl.read_pixels(vp_px.left_px, vp_px.from_bottom_px, buf_w as i32, buf_h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut buf)));
         }
         // flip: GL rows start at the bottom
-        let mut top = vec![0u8; w * h * 4];
-        for y in 0..h {
-            top[y * w * 4..(y + 1) * w * 4].copy_from_slice(&buf[(h - 1 - y) * w * 4..(h - y) * w * 4]);
+        let mut top = vec![0u8; buf_w * buf_h * 4];
+        for y in 0..buf_h {
+            top[y * buf_w * 4..(y + 1) * buf_w * 4].copy_from_slice(&buf[(buf_h - 1 - y) * buf_w * 4..(buf_h - y) * buf_w * 4]);
         }
-        g.shot = Some((w, h, top));
+        g.shot = Some((buf_w, buf_h, top));
     }
     g.frames += 1;
     if let Err(e) = result {
@@ -818,11 +1215,26 @@ pub fn release(shared: &Shared, gl: &glow::Context) {
     if let Ok(mut g) = shared.lock() {
         if let Some(r) = g.res.take() {
             unsafe {
-                gl.delete_program(r.prog);
-                gl.delete_program(r.bg_prog);
-                gl.delete_vertex_array(r.vao);
-                gl.delete_buffer(r.vbo);
-                gl.delete_buffer(r.ebo);
+                for p in [&r.prog, &r.depth_prog, &r.wire_prog, &r.bg_prog, &r.post_prog] {
+                    gl.delete_program(p.id);
+                }
+                if let Some(m) = &r.mesh {
+                    gl.delete_vertex_array(m.vao);
+                    gl.delete_buffer(m.vbo);
+                    gl.delete_buffer(m.ebo);
+                }
+                gl.delete_vertex_array(r.empty_vao);
+                if let Some(t) = &r.targets {
+                    free_targets(gl, t);
+                }
+                if let Some(e) = &r.env {
+                    gl.delete_texture(e.tex);
+                }
+                if let Some(s) = &r.shadows {
+                    gl.delete_framebuffer(s.fbo);
+                    gl.delete_texture(s.tex);
+                }
+                gl.delete_texture(r.dummy_shadow);
                 free_tex(gl, &r.base);
                 free_tex(gl, &r.normal);
                 free_tex(gl, &r.rma);

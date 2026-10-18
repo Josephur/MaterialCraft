@@ -352,6 +352,7 @@ struct App {
     tex2d_size: (usize, usize),
     maps: BTreeMap<String, std::sync::Arc<Tex>>,
     view3d: View,
+    v3: V3dUi,
     tex3d: Option<egui::TextureHandle>,
     r3d_size: usize,
     gpu: gpu3d::Shared,
@@ -470,6 +471,7 @@ impl App {
             tex2d_size: (0, 0),
             maps: BTreeMap::new(),
             view3d: View { tess: 512, ..View::default() },
+            v3: V3dUi::default(),
             tex3d: None,
             r3d_size: 420,
             gpu: gpu3d::new_shared(),
@@ -1787,22 +1789,15 @@ impl App {
         if self.gpu_maps_dirty {
             self.upload_gpu_maps();
         }
+        if self.v3.pt_on {
+            return;
+        }
         if self.gpu_ready() {
             ctx.request_repaint();
             return;
         }
-        let (flat, half, zero, one) = (Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 0.5, 1.0]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
-        let get = |k: &str| self.maps.get(k).map(|a| a.as_ref());
-        let inv_gloss = get("glossiness").map(ops::invert);
-        let m = Maps {
-            base: get("basecolor").or_else(|| get("diffuse")).unwrap_or(&half),
-            normal: get("normal").unwrap_or(&flat),
-            rough: get("roughness").or(inv_gloss.as_ref()).unwrap_or(&half),
-            metal: get("metallic").unwrap_or(&zero),
-            ao: get("ambient_occlusion").unwrap_or(&one),
-            emissive: get("emissive"),
-            height: get("height"),
-        };
+        let fb = fallbacks(&self.maps);
+        let m = build_maps(&self.maps, &fb);
         let mut cpu_view = self.view3d.clone();
         cpu_view.tess = cpu_view.tess.min(256);
         let img = render3d::render(&m, &cpu_view, self.r3d_size, self.r3d_size);
@@ -1888,3 +1883,4 @@ include!("gui_spline.rs");
 include!("gui_bake.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");
+include!("gui_view3d.rs");

@@ -3,6 +3,7 @@
 //! The core library has no external dependencies; it builds on Windows, Linux and macOS.
 pub mod bake;
 pub mod bvh;
+pub mod cli3d;
 pub mod safeio;
 #[cfg(any(feature = "cms", feature = "craft"))]
 pub mod colorspace;
@@ -13,6 +14,8 @@ pub mod font;
 pub mod func;
 pub mod fxmap;
 pub mod graph;
+pub mod hdri;
+pub mod objects;
 #[cfg(feature = "gui")]
 pub mod gpu3d;
 pub mod jpeg;
@@ -29,7 +32,11 @@ pub mod library;
 pub mod spline;
 pub mod ops;
 pub mod png;
+pub mod post;
+pub mod pt;
+pub mod raster;
 pub mod render3d;
+pub mod scene;
 pub mod exr;
 pub mod gpu;
 pub mod grunge;

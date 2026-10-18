@@ -150,7 +150,7 @@ fn renderer_draws_shapes() {
     use materialcraft::render3d::{render, Maps, View};
     use materialcraft::tex::Tex;
     let (b, n, r, m, a) = (Tex::solid(8, 8, [0.8, 0.2, 0.2, 1.0]), Tex::solid(8, 8, [0.5, 0.5, 1.0, 1.0]), Tex::solid(8, 8, [0.4; 4]), Tex::solid(8, 8, [0.0, 0.0, 0.0, 1.0]), Tex::solid(8, 8, [1.0; 4]));
-    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: None };
+    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: None, env: None };
     for shape in 0..3 {
         let img = render(&maps, &View { shape, ..View::default() }, 64, 64);
         let c = img.px[32 * 64 + 32];
@@ -393,7 +393,7 @@ fn displacement_renders_every_shape_and_camera_without_panics() {
     use materialcraft::tex::Tex;
     let hm = Tex::gray_fn(32, 32, |u, v| (u * 6.0).sin() * 0.5 + 0.5 + v * 0.0);
     let (b, n, r, m, a) = (Tex::solid(4, 4, [0.8, 0.2, 0.2, 1.0]), Tex::solid(4, 4, [0.5, 0.5, 1.0, 1.0]), Tex::solid(4, 4, [0.4; 4]), Tex::solid(4, 4, [0.0, 0.0, 0.0, 1.0]), Tex::solid(4, 4, [1.0; 4]));
-    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: Some(&hm) };
+    let maps = Maps { base: &b, normal: &n, rough: &r, metal: &m, ao: &a, emissive: None, height: Some(&hm), env: None };
     for shape in 0..3 {
         for relief in [RELIEF_NONE, RELIEF_BUMP, RELIEF_PARALLAX, RELIEF_DISPLACE] {
             // close cameras make triangles cross the near plane; behind/side views exercise back faces

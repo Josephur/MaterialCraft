@@ -14,6 +14,7 @@ const HELP: &str = "materialcraft - procedural material authoring (pure Rust)
 USAGE:
   materialcraft render <graph.mcg|.mca> <outdir> [--size N | --sizes 256,512] [--depth 8|16|32]
                   [--param \"Label=value\"]... [--variations N] [--preview] [--render3d]\n                  [--format png|jpg|tiff|exr|hdr] [--quality 1-100] [--only basecolor,normal]\n                  [--colorspace srgb|p3|wide|romm|rec2020|linear]
+  materialcraft render3d <graph.mcg|.mca> <out.png> [options]       3D picture / turntable (raster or path traced), see: materialcraft render3d --help
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
@@ -300,6 +301,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("bake") => bake_cli(&args[1..]),
+        Some("render3d") => materialcraft::cli3d::run(&args[1..], &load),
         Some("render") => {
             let gp = args.get(1).ok_or("usage: materialcraft render <graph> <outdir> [options]")?;
             let dir = args.get(2).ok_or("missing <outdir>")?;
@@ -420,7 +422,7 @@ fn run(args: &[String]) -> Result<(), String> {
                         println!("wrote {}", d.join("preview.png").display());
                     }
                     if r3d {
-                        let maps = Maps { base: b, normal: n, rough: r, metal: m, ao: a, emissive: out.get("emissive"), height: out.get("height") };
+                        let maps = Maps { base: b, normal: n, rough: r, metal: m, ao: a, emissive: out.get("emissive"), height: out.get("height"), env: None };
                         for (label, id) in render3d::SHAPES.iter() {
                             let name: String = label.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
                             let v = View { shape: *id, ..View::default() };

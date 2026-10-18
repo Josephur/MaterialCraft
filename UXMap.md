@@ -9534,3 +9534,12 @@
       - Control: slider
       - Default: 1
       - Range: 0..10
+
+### 8.6.1 3D VIEW menus (Milestone 5)
+- Menu "Lights": rig presets, add / remove light, kind (directional, point, spot), colour, intensity, angle, shadows; Shift+drag moves the selected light
+- Menu "Camera": presets, field of view, turntable
+- Menu "Environment": preset or file (.hdr, .exr, .png), rotation, exposure, blur, background mode
+- Menu "Post": preset, SSAO, depth of field, bloom, white balance, contrast, saturation, vignette, tone map
+- Menu "Channel": lit, base colour, roughness, metallic, normal, height, AO, emissive, opacity
+- Scene menu: scene kind (single, floor, look-dev, pedestal), load custom mesh
+- Render menu: path tracer on / off with sample count, Save picture, turntable export

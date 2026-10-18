@@ -2,9 +2,12 @@
 //! Software PBR renderer for the 3D viewer. Every shape (sphere, cube, plane) is a real tessellated triangle mesh that is
 //! rasterised with a depth buffer, so height maps can displace actual geometry (true displacement), not just fake it.
 //! GGX specular, hemisphere environment lighting, tangent-space normal mapping, bump, outward parallax relief, wireframe.
+use crate::hdri::Env;
+use crate::scene::{self, Channel, EnvSettings, Light, Post, SceneKind};
 use crate::tex::{lum, Tex};
 use crate::v3::*;
 use std::f32::consts::{PI, TAU};
+use std::sync::Arc;
 
 pub struct Maps<'a> {
     pub base: &'a Tex,
@@ -14,7 +17,12 @@ pub struct Maps<'a> {
     pub ao: &'a Tex,
     pub emissive: Option<&'a Tex>,
     pub height: Option<&'a Tex>,
+    /// lighting environment; `None` uses the built-in studio
+    pub env: Option<&'a Env>,
 }
+
+/// Shape id of the mesh loaded from a file (see `objects::CustomMesh`).
+pub const SHAPE_CUSTOM: u32 = 1000;
 
 /// How the height map is shown.
 pub const RELIEF_NONE: u32 = 0; // normal map only
@@ -29,14 +37,20 @@ pub struct View {
     pub dist: f32,
     pub pan_x: f32,
     pub pan_y: f32,
-    pub light_yaw: f32,
-    pub light_pitch: f32,
-    pub light_intensity: f32,
-    /// The light is placed relative to the camera (yaw/pitch are offsets from the view direction), so the object stays
-    /// lit while it is orbited. Off: the light is fixed in the scene.
-    pub light_follows_camera: bool,
+    /// vertical field of view in degrees
+    pub fov: f32,
+    /// the light rig (see `scene::default_rig`)
+    pub lights: Vec<Light>,
+    /// exposure of the picture (multiplier)
     pub exposure: f32,
+    /// strength of the environment lighting (multiplier)
     pub ambient: f32,
+    pub env: EnvSettings,
+    pub post: Post,
+    pub channel: Channel,
+    pub scene: SceneKind,
+    /// the mesh shown when `shape` is `SHAPE_CUSTOM`
+    pub custom: Option<Arc<crate::objects::CustomMesh>>,
     pub shape: u32, // see SHAPES: 0 sphere, 1 cube, 2 plane, 3.. more (all tessellated meshes)
     pub tiling: f32,
     /// One of the RELIEF_* modes.
@@ -62,12 +76,15 @@ impl Default for View {
             dist: 3.4,
             pan_x: 0.0,
             pan_y: 0.0,
-            light_yaw: 0.9,
-            light_pitch: 0.7,
-            light_intensity: 3.0,
-            light_follows_camera: true,
+            fov: 40.0,
+            lights: scene::default_rig(),
             exposure: 1.0,
             ambient: 1.0,
+            env: EnvSettings::default(),
+            post: Post::default(),
+            channel: Channel::Lit,
+            scene: SceneKind::Single,
+            custom: None,
             shape: 0,
             tiling: 1.0,
             relief: RELIEF_DISPLACE,
@@ -81,27 +98,169 @@ impl Default for View {
     }
 }
 
+/// Camera of a view: position and orthonormal basis (`fwd` looks at the middle of the scene before panning).
+#[derive(Clone, Copy, Debug)]
+pub struct CamBasis {
+    pub eye: V,
+    pub fwd: V,
+    pub right: V,
+    pub up: V,
+    /// tan of half the vertical field of view
+    pub tan_half: f32,
+    /// distance from the eye to the scene origin
+    pub dist: f32,
+}
 
-/// Key light direction and the opposite soft fill light (unit vectors pointing TO the lights).
-pub fn light_dirs(v: &View) -> (V, V) {
-    let (ly, lp) = (v.light_yaw, v.light_pitch);
-    let (lsy, lcy) = ly.sin_cos();
-    let (lsp, lcp) = lp.sin_cos();
-    let local = [lsy * lcp, lsp, lcy * lcp];
-    let ldir = if v.light_follows_camera {
-        let (sy, cy) = v.yaw.sin_cos();
-        let (sp, cp) = v.pitch.sin_cos();
-        let eye0 = [sy * cp, sp, cy * cp];
+impl View {
+    pub fn cam(&self) -> CamBasis {
+        let dist = self.dist * self.scene_dist_mul();
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let eye0 = [dist * sy * cp, dist * sp, dist * cy * cp];
         let fwd = norm(mul(eye0, -1.0));
         let right = norm(cross(fwd, [0.0, 1.0, 0.0]));
         let up = cross(right, fwd);
-        norm(add(add(mul(right, local[0]), mul(up, local[1])), mul(fwd, -local[2])))
-    } else {
-        norm(local)
-    };
-    // the fill comes from the opposite side, a little lower, so shadowed sides never go black
-    let fill = norm([-ldir[0] * 0.7, -0.35 * ldir[1].signum() * 0.5 - 0.15, -ldir[2] * 0.7]);
-    (ldir, fill)
+        let eye = add(eye0, add(mul(right, self.pan_x), mul(up, self.pan_y)));
+        CamBasis { eye, fwd, right, up, tan_half: (self.fov.clamp(5.0, 120.0) * 0.5).to_radians().tan(), dist }
+    }
+
+    /// Scenes with several objects are viewed from further away.
+    pub fn scene_dist_mul(&self) -> f32 {
+        match self.scene {
+            SceneKind::Single => 1.0,
+            SceneKind::Floor => 1.25,
+            SceneKind::LookDev => 2.1,
+            SceneKind::Pedestal => 1.7,
+        }
+    }
+
+    pub fn cam_frame(&self) -> scene::CamFrame {
+        let c = self.cam();
+        scene::CamFrame { right: c.right, up: c.up, fwd: c.fwd }
+    }
+
+    /// Settings as `key value` lines (the inverse of [`View::set`]).
+    pub fn to_text(&self) -> String {
+        let mut o = String::new();
+        let mut put = |k: &str, v: String| o.push_str(&format!("{k} {v}\n"));
+        put("yaw", self.yaw.to_string());
+        put("pitch", self.pitch.to_string());
+        put("dist", self.dist.to_string());
+        put("pan_x", self.pan_x.to_string());
+        put("pan_y", self.pan_y.to_string());
+        put("fov", self.fov.to_string());
+        put("exposure", self.exposure.to_string());
+        put("ambient", self.ambient.to_string());
+        put("channel", self.channel.id().to_string());
+        put("scene", self.scene.id().to_string());
+        put("shape", self.shape.to_string());
+        put("tiling", self.tiling.to_string());
+        put("relief", self.relief.to_string());
+        put("height_scale", self.height_scale.to_string());
+        put("bump", self.bump.to_string());
+        put("height_level", self.height_level.to_string());
+        put("normal_amt", self.normal_amt.to_string());
+        put("tess", self.tess.to_string());
+        put("wireframe", (self.wireframe as u8).to_string());
+        self.env.to_text(&mut o);
+        self.post.to_text(&mut o);
+        o.push_str(&format!("lights {}\n", self.lights.len()));
+        for (i, l) in self.lights.iter().enumerate() {
+            l.to_text(i, &mut o);
+        }
+        o
+    }
+
+    /// Change one setting by name, e.g. `yaw 0.3`, `env.preset sunset`, `post.bloom 0.4`, `light.0.intensity 5`,
+    /// `rig three_point`, `camera front`.
+    pub fn set(&mut self, key: &str, val: &str) -> Result<(), String> {
+        let f = || scene::parse_f32(val);
+        if let Some(k) = key.strip_prefix("env.") {
+            return self.env.set(k, val);
+        }
+        if let Some(k) = key.strip_prefix("post.") {
+            return self.post.set(k, val);
+        }
+        if let Some(rest) = key.strip_prefix("light.") {
+            let (idx, k) = rest.split_once('.').ok_or_else(|| format!("use light.<number>.<setting>, not '{key}'"))?;
+            let i: usize = idx.parse().map_err(|_| format!("'{idx}' is not a light number"))?;
+            if i >= scene::MAX_LIGHTS {
+                return Err(format!("at most {} lights", scene::MAX_LIGHTS));
+            }
+            while self.lights.len() <= i {
+                self.lights.push(Light::new_of(scene::LightKind::Directional));
+            }
+            return self.lights[i].set(k, val);
+        }
+        match key {
+            "yaw" => self.yaw = f()?,
+            "pitch" => self.pitch = f()?.clamp(-1.5, 1.5),
+            "dist" => self.dist = f()?.clamp(1.0, 12.0),
+            "pan_x" => self.pan_x = f()?,
+            "pan_y" => self.pan_y = f()?,
+            "fov" => self.fov = f()?.clamp(5.0, 120.0),
+            "exposure" => self.exposure = f()?.clamp(0.01, 32.0),
+            "ambient" => self.ambient = f()?.clamp(0.0, 8.0),
+            "channel" => self.channel = Channel::parse(val).ok_or_else(|| format!("unknown channel '{val}'"))?,
+            "scene" => self.scene = SceneKind::parse(val).ok_or_else(|| format!("unknown scene '{val}' (single, floor, lookdev, pedestal)"))?,
+            "shape" => {
+                self.shape = match val.parse::<u32>() {
+                    Ok(n) => n,
+                    Err(_) => SHAPES.iter().find(|s| s.0.to_lowercase().replace(' ', "_") == val.to_lowercase()).map(|s| s.1).ok_or_else(|| format!("unknown shape '{val}'"))?,
+                }
+            }
+            "tiling" => self.tiling = f()?.clamp(0.1, 64.0),
+            "relief" => self.relief = (f()? as u32).min(3),
+            "height_scale" => self.height_scale = f()?.clamp(0.0, 1.0),
+            "bump" => self.bump = f()?.clamp(0.0, 20.0),
+            "height_level" => self.height_level = f()?.clamp(0.0, 1.0),
+            "normal_amt" => self.normal_amt = f()?.clamp(0.0, 1.0),
+            "tess" => self.tess = (f()? as u32).clamp(8, 768),
+            "wireframe" => self.wireframe = scene::parse_bool(val)?,
+            "lights" => {
+                let n = (f()? as usize).min(scene::MAX_LIGHTS);
+                self.lights.truncate(n);
+                while self.lights.len() < n {
+                    self.lights.push(Light::new_of(scene::LightKind::Directional));
+                }
+            }
+            "post" => {
+                if !scene::POST_PRESETS.iter().any(|p| p.0 == val) {
+                    return Err(format!("unknown post look '{val}' ({})", scene::POST_PRESETS.iter().map(|p| p.0).collect::<Vec<_>>().join(", ")));
+                }
+                self.post = scene::post_preset(val);
+            }
+            "rig" => {
+                if !scene::RIGS.iter().any(|r| r.0 == val) {
+                    return Err(format!("unknown light rig '{val}' ({})", scene::RIGS.iter().map(|r| r.0).collect::<Vec<_>>().join(", ")));
+                }
+                self.lights = scene::rig(val);
+            }
+            "camera" => {
+                let c = scene::CAMERAS.iter().find(|c| c.0 == val).ok_or_else(|| format!("unknown camera '{val}' ({})", scene::CAMERAS.iter().map(|c| c.0).collect::<Vec<_>>().join(", ")))?;
+                self.yaw = c.2;
+                self.pitch = c.3;
+                self.dist = c.4;
+                self.pan_x = 0.0;
+                self.pan_y = 0.0;
+            }
+            _ => return Err(format!("unknown view setting '{key}'")),
+        }
+        Ok(())
+    }
+
+    /// Apply `key value` lines (comments start with `#`); unknown keys are an error.
+    pub fn apply_text(&mut self, text: &str) -> Result<(), String> {
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (k, v) = line.split_once(' ').unwrap_or((line, ""));
+            self.set(k.trim(), v.trim()).map_err(|e| format!("line {}: {e}", n + 1))?;
+        }
+        Ok(())
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ mesh
@@ -117,26 +276,41 @@ pub struct Mesh {
     pub fade: Vec<f32>,
     /// normals of the undisplaced surface (used to decide which walls face the camera)
     pub base_nrm: Vec<V>,
+    /// direction the vertex moves in when it is displaced (the shading normal for the built-in shapes, a welded smooth
+    /// normal for loaded meshes so hard edges do not open up)
+    pub disp: Vec<V>,
     pub tris: Vec<[u32; 3]>,
+    /// object index per triangle (empty = everything is object 0); see `objects::SceneMesh`
+    pub obj: Vec<u32>,
+    /// per object: walls facing away from the camera are not drawn
+    pub cull: Vec<bool>,
 }
 
-struct Raw {
-    pos: Vec<V>,
-    nrm: Vec<V>,
-    tan: Vec<V>,
-    uv: Vec<[f32; 2]>,
-    su: Vec<f32>,
-    sv: Vec<f32>,
-    tris: Vec<[u32; 3]>,
+impl Mesh {
+    pub fn object_of(&self, tri: usize) -> usize {
+        if self.obj.is_empty() { 0 } else { self.obj[tri] as usize }
+    }
+}
+
+pub(crate) struct Raw {
+    pub(crate) pos: Vec<V>,
+    pub(crate) nrm: Vec<V>,
+    pub(crate) tan: Vec<V>,
+    pub(crate) uv: Vec<[f32; 2]>,
+    pub(crate) su: Vec<f32>,
+    pub(crate) sv: Vec<f32>,
+    pub(crate) tris: Vec<[u32; 3]>,
     /// vertices with equal weld ids sit at the same place (seams, poles) and must displace and shade identically
-    weld: Vec<u32>,
+    pub(crate) weld: Vec<u32>,
     /// 0..1 displacement fade (cube edges stay closed)
-    fade: Vec<f32>,
+    pub(crate) fade: Vec<f32>,
+    /// displacement directions; empty = use `nrm`
+    pub(crate) disp: Vec<V>,
 }
 
 impl Raw {
-    fn new() -> Raw {
-        Raw { pos: vec![], nrm: vec![], tan: vec![], uv: vec![], su: vec![], sv: vec![], tris: vec![], weld: vec![], fade: vec![] }
+    pub(crate) fn new() -> Raw {
+        Raw { pos: vec![], nrm: vec![], tan: vec![], uv: vec![], su: vec![], sv: vec![], tris: vec![], weld: vec![], fade: vec![], disp: vec![] }
     }
     #[allow(clippy::too_many_arguments)]
     fn push(&mut self, p: V, n: V, t: V, uv: [f32; 2], su: f32, sv: f32, weld: u32, fade: f32) {
@@ -166,7 +340,7 @@ impl Raw {
 const PLANE_HALF: f32 = 1.3;
 const CUBE_HALF: f32 = 0.8;
 
-fn smoothstep01(x: f32) -> f32 {
+pub(crate) fn smoothstep01(x: f32) -> f32 {
     let t = x.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -241,7 +415,7 @@ fn raw_cube(n: u32, tiling: f32) -> Raw {
 
 // ------------------------------------------------------------------------------------------------ more shapes
 /// Shapes the viewer can show, in menu order: (name, shape id). Ids 0..2 are the original sphere, cube and plane.
-pub const SHAPES: [(&str, u32); 13] = [
+pub const SHAPES: [(&str, u32); 16] = [
     ("Cube", 1),
     ("Cylinder", 3),
     ("Hollow box", 4),
@@ -255,9 +429,15 @@ pub const SHAPES: [(&str, u32); 13] = [
     ("Rounded cylinder", 10),
     ("Sphere 2 tiles", 11),
     ("Torus", 12),
+    ("Capsule", 13),
+    ("Cone", 14),
+    ("Torus knot", 15),
 ];
 
 pub fn shape_name(id: u32) -> &'static str {
+    if id == SHAPE_CUSTOM {
+        return "Custom mesh";
+    }
     SHAPES.iter().find(|s| s.1 == id).map(|s| s.0).unwrap_or("Sphere")
 }
 
@@ -424,6 +604,58 @@ fn raw_torus(n: u32, tiling: f32) -> Raw {
     r
 }
 
+fn raw_capsule(n: u32, tiling: f32) -> Raw {
+    let (rad, half) = (0.5f32, 0.55f32);
+    let arc = (n / 3).max(8) as usize;
+    let segs = [
+        seg_arc([0.0, half], rad, PI / 2.0, 0.0, arc, false, false),
+        seg_line([rad, half], [rad, -half], (n as usize / 2).max(8), false, false),
+        seg_arc([0.0, -half], rad, 0.0, -PI / 2.0, arc, false, false),
+    ];
+    let mut r = Raw::new();
+    revolve(&mut r, n, tiling, 2.0, &segs);
+    weld_by_position(&mut r, true);
+    r
+}
+
+fn raw_cone(n: u32, tiling: f32) -> Raw {
+    let (rad, h) = (0.8f32, 0.8f32);
+    let st = (n / 2).max(4) as usize;
+    let segs = [seg_line([0.0, h], [rad, -h], (n as usize).max(8), false, true), seg_line([rad, -h], [0.0, -h], st, true, false)];
+    let mut r = Raw::new();
+    revolve(&mut r, n, tiling, 2.0, &segs);
+    weld_by_position(&mut r, false);
+    r
+}
+
+/// A (2, 3) torus knot: a tube swept along the knot curve (closed, so the seam welds).
+fn raw_torus_knot(n: u32, tiling: f32) -> Raw {
+    let (p, q) = (2.0f32, 3.0f32);
+    let (scale, tube) = (0.26f32, 0.16f32);
+    let path = |s: f32| -> V {
+        let t = s * TAU;
+        let rr = (q * t).cos() + 2.0;
+        [scale * rr * (p * t).cos(), -scale * (q * t).sin(), scale * rr * (p * t).sin()]
+    };
+    let frame = |s: f32| -> (V, V, V) {
+        let e = 1e-3;
+        let (a, b, c) = (path(s - e), path(s), path(s + e));
+        let t = norm(sub(c, a));
+        let acc = sub(add(a, c), mul(b, 2.0));
+        let nv = norm(sub(acc, mul(t, dot(acc, t))));
+        (t, nv, cross(t, nv))
+    };
+    let mut r = Raw::new();
+    let (nu, nv) = ((n * 3).max(36), (n / 2).max(10));
+    patch(&mut r, nu, nv, tiling, (6.0, 2.0), 0.0, |u, v| {
+        let (_, nn, bb) = frame(u);
+        let th = v * TAU;
+        add(path(u), mul(add(mul(nn, th.cos()), mul(bb, th.sin())), tube))
+    });
+    weld_by_position(&mut r, true);
+    r
+}
+
 fn raw_mat_ball(n: u32, tiling: f32) -> Raw {
     let (rad, cy) = (0.8, 0.2);
     let steps = (n as usize).max(12);
@@ -525,9 +757,18 @@ fn raw_cloth(n: u32, tiling: f32) -> Raw {
 
 /// Build the shape mesh, displacing it along the surface normal when a height map is given.
 pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amount: f32, level: f32) -> Mesh {
+    build_mesh_ex(shape, tess, tiling, height, amount, level, None)
+}
+
+/// Like [`build_mesh`], and `SHAPE_CUSTOM` builds the loaded mesh.
+pub fn build_mesh_ex(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amount: f32, level: f32, custom: Option<&crate::objects::CustomMesh>) -> Mesh {
     let n = tess.clamp(8, 768);
     let tiling = tiling.max(0.1);
     let r = match shape {
+        SHAPE_CUSTOM => match custom {
+            Some(c) => c.to_raw(tiling),
+            None => raw_sphere(n, tiling),
+        },
         0 => raw_sphere(n, tiling),
         1 => raw_cube((n * 5 / 8).max(8), tiling),
         3 => raw_cylinder(n, tiling),
@@ -540,12 +781,16 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
         10 => raw_rounded_cylinder(n, tiling),
         11 => raw_sphere(n, tiling * 2.0),
         12 => raw_torus(n, tiling),
+        13 => raw_capsule(n, tiling),
+        14 => raw_cone(n, tiling),
+        15 => raw_torus_knot(n, tiling),
         _ => raw_plane(n, tiling),
     };
     let nv = r.pos.len();
     let displace = amount.abs() > 1e-6 && height.is_some();
     let mut pos = r.pos.clone();
     let mut nrm = r.nrm.clone();
+    let dir: &Vec<V> = if r.disp.is_empty() { &r.nrm } else { &r.disp };
     if let (true, Some(hm)) = (displace, height) {
         // one height per weld group so seams and poles stay closed
         let groups = r.weld.iter().copied().max().unwrap_or(0) as usize + 1;
@@ -558,7 +803,7 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
         }
         for i in 0..nv {
             let hh = sum[r.weld[i] as usize] / cnt[r.weld[i] as usize].max(1) as f32;
-            pos[i] = add(r.pos[i], mul(r.nrm[i], (hh - level) * amount * r.fade[i]));
+            pos[i] = add(r.pos[i], mul(dir[i], (hh - level) * amount * r.fade[i]));
         }
         // smooth normals of the displaced surface (area weighted, accumulated per weld group)
         let mut acc = vec![[0.0f32; 3]; groups];
@@ -581,29 +826,30 @@ pub fn build_mesh(shape: u32, tess: u32, tiling: f32, height: Option<&Tex>, amou
         let t = sub(r.tan[i], mul(nrm[i], dot(r.tan[i], nrm[i])));
         tan[i] = if dot(t, t) > 1e-12 { norm(t) } else { r.tan[i] };
     }
-    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, fade: r.fade, base_nrm: r.nrm, tris: r.tris }
+    let disp = dir.clone();
+    Mesh { pos, nrm, tan, uv: r.uv, su: r.su, sv: r.sv, fade: r.fade, base_nrm: r.nrm, disp, tris: r.tris, obj: Vec::new(), cull: vec![shape_culls(shape)] }
 }
 
 // ------------------------------------------------------------------------------------------------ rasteriser
 #[derive(Clone, Copy)]
-struct Frag {
-    z: f32,
-    tri: u32,
-    b1: f32,
-    b2: f32,
+pub(crate) struct Frag {
+    pub(crate) z: f32,
+    pub(crate) tri: u32,
+    pub(crate) b1: f32,
+    pub(crate) b2: f32,
 }
-const NO_TRI: u32 = u32::MAX;
+pub(crate) const NO_TRI: u32 = u32::MAX;
 const NEAR: f32 = 0.05;
 
-struct Cam {
-    eye: V,
-    fwd: V,
-    right: V,
-    up: V,
-    tf: f32,
-    aspect: f32,
-    w: usize,
-    h: usize,
+pub(crate) struct Cam {
+    pub(crate) eye: V,
+    pub(crate) fwd: V,
+    pub(crate) right: V,
+    pub(crate) up: V,
+    pub(crate) tf: f32,
+    pub(crate) aspect: f32,
+    pub(crate) w: usize,
+    pub(crate) h: usize,
 }
 
 impl Cam {
@@ -700,7 +946,7 @@ fn raster_clipped(band: &mut [Frag], y_start: usize, w: usize, cam: &Cam, tri: u
     }
 }
 
-fn rasterize(mesh: &Mesh, cam: &Cam, cull: bool) -> Vec<Frag> {
+pub(crate) fn rasterize(mesh: &Mesh, cam: &Cam) -> Vec<Frag> {
     let (w, h) = (cam.w, cam.h);
     let none = Frag { z: f32::INFINITY, tri: NO_TRI, b1: 0.0, b2: 0.0 };
     let mut frags = vec![none; w * h];
@@ -716,7 +962,7 @@ fn rasterize(mesh: &Mesh, cam: &Cam, cull: bool) -> Vec<Frag> {
                 let y_end = y_start + band.len() / w;
                 for (ti, t) in mesh.tris.iter().enumerate() {
                     let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
-                    if cull {
+                    if mesh.cull[mesh.object_of(ti)] {
                         // walls whose (smoothed) normal faces away from the camera are not drawn
                         let nn = add(add(mesh.base_nrm[i0], mesh.base_nrm[i1]), mesh.base_nrm[i2]);
                         if dot(nn, sub(cam.eye, mesh.pos[i0])) <= 0.0 {
@@ -745,194 +991,15 @@ fn rasterize(mesh: &Mesh, cam: &Cam, cull: bool) -> Vec<Frag> {
     frags
 }
 
-// ------------------------------------------------------------------------------------------------ shading
-struct Surf {
-    n: V,
-    t: V,
-    b: V,
-    uv: [f32; 2],
-    su: f32,
-    sv: f32,
-    back: bool,
-}
-
-fn env(d: V) -> V {
-    let sky = [0.42, 0.52, 0.68];
-    let ground = [0.30, 0.28, 0.26];
-    let hor = [0.58, 0.58, 0.58];
-    let base = if d[1] > 0.0 { add(mul(hor, 1.0 - d[1]), mul(sky, d[1])) } else { add(mul(hor, 1.0 + d[1] * 0.8), mul(ground, -d[1] * 0.8)) };
-    [base[0].max(0.0), base[1].max(0.0), base[2].max(0.0)]
-}
-
-fn lin(c: f32) -> f32 {
-    c.max(0.0).powf(2.2)
-}
-
-/// Outward relief mapping. The height field is a slab of thickness `depth` that sits on the surface: height `level`
-/// is flush with the polygon, brighter pixels rise out of it. The view ray enters the slab at its top and is marched
-/// down until it meets the height field. Returns (uv, fraction 0..1 of how deep below the top the hit is).
-fn parallax(hm: &Tex, s: &Surf, vt: V, depth: f32, level: f32) -> ([f32; 2], f32) {
-    let vz = vt[2].max(0.2);
-    let du = -vt[0] / vz / s.su;
-    let dv = vt[1] / vz / s.sv; // uv v runs opposite to the bitangent
-    let top = (1.0 - level.clamp(0.0, 1.0)) * depth; // distance (along the ray) from slab top to the polygon plane
-    let at = |d: f32| -> (f32, [f32; 2]) {
-        let uv = [s.uv[0] + du * (d - top), s.uv[1] + dv * (d - top)];
-        ((1.0 - lum(hm.sample(uv[0], uv[1]))) * depth - d, uv)
-    };
-    let steps = 48;
-    let (mut prev_d, (mut prev_f, _)) = (0.0f32, at(0.0));
-    if prev_f <= 0.0 {
-        return (at(0.0).1, 0.0);
-    }
-    for i in 1..=steps {
-        let d = depth * i as f32 / steps as f32;
-        let (f, _) = at(d);
-        if f <= 0.0 {
-            let (mut lo, mut hi) = (prev_d, d);
-            for _ in 0..5 {
-                let mid = 0.5 * (lo + hi);
-                if at(mid).0 > 0.0 {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            let dh = 0.5 * (lo + hi);
-            return (at(dh).1, (dh / depth).clamp(0.0, 1.0));
-        }
-        prev_d = d;
-        prev_f = f;
-    }
-    let _ = prev_f;
-    (at(depth).1, 1.0)
-}
-
+// ------------------------------------------------------------------------------------------------ rendering
+/// Software render of the view (see `raster::render`).
 pub fn render(m: &Maps, v: &View, w: usize, h: usize) -> Tex {
-    let (w, h) = (w.max(1), h.max(1));
-    let (sy, cy) = v.yaw.sin_cos();
-    let (sp, cp) = v.pitch.sin_cos();
-    let eye0 = [v.dist * sy * cp, v.dist * sp, v.dist * cy * cp];
-    let fwd = norm(mul(eye0, -1.0));
-    let right = norm(cross(fwd, [0.0, 1.0, 0.0]));
-    let up = cross(right, fwd);
-    let eye = add(eye0, add(mul(right, v.pan_x), mul(up, v.pan_y)));
-    let tf = (20.0f32).to_radians().tan();
-    let aspect = w as f32 / h as f32;
-    let cam = Cam { eye, fwd, right, up, tf, aspect, w, h };
-    let (ldir, fill) = light_dirs(v);
-
-    let tiling = v.tiling.max(0.1);
-    let displace = v.relief == RELIEF_DISPLACE && v.height_scale > 0.0 && m.height.is_some();
-    let mesh = build_mesh(v.shape, v.tess, tiling, m.height, if displace { v.height_scale } else { 0.0 }, v.height_level);
-    let frags = rasterize(&mesh, &cam, shape_culls(v.shape));
-    let wire_on = v.wireframe;
-
-    Tex::from_fn(w, h, |px, py| {
-        let x = (px * 2.0 - 1.0) * aspect * tf;
-        let y = (1.0 - py * 2.0) * tf;
-        let dir = norm(add(add(fwd, mul(right, x)), mul(up, y)));
-        let (ix, iy) = (((px * w as f32) as usize).min(w - 1), ((py * h as f32) as usize).min(h - 1));
-        let fr = frags[iy * w + ix];
-        if fr.tri == NO_TRI {
-            let g = 0.12 + 0.08 * (1.0 - py);
-            return [g, g, g * 1.05, 1.0];
-        }
-        let tri = mesh.tris[fr.tri as usize];
-        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-        let (b1, b2) = (fr.b1, fr.b2);
-        let b0 = 1.0 - b1 - b2;
-        let mix3 = |a: V, b: V, c: V| add(add(mul(a, b0), mul(b, b1)), mul(c, b2));
-        let n = norm(mix3(mesh.nrm[i0], mesh.nrm[i1], mesh.nrm[i2]));
-        let t0 = mix3(mesh.tan[i0], mesh.tan[i1], mesh.tan[i2]);
-        let t = norm(sub(t0, mul(n, dot(t0, n))));
-        let bt = cross(n, t);
-        let uv = [b0 * mesh.uv[i0][0] + b1 * mesh.uv[i1][0] + b2 * mesh.uv[i2][0], b0 * mesh.uv[i0][1] + b1 * mesh.uv[i1][1] + b2 * mesh.uv[i2][1]];
-        let su = (b0 * mesh.su[i0] + b1 * mesh.su[i1] + b2 * mesh.su[i2]).max(1e-4);
-        let sv = (b0 * mesh.sv[i0] + b1 * mesh.sv[i1] + b2 * mesh.sv[i2]).max(1e-4);
-        let vv = norm(mul(dir, -1.0));
-        // triangle winding is outward, so the true face normal tells us whether we look at the back of the surface
-        let (pa, pb, pc) = (mesh.pos[i0], mesh.pos[i1], mesh.pos[i2]);
-        let back = dot(cross(sub(pb, pa), sub(pc, pa)), vv) < 0.0;
-        let s = Surf { n, t, b: bt, uv, su, sv, back };
-
-        let mut uv = s.uv;
-        let mut cavity = 1.0;
-        if let (Some(hm), true, true) = (m.height, v.relief == RELIEF_PARALLAX, v.height_scale > 0.0) {
-            let vt = [dot(vv, s.t), dot(vv, s.b), dot(vv, s.n) * if s.back { -1.0 } else { 1.0 }];
-            let (nuv, d) = parallax(hm, &s, vt, v.height_scale, v.height_level);
-            uv = nuv;
-            cavity = 1.0 - 0.45 * d;
-        }
-        let base = m.base.sample(uv[0], uv[1]);
-        let albedo = [lin(base[0]), lin(base[1]), lin(base[2])];
-        let rough = lum(m.rough.sample(uv[0], uv[1])).clamp(0.04, 1.0);
-        let metal = lum(m.metal.sample(uv[0], uv[1])).clamp(0.0, 1.0);
-        let ao = lum(m.ao.sample(uv[0], uv[1])).clamp(0.0, 1.0) * cavity;
-        let nm = m.normal.sample(uv[0], uv[1]);
-        let amt = v.normal_amt.clamp(0.0, 1.0);
-        let mut tn = [(nm[0] * 2.0 - 1.0) * amt, (nm[1] * 2.0 - 1.0) * amt, (nm[2] * 2.0 - 1.0).max(0.05)];
-        if let (Some(hm), true) = (m.height, v.relief == RELIEF_BUMP && v.bump > 0.0) {
-            let e = 1.0 / hm.w.max(1) as f32;
-            let hs = |du: f32, dv: f32| lum(hm.sample(uv[0] + du, uv[1] + dv));
-            let (dhu, dhv) = ((hs(e, 0.0) - hs(-e, 0.0)) / (2.0 * e), (hs(0.0, e) - hs(0.0, -e)) / (2.0 * e));
-            let k = v.bump * 0.12;
-            tn[0] -= k * dhu / s.su;
-            tn[1] += k * dhv / s.sv;
-        }
-        let tn = norm(tn);
-        let mut n = norm(add(add(mul(s.t, tn[0]), mul(s.b, tn[1])), mul(s.n, tn[2])));
-        if s.back {
-            n = mul(n, -1.0);
-        }
-        let ndv = dot(n, vv).max(1e-3);
-        let f0 = [0.04 * (1.0 - metal) + albedo[0] * metal, 0.04 * (1.0 - metal) + albedo[1] * metal, 0.04 * (1.0 - metal) + albedo[2] * metal];
-        let a = rough * rough;
-        let hv = norm(add(ldir, vv));
-        let (ndl, ndh, vdh) = (dot(n, ldir).max(0.0), dot(n, hv).max(0.0), dot(vv, hv).max(0.0));
-        let d = a * a / (PI * (ndh * ndh * (a * a - 1.0) + 1.0).powi(2)).max(1e-6);
-        let k = (rough + 1.0).powi(2) / 8.0;
-        let g = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
-        let fr_ = (1.0 - vdh).powi(5);
-        let refl = norm(sub(mul(n, 2.0 * dot(n, vv)), vv));
-        let envr = env(refl);
-        let envd = env(n);
-        let ndl2 = dot(n, fill).max(0.0);
-        let mut out = [0.0; 3];
-        for c in 0..3 {
-            let f = f0[c] + (1.0 - f0[c]) * fr_;
-            let spec = d * g * f / (4.0 * ndl.max(1e-3) * ndv) * ndl;
-            let diff = albedo[c] * (1.0 - metal) * (1.0 - f) / PI * ndl * v.light_intensity * 3.0;
-            let diff_fill = albedo[c] * (1.0 - metal) / PI * ndl2 * v.light_intensity * 0.9;
-            let amb_d = albedo[c] * (1.0 - metal) * envd[c] * v.ambient;
-            let rf = f0[c] + (1.0 - f0[c]) * fr_ * (1.0 - rough);
-            let amb_s = envr[c] * rf * (1.0 - rough * 0.65) * v.ambient;
-            out[c] = (diff + diff_fill + spec * v.light_intensity * 3.0 + (amb_d + amb_s) * ao) * v.exposure;
-        }
-        if let Some(e) = m.emissive {
-            let ec = e.sample(uv[0], uv[1]);
-            for (c, o) in out.iter_mut().enumerate() {
-                *o += lin(ec[c]);
-            }
-        }
-        let tm = |c: f32| (c / (1.0 + c)).max(0.0).powf(1.0 / 2.2) * 1.15;
-        let mut col = [tm(out[0]).min(1.0), tm(out[1]).min(1.0), tm(out[2]).min(1.0)];
-        if wire_on {
-            let cov = wire_coverage(&frags, w, h, ix, iy, fr);
-            if cov > 0.0 {
-                let line = [1.0, 0.62, 0.12];
-                for c in 0..3 {
-                    col[c] = col[c] * (1.0 - 0.85 * cov) + line[c] * 0.85 * cov;
-                }
-            }
-        }
-        [col[0], col[1], col[2], 1.0]
-    })
+    crate::raster::render(m, v, w, h)
 }
 
 /// Anti-aliased triangle-edge coverage for the wireframe overlay (0..1), from the screen-space gradient of the
 /// barycentric coordinates measured against a neighbouring pixel of the same triangle.
-fn wire_coverage(frags: &[Frag], w: usize, h: usize, x: usize, y: usize, f: Frag) -> f32 {
+pub(crate) fn wire_coverage(frags: &[Frag], w: usize, h: usize, x: usize, y: usize, f: Frag) -> f32 {
     let b = [1.0 - f.b1 - f.b2, f.b1, f.b2];
     let nb = |dx: i64, dy: i64| -> Option<[f32; 3]> {
         let (nx, ny) = (x as i64 + dx, y as i64 + dy);
