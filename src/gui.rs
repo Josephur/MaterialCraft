@@ -143,7 +143,7 @@ fn kind_color(kind: &str) -> Color32 {
     match kind {
         "subgraph" => Color32::from_rgb(214, 140, 56),
         "input" | "dot" => Color32::from_rgb(110, 116, 128),
-        "bitmap" => Color32::from_rgb(188, 118, 70),
+        "bitmap" | "baked_map" => Color32::from_rgb(188, 118, 70),
         "output" => Color32::from_rgb(74, 98, 120),
         _ => match category(kind) {
             "Generators" => Color32::from_rgb(176, 76, 66),
@@ -298,16 +298,6 @@ struct ExportUi {
     skip: BTreeSet<String>,
     /// output colour space for colour maps (index into `colorspace::SPACES`)
     space: usize,
-}
-
-struct BakeUi {
-    open: bool,
-    low: Option<PathBuf>,
-    high: Option<PathBuf>,
-    out: Option<PathBuf>,
-    s: BakeSettings,
-    job: Option<Receiver<Result<Vec<PathBuf>, String>>>,
-    msg: String,
 }
 
 struct App {
@@ -499,7 +489,7 @@ impl App {
             lib_search: String::new(),
             text_focus: false,
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new(), space: 0 },
-            bake: BakeUi { open: false, low: None, high: None, out: None, s: BakeSettings { size: 512, ..Default::default() }, job: None, msg: String::new() },
+            bake: BakeUi::new(),
             show_about: false,
             link_pick: None,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
@@ -1115,6 +1105,12 @@ impl App {
             "subgraph" => {
                 n.strs.insert("graph".into(), sub.unwrap_or("").to_string());
             }
+            "baked_map" => {
+                n.strs.insert("map".into(), "normal".into());
+                if let Some(set) = bake::stored_sets(&self.g.resources).keys().next() {
+                    n.strs.insert("set".into(), set.clone());
+                }
+            }
             "colorize" => {
                 for (i, c) in [(0, 0.0f32), (1, 1.0)] {
                     n.nums.insert(format!("p{i}"), c);
@@ -1550,33 +1546,6 @@ impl App {
         self.status(format!("Exported {count} {} file(s) to {}", fmt.name(), dir.display()), true);
     }
 
-    fn start_bake(&mut self) {
-        let (Some(lo), Some(hi), Some(out)) = (self.bake.low.clone(), self.bake.high.clone(), self.bake.out.clone()) else {
-            self.bake.msg = "Choose the low-poly mesh, high-poly mesh and output folder.".into();
-            return;
-        };
-        let s = self.bake.s.clone();
-        let (tx, rx) = channel();
-        self.bake.job = Some(rx);
-        self.bake.msg = "Baking...".into();
-        std::thread::spawn(move || {
-            let r = (|| -> Result<Vec<PathBuf>, String> {
-                let low = bake::parse_obj(&std::fs::read_to_string(&lo).map_err(|e| format!("{}: {e}", lo.display()))?).map_err(|e| format!("low-poly: {e}"))?;
-                let high = bake::parse_obj(&std::fs::read_to_string(&hi).map_err(|e| format!("{}: {e}", hi.display()))?).map_err(|e| format!("high-poly: {e}"))?;
-                let maps = bake::bake(&low, &high, &s)?;
-                std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-                let mut files = Vec::new();
-                for (name, t) in &maps {
-                    let p = out.join(format!("{name}.png"));
-                    materialcraft::safeio::write_file(&p, &png::encode(t.w, t.h, &t.px, 8)).map_err(|e| e.to_string())?;
-                    files.push(p);
-                }
-                Ok(files)
-            })();
-            let _ = tx.send(r);
-        });
-    }
-
     // ------------------------------------------------------------ background evaluation
     /// First, cheap resolution of a progressive preview: a tiny pass shows the change at once, then every pass doubles
     /// the size until the chosen preview size is reached.
@@ -1916,5 +1885,6 @@ fn apply_theme(ctx: &egui::Context) {
 
 include!("gui_params.rs");
 include!("gui_spline.rs");
+include!("gui_bake.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");

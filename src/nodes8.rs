@@ -364,6 +364,44 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                 })
             }
         }
+        "mesh_weathering" => {
+            // wear on convex edges, dirt in cavities, dust on surfaces that face up: all from maps baked from a mesh
+            let curv = need("curvature")?;
+            let (ao, nrm, noise_in) = (opt("ao"), opt("normal"), opt("noise"));
+            let (wear, dirt, dust) = (f("wear", 0.5).clamp(0.0, 1.0), f("dirt", 0.5).clamp(0.0, 1.0), f("dust", 0.5).clamp(0.0, 1.0));
+            let spread = f("up_spread", 60.0).clamp(1.0, 179.0).to_radians();
+            let tilt = f("up_angle", 0.0).to_radians();
+            let up = [tilt.sin(), tilt.cos()];
+            let breakup = f("breakup", 0.5).clamp(0.0, 1.0);
+            let (px, py) = periods(f("scale", 8.0), s, hs);
+            let fb = Fbm::new(px, py, 4, 0.5, seed, 0);
+            let cos_lim = spread.cos();
+            let mut m = Tex { w: s, h: hs, px: vec![[0.0, 0.0, 0.0, 1.0]; s * hs] };
+            par_rows(&mut m.px, s, |start, chunk| {
+                for (j, dst) in chunk.iter_mut().enumerate() {
+                    let (x, y) = ((start + j) % s, (start + j) / s);
+                    let (u, v) = ((x as f32 + 0.5) / s as f32, (y as f32 + 0.5) / hs as f32);
+                    let c = lum(curv.sample(u, v)) - 0.5;
+                    let nz = noise_in.map(|t| lum(t.sample(u, v))).unwrap_or_else(|| fb.sample(u, v));
+                    let br = (nz - 0.5) * breakup;
+                    let w = smooth(0.0, 0.25, c * 2.0 * (0.4 + wear * 1.6) + br * 0.6) * wear.min(1.0).sqrt();
+                    let cav = (-c * 2.0).max(0.0);
+                    let occl = ao.map(|t| 1.0 - lum(t.sample(u, v))).unwrap_or(0.0);
+                    let d = smooth(0.05, 0.6, (cav + occl) * (0.5 + dirt) + br) * dirt.sqrt();
+                    let du = nrm
+                        .map(|t| {
+                            let p = t.sample(u, v);
+                            let (nx, ny, nz) = (p[0] * 2.0 - 1.0, p[1] * 2.0 - 1.0, p[2] * 2.0 - 1.0);
+                            let l = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
+                            let facing = (nx * up[0] + ny * up[1]) / l;
+                            smooth(cos_lim, 1.0, facing + br * 0.5) * dust.sqrt()
+                        })
+                        .unwrap_or(0.0);
+                    *dst = grey(1.0 - (1.0 - w) * (1.0 - d) * (1.0 - du));
+                }
+            });
+            fin(m)
+        }
         "snow_filter" => {
             let hmap = need("height")?;
             let mask_in = opt("mask");

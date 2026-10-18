@@ -89,9 +89,10 @@
   - Press Export
 - Bake maps from meshes
   - Tools > Mesh map baker...
-  - Pick low-poly and high-poly OBJ
-  - Pick folder and settings
+  - Add low-poly and high-poly meshes
+  - Pick settings and maps
   - Press Bake
+  - Maps go into the package and show as Baked Map nodes
 - Undo a mistake
   - Ctrl+Z
 - Find a shortcut
@@ -315,10 +316,15 @@
   - Font for the Text node
   - Browse TrueType font...
   - Built-in font is used when none is set
-- `.obj`
-  - Wavefront mesh for the baker
+- `.obj`, `.gltf`, `.glb`, `.ply`, `.stl`
+  - Meshes for the baker
   - Low-poly mesh needs UVs
   - High-poly mesh does not
+- `.bakeset`
+  - Text file with a bake set (mesh list and settings)
+- `bake/<set>/<map>.png`
+  - Baked maps inside a package (16-bit PNG)
+  - `bake/<set>.cfg` holds the set
 
 ### 3.2 Files the app writes
 
@@ -411,12 +417,26 @@
   - Lists exposed parameters
 - `materialcraft check <graph.mcg>`
   - Prints node, subgraph, output counts and size
-- `materialcraft bake <low.obj> <high.obj> <outdir>`
-  - `--size N`
-  - `--dist D`
-  - `--ao-rays N`
-  - `--ao-dist D`
+- `materialcraft bake --low <mesh>... [--high <mesh>...] [--cage <mesh>] --out <dir>`
+  - Short form `materialcraft bake <low> <high> <outdir>`
+  - Meshes: OBJ, glTF, GLB, PLY, STL
+  - Repeat `--low` or `--high` for several files
+  - `--preset preview|game|final`
+  - `--size N` or `WxH`
+  - `--aa N`
   - `--padding N`
+  - `--front F` and `--rear F`
+  - `--dist F`
+  - `--maps a,b,c`
+  - `--ao-rays N`
+  - `--ao-dist F`
+  - `--directx`
+  - `--no-match`
+  - `--depth 8|16`
+  - `--set <file.bakeset>`
+  - `--set-opt key=value`
+  - `--save-set <file>`
+  - `--help`
 - `materialcraft testmesh <outdir>`
   - Writes a demo low and high mesh
 - `materialcraft example <outdir>`
@@ -477,7 +497,7 @@
     - Icon: open
     - Click opens a file picker
   - Card "Mesh map baker"
-    - Sub-text "Bake maps from OBJ meshes"
+    - Sub-text "Bake maps from meshes into the package"
     - Icon: sphere
     - Click opens the Editor and the baker window
   - Cards wrap to fewer columns on narrow windows
@@ -527,7 +547,7 @@
   - "Drag nodes from the Library onto the graph. Right-click a library item to favorite it."
   - "Select nodes and use Edit > Create subgraph to build reusable pieces. Double-click a subgraph to edit it."
   - "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mca asset."
-  - "Tools > Mesh map baker bakes normal, AO, curvature, thickness, position and ID maps from OBJ meshes."
+  - "Tools > Mesh map baker bakes maps from OBJ, glTF, PLY and STL meshes into the package. Baked Map nodes read them."
 - Button "Open the brick wall example"
 - Button "Show keyboard shortcuts"
 
@@ -1495,32 +1515,99 @@
 ### 9.5 Mesh map baker
 
 - Title "Mesh map baker"
-- Button "Low-poly mesh (.obj, needs UVs)"
-  - OBJ picker
-  - Path text or "(none)"
-- Button "High-poly mesh (.obj)"
-  - OBJ picker
-  - Path text or "(none)"
-- Button "Output folder..."
-  - Folder picker
-  - Path text or "(none)"
-- Button "Use demo sphere meshes"
-  - Writes a demo pair to the temp folder
-  - Fills all three paths
-- Dropdown "Resolution"
-  - 256
-  - 512
-  - 1024
-  - 2048
-  - 4096
-- Slider "Max ray distance (x model size)" 0.005 to 0.5
-- Slider "AO / thickness rays" 4 to 256
-- Slider "AO / thickness distance" 0.02 to 1
-- Slider "Edge padding (px)" 0 to 32
-- Text "Bakes: normal, world normal, position, ambient occlusion, thickness, curvature, ID."
-- Button "Bake"
-  - Shows "Baking..." while busy
+  - Resizable window
+  - Closes with the x
+- Header row
+  - Text box "Bake set" (name of the set, used in resource names)
+  - Text "Quality:" with buttons "Preview", "Game", "Final"
+    - Set size, anti-aliasing, padding and ray counts
+  - Dropdown "Sets in package"
+    - Shown when the package holds bake sets
+    - Loads the settings and mesh list of a set
+  - Button "Load set file..."
+  - Button "Save set file..."
+- Tabs "Meshes", "Settings", "Maps", "Output"
+- Tab "Meshes"
+  - Heading "Low-poly meshes (the ones that get the textures)"
+    - One row per file
+      - Small button "x" removes it
+      - File name
+      - Small text with triangles, objects, materials, UVs, normals
+      - Red text when the file cannot be read
+    - Button "Add low-poly meshes..."
+      - Picks OBJ, glTF, GLB, PLY or STL files
+  - Heading "High-poly meshes (the detail to transfer)"
+    - Same rows
+    - Button "Add high-poly meshes..."
+    - Empty list bakes the low-poly mesh against itself
+  - Heading "Cage (optional)"
+    - Button "Choose cage mesh..."
+    - Shows the file with "x" when set
+  - Button "Use demo sphere meshes"
+- Tab "Settings"
+  - Group "Image"
+    - Dropdown width and dropdown height (64 to 8192 px)
+    - Dropdown "Anti-aliasing" (1x1, 2x2, 4x4, 8x8)
+    - Slider "Padding (pixels around islands)" 0 to 64
+  - Group "Rays"
+    - Slider "Front distance (x model size)"
+    - Slider "Rear distance (x model size)"
+    - Slider "Ray bias (x model size)"
+    - Choice "Cage normals": "Averaged (no gaps)" / "Shading normals"
+    - Checkbox "Ignore back faces of the high-poly mesh"
+  - Group "Matching"
+    - Checkbox "Match low and high objects by name"
+    - Text boxes "Low suffixes" and "High suffixes" when on
+  - Group "Normals and tangent space"
+    - Dropdown "Low-poly normals"
+    - Dropdown "High-poly normals"
+      - Use the file's normals
+      - Flat (hard edges)
+      - Smooth by angle (slider "Angle limit (degrees)")
+      - Smoothing groups
+    - Choice "Tangent basis": "Per vertex (smooth, like most engines)" / "Per face"
+    - Choice "Normal map style": "OpenGL (Y+)" / "DirectX (Y-)"
+  - Group "UV set and materials"
+    - Choice "UV set": "First" / "Second"
+    - Text box "Only material"
+  - Group "Map options"
+    - Slider "Ambient occlusion rays"
+    - Slider "Ambient occlusion distance (x model size)"
+    - Slider "Ambient occlusion falloff"
+    - Slider "Thickness rays"
+    - Slider "Thickness distance (x model size)"
+    - Slider "Curvature radius (x model size)"
+    - Slider "Curvature smoothing"
+    - Three number boxes for the world direction map
+    - Checkbox "Position map range from numbers (otherwise the high-poly bounding box)"
+- Tab "Maps"
+  - One checkbox per map, two columns
+    - Normal (tangent space), World space normal, Position, Ambient occlusion
+    - Bent normal (tangent space), World space bent normal, Curvature, Thickness
+    - Height from cage, Object ID, Material ID, Polygroup ID
+    - Vertex colour, Opacity (ray hits), World space direction, UV layout
+  - Small buttons "All", "Common", "None"
+- Tab "Output"
+  - Checkbox "Store the maps in this package (16-bit)"
+  - Checkbox "Add a Baked Map node for every new map"
+  - Checkbox "Also write PNG files (16-bit)"
+    - Button "Output folder..." and path text
+  - List "Baked maps in this package"
+    - One row per set with its map names
+    - Small button "Remove"
+- Bottom row
+  - Button "Bake"
+    - Becomes "Cancel" and a progress bar with the stage name while running
+  - Checkbox "Re-bake when a mesh file changes"
 - Result message line
+  - Text "Done in N s: ..." in the normal colour
+  - Red text on errors
+- Report line
+  - Low and high triangle counts, covered texels, rays, hits, misses, shared texels
+  - Yellow "Warning: ..." lines
+- Result view
+  - One button per baked map, picks the preview
+  - Preview of the picked map, up to 300 px
 
 ### 9.6 Package dependencies
 
@@ -1589,7 +1676,7 @@
   - Status shows "computing..."
   - Thumbnails update when ready
 - Large images use all CPU threads
-- GPU speeds up large noises, blurs and normal maps
+- GPU speeds up large noises, blurs, warps, bent normal / AO, shape extrude and normal maps; the mesh baker can trace on the GPU as well (Bake Settings > Trace rays on)
 - Undo keeps the last 100 steps
 - A link that would loop is refused
 - A link of the wrong type is refused
@@ -7321,6 +7408,80 @@
       - Control: slider
       - Default: 1
       - Range: 0.1..4
+- Baked Map (`baked_map`)
+  - Library: Mesh-driven
+  - Tooltip: map baked from meshes and stored in the package
+  - Inputs: none
+  - Outputs: output
+  - Properties:
+    - Bake set
+      - Control: dropdown of the sets stored in this package
+    - Map
+      - Control: dropdown of the map names
+    - Text when the package has no baked maps: "No baked maps in this package yet: use Tools > Mesh map baker."
+    - Button "Open the mesh map baker"
+    - Flip green (DirectX / OpenGL)
+      - Control: checkbox
+      - Default: off
+    - Invert
+      - Control: checkbox
+      - Default: off
+    - Convert to grayscale
+      - Control: checkbox
+      - Default: off
+- Mesh Weathering (`mesh_weathering`)
+  - Library: Mesh-driven
+  - Tooltip: wear, dirt and dust masks from baked maps
+  - Inputs: curvature, ao, normal, noise
+    - curvature
+      - Left-edge socket
+    - ao
+      - Left-edge socket
+    - normal
+      - Left-edge socket
+    - noise
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Edge wear
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Cavity dirt
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Dust on top
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Up direction tilt (degrees)
+      - Control: slider
+      - Default: 0
+      - Range: -180..180
+    - Dust spread (degrees)
+      - Control: slider
+      - Default: 60
+      - Range: 1..179
+    - Breakup
+      - Control: slider
+      - Default: 0.5
+      - Range: 0..1
+    - Breakup scale
+      - Control: int
+      - Default: 8
+      - Range: 1..64
+    - Random seed
+      - Control: int
+      - Default: 0
+      - Range: 0..9999
+    - Contrast
+      - Control: slider
+      - Default: 1
+      - Range: 0..4
+    - Invert
+      - Control: checkbox
+      - Default: off
 - Normal (`normal`)
   - Library: Material tools
   - Tooltip: height->normal (OpenGL +Y)

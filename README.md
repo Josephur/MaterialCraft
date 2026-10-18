@@ -15,13 +15,13 @@ Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS)
 ## Build & run
     cargo run --release --features gui --bin materialcraft-gui     # visual editor
     cargo run --release -- render examples/brick.mcg out --size 1024 --render3d   # CLI
-    cargo run --release --features gpu -- render examples/brick.mcg out --size 2048   # CLI with GPU compute (falls back to the CPU automatically)
+    cargo run --release --features gpu -- render examples/brick.mcg out --size 2048   # CLI with GPU compute for nodes and baking (falls back to the CPU automatically; bake takes --device auto|cpu|gpu)
 
 Requires a current stable Rust toolchain (https://rustup.rs). On Windows the MSVC build tools are needed.
 The core library has zero dependencies; the editor uses egui/eframe + rfd (native file dialogs).
 
 ## Editor
-Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid of 214 texture nodes plus "Ready-made" generator and filter folders; all 33 finished graphs also open as examples from the start screen), Graph,
+Start screen (recent files, New graph dialog with templates) -> editor with Explorer, Library (thumbnail grid of 216 texture nodes plus "Ready-made" generator and filter folders; all 33 finished graphs also open as examples from the start screen), Graph,
 3D View, 2D View and Properties panels. Panels can be closed/reopened from the Windows menu.
 
 Path nodes (stroke, fill, distance, border, scatter, splatter, track, cable, seam, warp, sample) follow splines that you draw in the 2D view (select a path node > Edit spline), import from an SVG or trace from any node's picture (right-click > Trace to spline).
@@ -33,7 +33,8 @@ F = frame all · Alt/Space/Middle-drag = pan · wheel = zoom.
 ## CLI
     materialcraft render <graph.mcg|.mca> <outdir> [--sizes 512,1024] [--depth 16] [--param "Label=0.5"] [--variations 8] [--render3d]
     materialcraft publish <graph.mcg> <out.mca>      # embeds bitmaps, flattens editor data
-    materialcraft bake <low.obj> <high.obj> <outdir> [--size 1024]
+    materialcraft bake --low <mesh>... [--high <mesh>...] [--cage <mesh>] --out <dir> [--preset game] [--size 2048] [--aa 2] [--maps normal,ao,curvature]   # see: materialcraft bake --help
+    materialcraft bake <low> <high> <outdir>                      # short form; meshes can be OBJ, glTF / GLB, PLY or STL
     materialcraft library [words] [--kind material|generator|filter] [--export <id> <file>]   # built-in ready-made graphs
     materialcraft nodes | check | params | testmesh | example
 
@@ -62,7 +63,7 @@ path-traced 3D rendering and custom mesh import in the 3D viewer.
 See ROADMAP.md for the complete list.
 
 
-## Nodes (214 texture nodes, 84 function nodes, 5 pattern-program nodes)
+## Nodes (216 texture nodes, 84 function nodes, 5 pattern-program nodes)
 Generators: shape, tile sampler, tile generator, splatter, splatter circular, perlin, fractal noise, clouds, gaussian noise,
 BnW spots, crystal, directional noise, grunge, grunge maps, plasma, voronoi, voronoi fractal, stripes, weave, weave generator, bricks, checker, gradients, star, SDF shapes.
 Filters: blend, RGBA merge, switch, flood fill (+ random grayscale / color / gradient), transform 2D, directional / vector /

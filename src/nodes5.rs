@@ -405,6 +405,8 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let sr = f("range", 0.1).clamp(0.005, 2.0);
             if rad == 0 {
                 t.clone()
+            } else if let Some(g) = crate::gpu::bilateral_blur(t, guide, rad as i32, sr) {
+                g
             } else {
                 let ss = (rad as f32 * 0.5).max(0.5);
                 Tex::from_fn(t.w, t.h, |u, v| {

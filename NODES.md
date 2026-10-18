@@ -1,6 +1,6 @@
 # MaterialCraft node reference
 
-214 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
+216 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
 
 Common to most nodes: **Output Size** (relative to input, relative to parent or absolute, with a power-of-two modifier), **Output format** (graph default, 8 / 16-bit integer, 16-bit float or 32-bit float; the graph default is set under Node Precision and is 32-bit float unless changed), `seed`, `contrast`, `invert` on generators, and the shared **disorder** group (`disorder`, `disorder_speed`, `anisotropy`, `anisotropy_angle`) and **tile offset** (`tile_x`, `tile_y`) on noises. Every node tiles seamlessly and works on non-square graphs; the cell-based generators (`perlin`, `fbm`, `clouds`, `voronoi`, `cells`, `tile_sampler`, `tile_generator`) also take `square_cells=1` to keep their cells square when the graph is not.
 
@@ -96,6 +96,7 @@ Nodes with several outputs: `path_sample` (position, width, height, side); `shap
 | Node | Inputs | Description and parameters |
 |---|---|---|
 | `bitmap` |  | flip_x flip_y gray; imported PNG bitmap: file="path.png" |
+| `baked_map` |  | map baked from meshes and stored in the package: set="name" map="normal" flip_y invert gray; see the mesh baker |
 | `input` |  | subgraph input: idx |
 | `subgraph` | in0, in1, in2, in3 | instance of a reusable subgraph: graph="name" |
 | `output` | in | graph output: usage identifier |
@@ -219,6 +220,7 @@ Nodes with several outputs: `path_sample` (position, width, height, side); `shap
 | `edge_wear` | in, noise | edge wear mask from a height map: amount width contrast |
 | `dirt` | in, noise | dirt mask from an ambient occlusion map: amount contrast |
 | `dust` | in, noise | dust mask from a normal map: amount contrast |
+| `mesh_weathering` | curvature, ao, normal, noise | wear, dirt and dust masks from baked maps: wear dirt dust up_angle(degrees) up_spread breakup scale contrast invert seed |
 | `normal` | in | height->normal (OpenGL +Y): strength directx alpha_from_input |
 | `normal_blend` | a, b, mask | blend normal maps (a = background, b = foreground): opacity |
 | `ao` | in | ambient occlusion: mode(0 blur,1 horizon) radius intensity hbao_radius hbao_intensity quality(0 4,1 8,2 16 samples) use_world_units height_depth surface_size height_depth_cm |
@@ -354,6 +356,14 @@ Every path node can merge up to four splines (`file`, `file2`, `file3`, `file4`)
 
 A spline is a list of paths made of points with optional bezier handles and a width factor. It is stored in the package as an embedded text resource (usually `name.spl`, see `UXMap.md` section 3 for the format) and a path node names it with `file="name.spl"`. Without a file the node uses a built-in shape (`preset`: 0 line, 1 diagonal, 2 wave, 3 circle, 4 spiral, 5 zigzag, 6 figure eight, with `amplitude` and `frequency`). `path` picks one path of the spline (-1 = all). Coordinates are texture coordinates, so a spline wraps with the texture and the result always tiles. Widths and distances are given in pixels for a 512 px texture and scale with the size. With `fit=1` dashes, sleepers, stitches and scattered copies are spaced so the pattern meets itself where a path wraps around the texture. The editor draws and edits splines in the 2D view; `Import SVG paths` turns the outlines of a drawing into a spline.
 
+## Mesh baking
+
+The mesh map baker (Tools > Mesh map baker, or `materialcraft bake`) turns a low-poly mesh with UVs, optionally with high-poly detail and a cage, into texture maps. Meshes can be OBJ, glTF / GLB (including external `.bin` buffers and data URIs), PLY (ASCII and binary) or STL (ASCII and binary). Several low and several high files can be baked together.
+
+Maps: tangent-space normal, world-space normal, position, ambient occlusion, bent normal (tangent and world space), curvature, thickness, height from cage, object ID, material ID, polygroup ID, vertex colour, opacity (ray hits), world-space direction and UV layout. Settings: size (up to 16384 px, non-square allowed), anti-aliasing 1x1 to 8x8, padding, front and rear ray distance, cage mesh or averaged-normal cage, match low and high objects by name suffix (`_low` / `_high` and others), normal handling per mesh (file normals, flat, smooth by angle, smoothing groups), per-vertex or per-face tangent basis, OpenGL or DirectX normal maps, first or second UV set, a single material, back-face culling, and the ray counts and distances for AO, thickness and curvature. The baker runs on a background thread with progress and Cancel and reports coverage, ray statistics and warnings.
+
+Results are stored in the package as 16-bit PNG resources named `bake/<set>/<map>.png` (and the set's settings as `bake/<set>.cfg`), so they travel with the file and publish with it. A `baked_map` node reads one map by set and map name and resamples it to the graph size; `mesh_weathering` and the older `edge_wear`, `dirt`, `dust`, `leak_streaks` and `settled_dust` nodes turn baked curvature, AO and normal maps into masks.
+
 ## Planned node families
 
 Described by what they do; see `RELEASE_PLAN.md` for the order.
@@ -366,5 +376,4 @@ Described by what they do; see `RELEASE_PLAN.md` for the order.
 - Normal tools: bent and facing normals, height-normal blending, world-unit height to normal, normal transform.
 - Material tools: PBR validators, layers, more palette tools.
 - Path extras: quadratic and circle helpers, vertex processing.
-- Mesh-driven generators that use baked curvature, thickness, position and AO maps.
 - Splines and paths with shape, scatter and mapping nodes.

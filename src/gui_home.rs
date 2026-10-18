@@ -446,7 +446,7 @@ fn lib_group(kind: &str) -> (&'static str, &'static str) {
         "glow" | "mosaic" | "halftone" | "reaction_diffusion" | "fxaa" | "shape_drop_shadow" | "shape_stroke" | "shape_glow" | "sobel" | "shape_extrude" | "cross_section" | "uber_emboss" | "diffusion" | "summed_area_table" => ("Filters", "Effects"),
         "distance" | "bevel" | "edge_detect" | "emboss" | "flood_fill" | "flood_fill_random" | "flood_fill_color" | "flood_fill_gradient" | "shape_mapper" => ("Filters", "Masks and regions"),
         "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" | "snow_filter" | "season_filter" | "water_filter" => ("Material tools", ""),
-        "edge_wear" | "dirt" | "dust" => ("Mesh-driven", ""),
+        "edge_wear" | "dirt" | "dust" | "mesh_weathering" | "baked_map" => ("Mesh-driven", ""),
         "bitmap" | "input" | "subgraph" | "comment" | "frame" | "dot" | "output" => ("Structure", ""),
         _ => ("Filters", "Adjustments"),
     }
@@ -817,7 +817,7 @@ impl App {
                         let actions: [(&str, &str, Ic); 3] = [
                             ("New graph", "Start from an empty graph", Ic::New),
                             ("Open package", "Load a .mcg or .mca file", Ic::Open),
-                            ("Mesh map baker", "Bake maps from OBJ meshes", Ic::Sphere),
+                            ("Mesh map baker", "Bake maps from meshes into the package", Ic::Sphere),
                         ];
                         let gap = 14.0;
                         let per_row = (((col_w + gap) / (230.0 + gap)).floor() as usize).clamp(1, 4);
@@ -961,7 +961,7 @@ impl App {
             "Templates on this screen open as examples in their own tab. They are not part of your project until you use File > Package > Add template.",
             "Select nodes and use Edit > Create subgraph to build reusable pieces. Double-click a subgraph to edit it.",
             "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mca asset.",
-            "Tools > Mesh map baker bakes normal, AO, curvature, thickness, position and ID maps from OBJ meshes.",
+            "Tools > Mesh map baker bakes maps from OBJ, glTF, PLY and STL meshes into the package. Baked Map nodes read them.",
         ] {
             ui.label(format!("  -  {t}"));
             ui.add_space(3.0);
@@ -2333,30 +2333,7 @@ impl eframe::App for App {
             self.edit_open = false;
         }
         self.poll_eval(ctx);
-        if let Some(rx) = &self.bake.job {
-            match rx.try_recv() {
-                Ok(Ok(files)) => {
-                    self.bake.job = None;
-                    self.bake.msg = format!("Done: {} maps written. Added as bitmap nodes.", files.len());
-                    let base = self.view_center_world();
-                    for (i, f) in files.iter().enumerate() {
-                        let id = self.add_node_at("bitmap", None, pos2(base.x + (i as f32 % 4.0) * (CARD + 20.0), base.y + (i / 4) as f32 * (CARD_H + 30.0)));
-                        if let Some(n) = self.g.nodes.get_mut(&id) {
-                            n.strs.insert("file".into(), f.to_string_lossy().to_string());
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    self.bake.job = None;
-                    self.bake.msg = format!("Bake failed: {e}");
-                }
-                Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => {
-                    self.bake.job = None;
-                    self.bake.msg = "Bake failed unexpectedly.".into();
-                }
-            }
-        }
+        self.poll_bake(ctx);
         if self.dirty3d {
             self.render_3d(ctx);
         }

@@ -143,16 +143,16 @@ fn scatter_uses_a_pattern_and_follows_the_path() {
 #[test]
 fn spline_resource_is_used_and_edits_show() {
     let mut g = Graph::parse("size 512\nnode 1 path_stroke file=\"a.spl\" width=6\noutput o 1\n").unwrap();
-    g.resources.insert("a.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n".to_vec());
+    g.resources.insert("a.spl".into(), std::sync::Arc::new(b"spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n".to_vec()));
     let a = g.evaluate(Some(512)).unwrap().remove("o").unwrap();
     assert!(a.at(256, 102)[0] > 0.9 && a.at(256, 400)[0] < 0.01);
-    g.resources.insert("a.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec());
+    g.resources.insert("a.spl".into(), std::sync::Arc::new(b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec()));
     let b = g.evaluate(Some(512)).unwrap().remove("o").unwrap();
     assert!(b.at(256, 102)[0] < 0.01 && b.at(256, 409)[0] > 0.9);
     // a missing or broken spline is an error, not a panic
     let mut bad = Graph::parse("size 64\nnode 1 path_stroke file=\"x.spl\"\noutput o 1\n").unwrap();
     assert!(bad.evaluate(Some(64)).is_err());
-    bad.resources.insert("x.spl".into(), b"garbage".to_vec());
+    bad.resources.insert("x.spl".into(), std::sync::Arc::new(b"garbage".to_vec()));
     assert!(bad.evaluate(Some(64)).is_err());
 }
 
@@ -198,7 +198,7 @@ fn splitting_a_segment_keeps_the_curve() {
 fn graph_with(text: &str, files: &[(&str, &str)]) -> Graph {
     let mut g = Graph::parse(text).unwrap_or_else(|e| panic!("{e}"));
     for (k, v) in files {
-        g.resources.insert((*k).into(), v.as_bytes().to_vec());
+        g.resources.insert((*k).into(), std::sync::Arc::new(v.as_bytes().to_vec()));
     }
     g
 }
@@ -262,7 +262,7 @@ fn node_options_move_merge_and_pick_paths() {
     // the edited content of the second file changes the picture
     let mut g = graph_with(&format!("{base} file2=\"b.spl\"\noutput o 1\n"), &[("a.spl", LINE), ("b.spl", "spline 1\npath smooth=0\npt 0.1 0.2\npt 0.9 0.2\n")]);
     let a = eval(&g, 256);
-    g.resources.insert("b.spl".into(), b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec());
+    g.resources.insert("b.spl".into(), std::sync::Arc::new(b"spline 1\npath smooth=0\npt 0.1 0.8\npt 0.9 0.8\n".to_vec()));
     let b = eval(&g, 256);
     assert!(a.at(128, 51)[0] > 0.9 && b.at(128, 51)[0] < 0.01 && b.at(128, 205)[0] > 0.9);
 }
@@ -330,7 +330,7 @@ fn a_picture_is_traced_into_a_spline() {
     // the traced spline fills to about the area of the disc
     let g = graph_with("size 128\nnode 1 path_fill file=\"t.spl\"\noutput o 1\n", &[]);
     let mut g = g;
-    g.resources.insert("t.spl".into(), sp.to_text().into_bytes());
+    g.resources.insert("t.spl".into(), std::sync::Arc::new(sp.to_text().into_bytes()));
     let area = sum(&eval(&g, 128));
     assert!((area - std::f32::consts::PI * 0.0625).abs() < 0.02, "area {area}");
     // a stripe across the seam comes out as an open path that ends one texture further

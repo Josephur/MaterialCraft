@@ -499,8 +499,12 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let stepl = len / steps as f32;
             let (dx, dy) = (th.cos() * stepl / s as f32, th.sin() * stepl / hs as f32);
             let m0: Vec<f32> = src.px.iter().map(|p| lum(*p)).collect();
-            let mut cur = Tex { w: s, h: hs, px: m0.iter().map(|v| grey(*v)).collect() };
             let drop = 1.0 / (steps as f32 + 1.0);
+            let on_gpu = if (src.w, src.h) == (s, hs) { crate::gpu::extrude(src, steps as u32, dx, dy, drop) } else { None };
+            let (mut cur, steps) = match on_gpu {
+                Some(g) => (g, 0),
+                None => (Tex { w: s, h: hs, px: m0.iter().map(|v| grey(*v)).collect() }, steps),
+            };
             for _ in 0..steps {
                 let prev = cur.clone();
                 let mut nx = Tex { w: s, h: hs, px: vec![[0.0, 0.0, 0.0, 1.0]; s * hs] };

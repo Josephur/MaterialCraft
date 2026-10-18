@@ -87,6 +87,8 @@ pub const SPECS: &[Spec] = &[
     s!("sdf_mask", ["in"], [], "SDF -> mask: offset softness"),
     s!("sdf_form", [], [], "procedural 3D SDF form as height: shape(0 sphere,1 box,2 torus,3 cylinder) size repeat round scatter seed height"),
     s!("bitmap", [], [], "flip_x flip_y gray; imported PNG bitmap: file=\"path.png\""),
+    s!("baked_map", [], [], "map baked from meshes and stored in the package: set=\"name\" map=\"normal\" flip_y invert gray; see the mesh baker"),
+    s!("mesh_weathering", ["curvature"], ["ao", "normal", "noise"], "wear, dirt and dust masks from baked maps: wear dirt dust up_angle(degrees) up_spread breakup scale contrast invert seed"),
     s!("input", [], [], "subgraph input: idx"),
     s!("subgraph", [], ["in0", "in1", "in2", "in3"], "instance of a reusable subgraph: graph=\"name\""),
     s!("shape", [], [], "procedural shape: square, disc, paraboloid, gaussian, diamond, pyramid, half sphere, cone"),
@@ -287,10 +289,10 @@ pub fn category(kind: &str) -> &'static str {
         | "gradient" | "gradient_axial" | "gradient_circular" | "circle" | "rect" | "polygon" | "shape" | "star" | "checker" | "bricks" | "stripes" | "weave"
         | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" | "value_processor" | "fx_map" | "text" | "svg" | "cells" | "fractal_sum" | "waveform" | "gaussian_spots" | "triangle_grid" | "starburst" | "gradient_reflected" | "weave_generator" | "grunge_map" | "blue_noise" | "fibers" | "scratches" | "caustics" | "liquid_noise" | "perlin_3d" | "paving" | "wire_mesh" | "path_stroke" | "path_fill" | "path_distance" | "path_border" | "path_scatter" | "path_track" | "path_cable" | "path_seam" | "path_splatter" | "path_sample" | "herringbone" | "arc_pavement" | "anisotropic_noise" | "fur_noise" | "moisture_noise" | "microscope_noise" | "worley_3d" | "fbm_3d" | "volume_mask" | "gradient_3d" => "Generators",
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => "SDF",
-        "bitmap" | "input" | "input_value" | "subgraph" | "output" | "dot" => "Utility",
+        "bitmap" | "baked_map" | "input" | "input_value" | "subgraph" | "output" | "dot" => "Utility",
         k if k.starts_with("f_") => "Function",
         k if k.starts_with("fxm_") => "Pattern Program",
-        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" | "snow_filter" | "season_filter" | "water_filter" => "Material",
+        "normal" | "normal_blend" | "normal_combine" | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "normal_to_height" | "ao" | "curvature" | "curvature_smooth" | "height_blend" | "edge_wear" | "dirt" | "dust" | "bent_normal" | "normal_facing" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" | "normal_sobel" | "metal_rough_to_spec_gloss" | "spec_gloss_to_metal_rough" | "material_blend" | "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" | "snow_filter" | "season_filter" | "water_filter" | "mesh_weathering" => "Material",
         _ => "Filters",
     }
 }
@@ -329,6 +331,8 @@ pub fn label(kind: &str) -> String {
         "path_splatter" => "Path Splatter",
         "path_warp" => "Path Warp",
         "path_sample" => "Path Sample",
+        "baked_map" => "Baked Map",
+        "mesh_weathering" => "Mesh Weathering",
         "herringbone" => "Herringbone",
         "arc_pavement" => "Arc Pavement",
         "anisotropic_noise" => "Anisotropic Noise",
@@ -437,7 +441,7 @@ pub fn output_default(usage: &str) -> [f32; 4] {
 
 /// Small graph used for library thumbnails and the node smoke test. None = no preview graph.
 pub fn demo_graph_for(kind: &str) -> Option<String> {
-    if matches!(kind, "input" | "subgraph" | "bitmap" | "output" | "dot") {
+    if matches!(kind, "input" | "subgraph" | "bitmap" | "baked_map" | "output" | "dot") {
         return None;
     }
     let sp = spec(kind)?;
@@ -556,7 +560,7 @@ pub struct Graph {
     /// `output name id.pin` in a file: which named output of the node feeds the graph output (legacy output lines)
     pub output_pins: BTreeMap<String, String>,
     pub subgraphs: BTreeMap<String, Graph>,
-    pub resources: BTreeMap<String, Vec<u8>>,
+    pub resources: BTreeMap<String, Arc<Vec<u8>>>,
     pub exposed: Vec<Exposed>,
     pub comments: Vec<Comment>,
     pub seed_offset: u32,
@@ -665,7 +669,7 @@ struct Ctx<'a> {
     /// the graph's own (nominal) size: absolute node sizes are scaled by size / nominal so quick previews stay proportional
     nominal: usize,
     lib: &'a BTreeMap<String, Graph>,
-    res: &'a BTreeMap<String, Vec<u8>>,
+    res: &'a BTreeMap<String, Arc<Vec<u8>>>,
     so: u32,
     depth: usize,
     /// values of the Input Value nodes of the graph being evaluated (read by function graphs)
@@ -805,7 +809,7 @@ impl Graph {
                     if t.len() != 3 {
                         return Err(Error::Parse(ln, "usage: resource <name> <base64>".into()));
                     }
-                    g.resources.insert(t[1].clone(), b64_decode(&t[2]).map_err(|m| Error::Parse(ln, m))?);
+                    g.resources.insert(t[1].clone(), Arc::new(b64_decode(&t[2]).map_err(|m| Error::Parse(ln, m))?));
                 }
                 "expose" => {
                     if t.len() != 6 {
@@ -1001,6 +1005,16 @@ impl Graph {
                     None => return Err(Error::BadParam(*id, "subgraph node needs graph=\"name\"".into())),
                 }
             }
+            if n.kind == "baked_map" {
+                let set = n.strs.get("set").map(|v| v.trim()).unwrap_or("");
+                if set.is_empty() || set.contains(['/', '\\']) {
+                    return Err(Error::BadParam(*id, "baked_map needs set=\"name\" (a bake set of the package)".into()));
+                }
+                match n.strs.get("map").and_then(|m| crate::bake::MapKind::from_id(m)) {
+                    Some(_) => {}
+                    None => return Err(Error::BadParam(*id, "baked_map needs map=\"normal\" (one of the baked map names)".into())),
+                }
+            }
             if n.kind == "bitmap" && !n.strs.contains_key("file") {
                 return Err(Error::BadParam(*id, "bitmap needs file=\"path.png\"".into()));
             }
@@ -1104,7 +1118,7 @@ impl Graph {
         g.comments.clear();
         let mut res = std::mem::take(&mut g.resources);
         let mut seen: HashMap<String, String> = HashMap::new();
-        fn embed(g: &mut Graph, res: &mut BTreeMap<String, Vec<u8>>, seen: &mut HashMap<String, String>, own: &BTreeMap<String, Vec<u8>>) -> Result<(), Error> {
+        fn embed(g: &mut Graph, res: &mut BTreeMap<String, Arc<Vec<u8>>>, seen: &mut HashMap<String, String>, own: &BTreeMap<String, Arc<Vec<u8>>>) -> Result<(), Error> {
             for (id, n) in g.nodes.iter_mut() {
                 n.pos = [0.0, 0.0];
                 if n.kind != "bitmap" {
@@ -1117,7 +1131,7 @@ impl Graph {
                 }
                 let bytes = match res.get(&f).or_else(|| own.get(&f)) {
                     Some(b) => b.clone(),
-                    None => std::fs::read(&f).map_err(|e| Error::BadParam(*id, format!("cannot embed '{f}': {e}")))?,
+                    None => Arc::new(std::fs::read(&f).map_err(|e| Error::BadParam(*id, format!("cannot embed '{f}': {e}")))?),
                 };
                 let base = std::path::Path::new(&f).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "bitmap.png".into());
                 let mut key = base.clone();
@@ -1758,7 +1772,17 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
         env.str(k);
         env.u64(v.len() as u64);
         let mut f = Fnv::new();
-        f.bytes(v);
+        if v.len() > (1 << 20) {
+            // big resources (baked maps) are fingerprinted from 4096 evenly spread 64-byte samples, not byte by byte
+            let step = v.len() / 4096;
+            let mut at = 0;
+            while at < v.len() {
+                f.bytes(&v[at..(at + 64).min(v.len())]);
+                at += step.max(64);
+            }
+        } else {
+            f.bytes(v);
+        }
         env.u64(f.0);
     }
     for (k, v) in ctx.gin {
@@ -2203,7 +2227,14 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
             Some("base_color") | Some("normal") | None => Pin::Color,
             _ => Pin::Gray,
         },
-        "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" => Pin::Gray,
+        "height_combine" | "convex_concave" | "leak_streaks" | "settled_dust" | "mesh_weathering" => Pin::Gray,
+        "baked_map" => {
+            if flag("gray") || !n.strs.get("map").and_then(|m| crate::bake::MapKind::from_id(m)).map(|m| m.is_colour()).unwrap_or(false) {
+                Pin::Gray
+            } else {
+                Pin::Color
+            }
+        }
         "palette_extract" | "palette_apply" => Pin::Color,
         "normal_facing" | "normal_sobel" => Pin::Gray,
         "color" | "bitmap" => {
@@ -2395,7 +2426,7 @@ fn bind_functions(id: u32, n: &Node, ctx: &Ctx) -> Result<Node, Error> {
 /// Pixel processor / value processor driven by a function graph.
 fn read_resource(id: u32, file: &str, ctx: &Ctx) -> Result<Vec<u8>, Error> {
     match ctx.res.get(file) {
-        Some(b) => Ok(b.clone()),
+        Some(b) => Ok(b.as_ref().clone()),
         None => std::fs::read(file)
             .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
             .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}"))),
@@ -2626,8 +2657,9 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 .collect();
             let wsum: f32 = taps.iter().map(|t| t.1).sum();
             let gain = 1.6 * st.min(p1 as f32).powf(0.55); // restores the contrast lost by averaging (calibrated)
+            let on_gpu = if no_warp { crate::gpu::directional_noise(s, hs, p1, k as u32, ca, sa, len1, gain, seed) } else { None };
             let (g1, g2) = (noise::GradGrid::new(p1, p1, seed), noise::GradGrid::new(p1 * 2, p1 * 2, seed.wrapping_add(7)));
-            fin(Tex::gray_fn(s, hs, move |u, v| {
+            fin(on_gpu.unwrap_or_else(|| Tex::gray_fn(s, hs, move |u, v| {
                 let (u, v) = warp(u, v);
                 let (mut a1, mut a2) = (0.0f32, 0.0f32);
                 for &(t, w) in &taps {
@@ -2637,7 +2669,7 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 }
                 let m = (a1 * 0.65 + a2 * 0.35) / wsum;
                 (0.5 + (m - 0.5) * gain).clamp(0.0, 1.0)
-            }))
+            })))
         }
         "grunge" => {
             let var = f("variant", 0.0) as u32;
@@ -3014,8 +3046,16 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "flood_fill_random" => ops::flood_fill_random(tex("in")?, seed, f("min", 0.0), f("max", 1.0)),
         "flood_fill_color" => ops::flood_fill_color(tex("in")?, seed),
         "flood_fill_gradient" => ops::flood_fill_gradient(tex("in")?, f("angle", 0.0), f("variation", 0.0), seed),
-        "vector_warp" => ops::vector_warp_ex(tex("in")?, tex("vector")?, f("intensity", 0.05), f("directx", 0.0) > 0.5),
-        "slope_blur" => ops::slope_blur(tex("in")?, tex("slope")?, f("samples", 16.0) as u32, f("intensity", 0.1), f("mode", 0.0) as u32),
+        "vector_warp" => {
+            let (t, vm, inten, dx) = (tex("in")?, tex("vector")?, f("intensity", 0.05), f("directx", 0.0) > 0.5);
+            let gs = if dx { -1.0 } else { 1.0 };
+            crate::gpu::warp(t, vm, crate::gpu::WarpKind::Vector { gs }, inten, 2).unwrap_or_else(|| ops::vector_warp_ex(t, vm, inten, dx))
+        }
+        "slope_blur" => {
+            let (t, sl) = (tex("in")?, tex("slope")?);
+            let (n, inten, md) = (f("samples", 16.0) as u32, f("intensity", 0.1), f("mode", 0.0) as u32);
+            crate::gpu::slope_blur(t, sl, n, inten, md).unwrap_or_else(|| ops::slope_blur(t, sl, n, inten, md))
+        }
         "blur_hq" => {
             let q = f("quality", 1.0).round().clamp(1.0, 4.0) as u32;
             let mut t = tex("in")?.clone();
@@ -3217,14 +3257,43 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (shape, size, rep, round, scatter, hgt) = (f("shape", 0.0) as u32, f("size", 0.3), f("repeat", 3.0), f("round", 0.05), f("scatter", 0.3), f("height", 1.5));
             Tex::gray_fn(s, hs, move |u, v| ops::sdf_form(u, v, shape, size, rep, round, scatter, seed, hgt))
         }
+        "baked_map" => {
+            let (set, map) = (n.strs.get("set").map(|v| v.trim()).unwrap_or(""), n.strs.get("map").map(|v| v.trim()).unwrap_or(""));
+            let kind = crate::bake::MapKind::from_id(map).ok_or_else(|| Error::BadParam(id, format!("unknown baked map '{map}'")))?;
+            let key = crate::bake::resource_key(set, kind);
+            let bytes = ctx.res.get(&key).ok_or_else(|| Error::BadParam(id, format!("the package has no baked '{}' map for set '{set}': bake it with the mesh baker (Tools > Mesh map baker)", kind.id())))?;
+            let mut t = png::decode(bytes).map_err(|e| Error::BadParam(id, format!("'{key}': {e}")))?;
+            if t.w != s || t.h != hs {
+                let src = t;
+                t = Tex::from_fn(s, hs, |u, v| src.sample(u, v));
+            }
+            if f("flip_y", 0.0) > 0.5 && kind.is_colour() {
+                for p in &mut t.px {
+                    p[1] = 1.0 - p[1];
+                }
+            }
+            if f("invert", 0.0) > 0.5 {
+                for p in &mut t.px {
+                    for k in 0..3 {
+                        p[k] = 1.0 - p[k];
+                    }
+                }
+            }
+            if f("gray", 0.0) > 0.5 || !kind.is_colour() {
+                t = ops::to_gray(&t);
+            }
+            t
+        }
         "bitmap" => {
             let file = n.strs.get("file").ok_or_else(|| Error::BadParam(id, "bitmap needs file".into()))?;
             let bytes = match ctx.res.get(file) {
                 Some(b) => b.clone(),
                 // graphs written on Windows use backslashes; accept them on every platform
-                None => std::fs::read(file)
-                    .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
-                    .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
+                None => Arc::new(
+                    std::fs::read(file)
+                        .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
+                        .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
+                ),
             };
             let mut t = png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?;
             if f("flip_x", 0.0) > 0.5 || f("flip_y", 0.0) > 0.5 {
@@ -3321,8 +3390,15 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
         "hsl" => ops::hsl_adjust(tex("in")?, f("hue", 0.0), f("sat", 1.0), f("val", 1.0)),
         "transform" => ops::transform(tex("in")?, f("offset_x", 0.0), f("offset_y", 0.0), f("scale_x", 1.0), f("scale_y", 1.0), f("rotation", 0.0), f("tiling", 0.0) < 0.5),
         "mirror" => ops::mirror_ex(tex("in")?, f("axis", 0.0) as u32, f("offset_x", 0.5), f("offset_y", 0.5), f("invert_x", 0.0) > 0.5, f("invert_y", 0.0) > 0.5, f("corner", 0.0) as u32),
-        "warp" => ops::warp_ex(tex("in")?, tex("warp")?, f("intensity", 0.05), f("filtering", 2.0).max(0.0) as u32),
-        "directional_warp" => ops::directional_warp_ex(tex("in")?, tex("warp")?, f("angle", 0.0), f("intensity", 0.1), f("offset", 0.5), f("filtering", 2.0).max(0.0) as u32),
+        "warp" => {
+            let (t, w, inten, fl) = (tex("in")?, tex("warp")?, f("intensity", 0.05), f("filtering", 2.0).max(0.0) as u32);
+            crate::gpu::warp(t, w, crate::gpu::WarpKind::Slope, inten, fl).unwrap_or_else(|| ops::warp_ex(t, w, inten, fl))
+        }
+        "directional_warp" => {
+            let (t, w, ang, inten, off, fl) = (tex("in")?, tex("warp")?, f("angle", 0.0), f("intensity", 0.1), f("offset", 0.5), f("filtering", 2.0).max(0.0) as u32);
+            let (s, c) = (ang * std::f32::consts::TAU).sin_cos();
+            crate::gpu::warp(t, w, crate::gpu::WarpKind::Directional { c, s, offset: off }, inten, fl).unwrap_or_else(|| ops::directional_warp_ex(t, w, ang, inten, off, fl))
+        }
         "blend" => {
             let (fg, bg, mask) = (tex("fg")?, tex("bg")?, ins.get("mask").map(|m| m.as_ref()));
             let (mode, op, am) = (f("mode", 0.0).max(0.0) as u32, f("opacity", 1.0), f("alpha_mode", 1.0).max(0.0) as u32);

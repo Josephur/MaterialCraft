@@ -625,6 +625,8 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
             pe("src_r", "Red from", 0, CH_SRC), pe("src_g", "Green from", 1, CH_SRC), pe("src_b", "Blue from", 2, CH_SRC), pe("src_a", "Alpha from", 3, CH_SRC),
             pb("inv_r", "Invert red", false), pb("inv_g", "Invert green", false), pb("inv_b", "Invert blue", false), pb("inv_a", "Invert alpha", false),
         ],
+        "baked_map" => vec![pb("flip_y", "Flip green (DirectX / OpenGL)", false), pb("invert", "Invert", false), pb("gray", "Convert to grayscale", false)],
+        "mesh_weathering" => vec![pf("wear", "Edge wear", 0.5, 0.0, 1.0), pf("dirt", "Cavity dirt", 0.5, 0.0, 1.0), pf("dust", "Dust on top", 0.5, 0.0, 1.0), pf("up_angle", "Up direction tilt (degrees)", 0.0, -180.0, 180.0), pf("up_spread", "Dust spread (degrees)", 60.0, 1.0, 179.0), pf("breakup", "Breakup", 0.5, 0.0, 1.0), pi("scale", "Breakup scale", 8, 1, 64), p_seed(), p_con(), p_inv()],
         "bitmap" => vec![pb("flip_x", "Flip horizontally", false), pb("flip_y", "Flip vertically", false), pb("gray", "Convert to grayscale", false)],
         "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
         "glow" => vec![pf("width", "Glow size", 8.0, 0.0, 128.0), pf("intensity", "Glow amount", 1.0, 0.0, 8.0), pf("clear", "Clear amount", 0.0, 0.0, 1.0), pf("glow_r", "Glow color R", 1.0, 0.0, 1.0), pf("glow_g", "Glow color G", 1.0, 0.0, 1.0), pf("glow_b", "Glow color B", 1.0, 0.0, 1.0)],
@@ -1501,6 +1503,18 @@ impl App {
                 "f_call" => {
                     let funcs: Vec<String> = self.g.subgraphs.iter().filter(|(_, g)| g.graph_kind() == "function").map(|(k, _)| k.clone()).collect();
                     name_combo(ui, id, &node, "fn", "Function", &funcs, &mut strs);
+                }
+                "baked_map" => {
+                    let sets: Vec<String> = materialcraft::bake::stored_sets(&self.g.resources).keys().cloned().collect();
+                    name_combo(ui, id, &node, "set", "Bake set", &sets, &mut strs);
+                    let maps: Vec<String> = materialcraft::bake::MapKind::ALL.iter().map(|m| m.id().to_string()).collect();
+                    name_combo(ui, id, &node, "map", "Map", &maps, &mut strs);
+                    if sets.is_empty() {
+                        ui.small("No baked maps in this package yet: use Tools > Mesh map baker.");
+                    }
+                    if ui.button("Open the mesh map baker").clicked() {
+                        self.acts.push(Act::Bake);
+                    }
                 }
                 "bitmap" => {
                     let file = node.strs.get("file").cloned().unwrap_or_default();

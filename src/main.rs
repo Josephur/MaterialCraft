@@ -17,7 +17,7 @@ USAGE:
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
   materialcraft check   <graph.mcg>
-  materialcraft bake    <low.obj> <high.obj> <outdir> [--size N] [--dist D] [--ao-rays N] [--ao-dist D] [--padding N]
+  materialcraft bake    --low <mesh>... --high <mesh>... --out <dir> [options]    mesh map baker, see: materialcraft bake --help
   materialcraft trace   <graph.mcg> <node id> <out.spl> [--size N] [--threshold T] [--tolerance X]   outline the light areas of a node as a spline
   materialcraft testmesh <outdir>                   write a demo low/high-poly OBJ pair
   materialcraft example <outdir>
@@ -40,6 +40,153 @@ fn load(path: &str) -> Result<Graph, String> {
     }
     g.validate().map_err(|e| e.to_string())?;
     Ok(g)
+}
+
+const BAKE_HELP: &str = "usage: materialcraft bake --low <mesh>... [--high <mesh>...] [--cage <mesh>] --out <dir> [options]
+       materialcraft bake <low.obj> <high.obj> <outdir> [options]        (short form)
+       materialcraft bake --set <file.bakeset> --out <dir>
+
+Meshes: OBJ, PLY, STL, glTF, GLB. Repeat --low / --high for several files. Without --high the low-poly mesh is baked
+against itself (ambient occlusion, curvature and so on of one mesh).
+
+Options:
+  --preset preview|game|final   starting point (512 / 2048 / 4096 px)
+  --size N | WxH                output size           --aa N          supersampling grid (1, 2, 3, 4, 8)
+  --padding N                   texels of padding     --maps a,b,c    normal,world_normal,position,ambient_occlusion,
+  --front F --rear F            ray distances (fraction of the high-poly diagonal)  bent_normal,world_bent_normal,
+  --dist F                      front = rear = F                                   curvature,thickness,height,object_id,
+  --ao-rays N --ao-dist F       occlusion quality / reach                          material_id,group_id,vertex_color,
+  --directx                     green channel down                                 opacity,world_direction,uv_layout
+  --no-match                    do not match objects by name
+  --device auto|cpu|gpu         where rays are traced (default auto: the GPU when there is one)
+  --depth 8|16                  PNG bit depth (default 16)
+  --set-opt key=value           any setting of a bake set (see a .bakeset file)
+  --save-set <file>             write the settings and mesh list as a bake set";
+
+fn bake_cli(args: &[String]) -> Result<(), String> {
+    use materialcraft::bake::{BakeSet, Progress};
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{BAKE_HELP}");
+        return Ok(());
+    }
+    let mut set = BakeSet::default();
+    let (mut out, mut depth, mut save) = (None::<String>, 16u8, None::<String>);
+    let mut overrides: Vec<(String, String)> = Vec::new();
+    let mut preset: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 0;
+    let need = |i: usize| -> Result<&String, String> { args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i])) };
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--low" => set.low.push(need(i)?.clone()),
+            "--high" => set.high.push(need(i)?.clone()),
+            "--cage" => set.cage = Some(need(i)?.clone()),
+            "--out" => out = Some(need(i)?.clone()),
+            "--depth" => depth = need(i)?.parse().map_err(|_| "bad --depth")?,
+            "--preset" => preset = Some(need(i)?.clone()),
+            "--set" => {
+                let f = need(i)?;
+                let text = fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+                set = BakeSet::parse("cli", &text).map_err(|e| format!("{f}: {e}"))?;
+            }
+            "--save-set" => save = Some(need(i)?.clone()),
+            "--size" => overrides.push(("size".into(), need(i)?.replace('x', " "))),
+            "--aa" | "--padding" | "--front" | "--rear" | "--maps" | "--device" => overrides.push((a[2..].into(), need(i)?.clone())),
+            "--dist" => {
+                overrides.push(("front".into(), need(i)?.clone()));
+                overrides.push(("rear".into(), need(i)?.clone()));
+            }
+            "--ao-rays" => overrides.push(("ao_rays".into(), need(i)?.clone())),
+            "--ao-dist" => overrides.push(("ao_dist".into(), need(i)?.clone())),
+            "--set-opt" => {
+                let kv = need(i)?;
+                let (k, v) = kv.split_once('=').ok_or("--set-opt needs key=value")?;
+                overrides.push((k.into(), v.into()));
+            }
+            "--directx" => {
+                overrides.push(("flip_y".into(), "1".into()));
+                i += 1;
+                continue;
+            }
+            "--no-match" => {
+                overrides.push(("match_by_name".into(), "0".into()));
+                i += 1;
+                continue;
+            }
+            x if x.starts_with("--") => return Err(format!("unknown option '{x}' (try: materialcraft bake --help)")),
+            x => {
+                positional.push(x.to_string());
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    if positional.len() == 3 && set.low.is_empty() {
+        set.low.push(positional[0].clone());
+        set.high.push(positional[1].clone());
+        out = Some(positional[2].clone());
+    } else if !positional.is_empty() {
+        return Err(format!("unexpected argument '{}' (try: materialcraft bake --help)", positional[0]));
+    }
+    if let Some(p) = preset {
+        let base = match p.as_str() {
+            "preview" => BakeSettings::preview(),
+            "game" => BakeSettings::game(),
+            "final" => BakeSettings::final_quality(),
+            o => return Err(format!("unknown preset '{o}' (preview, game, final)")),
+        };
+        set.settings = BakeSettings { maps: set.settings.maps.clone(), ..base };
+    }
+    for (k, v) in &overrides {
+        set.settings.set(k, v)?;
+    }
+    if let Some(f) = save {
+        materialcraft::safeio::write_file(Path::new(&f), set.to_text().as_bytes()).map_err(|e| format!("{f}: {e}"))?;
+        println!("wrote {f}");
+    }
+    if set.low.is_empty() {
+        return Err("no low-poly mesh given (--low <file>)".into());
+    }
+    let out = out.ok_or("no output folder given (--out <dir>)")?;
+    println!("baking {} map(s) at {}x{} px, {}x{} samples per texel ...", set.settings.maps.len(), set.settings.width, set.settings.height, set.settings.aa, set.settings.aa);
+    let prog = Progress::new();
+    let res = std::thread::scope(|sc| {
+        let h = sc.spawn(|| bake::run_set(&set, Path::new("."), Some(&prog)));
+        let mut last = String::new();
+        while !h.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let line = format!("{} {:.0}%", prog.stage(), prog.fraction() * 100.0);
+            if line != last {
+                eprint!("\r{line:<60}");
+                last = line;
+            }
+        }
+        eprintln!("\r{:<60}", "");
+        h.join().unwrap_or_else(|_| Err("the baker stopped unexpectedly".into()))
+    })?;
+    fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    for (name, t) in &res.maps {
+        let p = Path::new(&out).join(format!("{name}.png"));
+        write_png(&p, t, depth)?;
+        println!("wrote {}", p.display());
+    }
+    let r = &res.report;
+    println!(
+        "{} low-poly and {} high-poly triangles, {:.1}% of the texels used, {} rays ({:.1}% of the samples hit), {:.1} s on {}",
+        r.low_tris,
+        r.high_tris,
+        100.0 * r.covered as f32 / r.texels.max(1) as f32,
+        r.rays,
+        100.0 * r.hits as f32 / r.samples.max(1) as f32,
+        r.seconds,
+        r.device
+    );
+    for w in &r.warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(())
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -152,36 +299,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("wrote {dir}/low.obj and {dir}/high.obj");
             Ok(())
         }
-        Some("bake") => {
-            if args.len() < 4 {
-                return Err("usage: materialcraft bake <low.obj> <high.obj> <outdir> [options]".into());
-            }
-            let mut s = BakeSettings::default();
-            let mut i = 4;
-            while i < args.len() {
-                let v = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
-                match args[i].as_str() {
-                    "--size" => s.size = v.parse().map_err(|_| "bad --size")?,
-                    "--dist" => s.max_dist = v.parse().map_err(|_| "bad --dist")?,
-                    "--ao-rays" => s.ao_rays = v.parse().map_err(|_| "bad --ao-rays")?,
-                    "--ao-dist" => s.ao_dist = v.parse().map_err(|_| "bad --ao-dist")?,
-                    "--padding" => s.padding = v.parse().map_err(|_| "bad --padding")?,
-                    o => return Err(format!("unknown option '{o}'")),
-                }
-                i += 2;
-            }
-            let low = bake::parse_obj(&fs::read_to_string(&args[1]).map_err(|e| format!("{}: {e}", args[1]))?)?;
-            let high = bake::parse_obj(&fs::read_to_string(&args[2]).map_err(|e| format!("{}: {e}", args[2]))?)?;
-            println!("baking {} low tris against {} high tris at {}px ...", low.tris.len(), high.tris.len(), s.size);
-            let maps = bake::bake(&low, &high, &s)?;
-            fs::create_dir_all(&args[3]).map_err(|e| e.to_string())?;
-            for (name, t) in &maps {
-                let p = Path::new(&args[3]).join(format!("{name}.png"));
-                write_png(&p, t, 8)?;
-                println!("wrote {}", p.display());
-            }
-            Ok(())
-        }
+        Some("bake") => bake_cli(&args[1..]),
         Some("render") => {
             let gp = args.get(1).ok_or("usage: materialcraft render <graph> <outdir> [options]")?;
             let dir = args.get(2).ok_or("missing <outdir>")?;

@@ -6,7 +6,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 
 ---
 
-## 1. Implemented (214 texture node types, 84 function nodes, 5 pattern-program nodes)
+## 1. Implemented (216 texture node types, 84 function nodes, 5 pattern-program nodes)
 
 ### Generators: noise
 - White Noise
@@ -100,8 +100,8 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - Output colour space on export for colour maps: sRGB, P3, wide-gamut RGB, ROMM RGB, Rec. 2020, linear sRGB (`craft-cms` ICC engine); CLI `--colorspace`
 - Several resolutions at once (256 to 8192 px) and per-output selection
 - `.mcg` editable graphs, `.mca` published packages with exposed parameters
-- Mesh baking from OBJ (BVH): normal, world normal, AO, curvature, thickness, position, ID
-- CLI: render, publish, params, bake
+- Mesh baker (BVH ray tracing, multi-core, progress and cancel): OBJ, glTF / GLB, PLY and STL meshes; tangent and world normal, position, AO, bent normal, curvature, thickness, height, object / material / group ID, vertex colour, opacity, direction and UV layout maps; cage, match by name, anti-aliasing, padding, DirectX / OpenGL, multiple UV sets and materials; results live in the package and feed Baked Map nodes
+- CLI: render, publish, params, bake (several meshes, cage, presets, bake set files), trace
 
 ### Quality and resolution
 - Graph size 128 to 8192 px; the editor previews at the graph's own size (2048 px by default for a 2K graph, capped at 4096 for the preview), shows a quick 256 px pass first and refines in the background. All parameters are resolution independent (checked by a test)
@@ -211,9 +211,9 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 
 ## 2b. Feature gaps by area
 
-We have 214 texture node types. Missing, by area (described by function; `NODES.md` lists what exists):
+We have 216 texture node types. Missing, by area (described by function; `NODES.md` lists what exists):
 
-**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 24 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes (including Voronoi, Cells, Splatter and the Flood Fill mappers), float export, graph-wide node precision, non-square graphs, typed pins and value pin types, per-node output format, live links, optional GPU compute. Still open: some node properties that need engine features (extra image inputs, function graphs, baked mesh inputs).
+**Property coverage.** Done so far: the shared noise block (disorder, disorder speed, anisotropy, tile offset), rebuilt scatter nodes (built-in patterns, six inputs, offsets, masks, blending, map inputs, rings), radial blur, edge detect, mosaic and curvature, Voronoi / Cells / Grunge properties, a jittered triangle mesh style, the weave generator, the 24 grunge maps, gradient-map addressing and alpha, colour swapping, horizon AO with world units, colour quantising, multi-output nodes (including Voronoi, Cells, Splatter and the Flood Fill mappers), float export, graph-wide node precision, non-square graphs, typed pins and value pin types, per-node output format, live links, optional GPU compute. Still open: some node properties that need engine features (extra image inputs, function graphs).
 
 ### Noises and generators
 - More cloud and directional-noise variants; dirt gradients; more grunge recipes (fur, moisture, microscope, anisotropic and 3D worley / fractal noises are done)
@@ -247,7 +247,8 @@ We have 214 texture node types. Missing, by area (described by function; `NODES.
 ### Mesh-based generators (driven by baked mesh maps)
 - Wear, dirt, dust, edge damage, leaks, grease, bleaching, brush and similar masks; weathering looks (cracks, fabric, leather, metal, moss, rock, rust)
 - Utilities: tri-planar and planar projection, mesh data combining, material selection
-- Our Dirt / Dust / Edge Wear nodes work from a height map only; baked maps are not yet usable as graph inputs
+- Done in Milestone 4: baked maps are graph inputs (Baked Map node), Mesh Weathering combines baked curvature, AO and normal maps into wear, dirt and dust; Edge Wear, Dirt, Dust, Leak Streaks and Settled Dust accept baked maps on their inputs
+- Still open: the specialised looks (cracks, fabric, leather, metal, moss, rock, rust) as mesh-driven nodes, tri-planar projection, mesh data combining
 
 ### Splines and paths
 - Done in Milestone 3: create (editor, built-in shapes, SVG import), render (stroke, fill, scatter along a path, track, cable, seam, border, distance)
@@ -271,7 +272,7 @@ We have 214 texture node types. Missing, by area (described by function; `NODES.
 - Editor extras: dependency / resource manager, user library folders, navigator minimap, customizable shortcuts, language packs
 
 ### Engine
-- Evaluation is multi-threaded CPU, with an optional GPU compute path (`--features gpu`, Tools > GPU acceleration) for Perlin / fractal noise, blur, directional blur, levels, blend and normal-from-height at 512 x 512 and up; results match the CPU within rounding (tests/gpu.rs). Each GPU node still reads its result back, so the next steps (Milestone 10) are more kernels and keeping chains resident on the GPU. Not yet checked on real GPUs
+- Evaluation is multi-threaded CPU, with an optional GPU compute path (`--features gpu`, Tools > GPU acceleration; Metal on macOS, DX12/Vulkan on Windows, Vulkan on Linux through wgpu) at 512 x 512 and up. GPU kernels: Perlin / fractal / directional noise (without disorder), blur, directional blur, anisotropic blur, radial (spin and zoom) blur, bilateral blur, slope blur, levels, blend, normal-from-height, bent normal / horizon AO, shape extrude (96 dependent passes in one submission), and the warp / directional warp / vector warp family (bilinear, nearest and bicubic). The mesh baker traces its rays on the GPU too (BVH in storage buffers; `device` setting Auto / GPU / CPU, `bake --device`). Results match the CPU within rounding (tests/gpu.rs, 17 tests). Everything else runs on the multi-threaded CPU. Each node still uploads its inputs and reads its result back; keeping chains resident on the GPU and the remaining kernels (Voronoi, distance, FX-Maps, quantize, curvature, edge detect) are Milestone 10. Not yet checked on real GPUs, only on a software Vulkan adapter
 
 ---
 

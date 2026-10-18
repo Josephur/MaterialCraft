@@ -901,60 +901,7 @@ impl App {
             self.export.open = open;
         }
         if self.bake.open {
-            let mut open = true;
-            egui::Window::new("Mesh map baker").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-                let busy = self.bake.job.is_some();
-                let pick = |label: &str, slot: &mut Option<PathBuf>, ui: &mut egui::Ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button(label).clicked() {
-                            if let Some(p) = rfd::FileDialog::new().add_filter("Wavefront OBJ", &["obj"]).pick_file() {
-                                *slot = Some(p);
-                            }
-                        }
-                        ui.label(slot.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".into()));
-                    });
-                };
-                pick("Low-poly mesh (.obj, needs UVs)", &mut self.bake.low, ui);
-                pick("High-poly mesh (.obj)", &mut self.bake.high, ui);
-                ui.horizontal(|ui| {
-                    if ui.button("Output folder...").clicked() {
-                        if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                            self.bake.out = Some(d);
-                        }
-                    }
-                    ui.label(self.bake.out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".into()));
-                });
-                if ui.button("Use demo sphere meshes").clicked() {
-                    let d = std::env::temp_dir().join("materialcraft_demo");
-                    let _ = std::fs::create_dir_all(&d);
-                    let (lo, hi) = (d.join("low.obj"), d.join("high.obj"));
-                    if std::fs::write(&lo, bake::uv_sphere_obj(24, 16, 1.0, 0.0)).is_ok() && std::fs::write(&hi, bake::uv_sphere_obj(160, 100, 1.0, 0.04)).is_ok() {
-                        self.bake.low = Some(lo);
-                        self.bake.high = Some(hi);
-                        if self.bake.out.is_none() {
-                            self.bake.out = Some(d.join("baked"));
-                        }
-                    }
-                }
-                ui.separator();
-                egui::ComboBox::from_label("Resolution").selected_text(self.bake.s.size.to_string()).show_ui(ui, |ui| {
-                    for s in [256usize, 512, 1024, 2048, 4096] {
-                        ui.selectable_value(&mut self.bake.s.size, s, s.to_string());
-                    }
-                });
-                ui.add(egui::Slider::new(&mut self.bake.s.max_dist, 0.005..=0.5).text("Max ray distance (x model size)"));
-                ui.add(egui::Slider::new(&mut self.bake.s.ao_rays, 4..=256).text("AO / thickness rays"));
-                ui.add(egui::Slider::new(&mut self.bake.s.ao_dist, 0.02..=1.0).text("AO / thickness distance"));
-                ui.add(egui::Slider::new(&mut self.bake.s.padding, 0..=32).text("Edge padding (px)"));
-                ui.small("Bakes: normal, world normal, position, ambient occlusion, thickness, curvature, ID.");
-                if ui.add_enabled(!busy, egui::Button::new(if busy { "Baking..." } else { "Bake" })).clicked() {
-                    self.start_bake();
-                }
-                if !self.bake.msg.is_empty() {
-                    ui.label(&self.bake.msg);
-                }
-            });
-            self.bake.open = open;
+            self.bake_window(ctx);
         }
         if self.show_deps {
             let mut open = true;

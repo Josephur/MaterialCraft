@@ -520,6 +520,9 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
             let relief = f("relief", 0.1).clamp(0.0, 10.0);
             let directx = f("directx", 0.0) > 0.5;
             let want_ao = out_idx == 1;
+            if let Some(g) = crate::gpu::bent_normal(t, dirs as u32, steps as u32, rad, relief, directx, want_ao) {
+                return Ok(Some(g));
+            }
             let g = Tex { w: t.w, h: t.h, px: gray_plane(t).into_iter().map(|v| [v, v, v, 1.0]).collect() };
             let aspect = t.w as f32 / t.h as f32;
             let cs: Vec<(f32, f32)> = (0..dirs).map(|i| ((i as f32 + 0.5) / dirs as f32 * TAU).sin_cos()).collect();

@@ -76,7 +76,7 @@ impl App {
                 let file = self.spl_unique_name("traced");
                 let at = self.g.nodes.get(&node).map(|n| pos2(n.pos[0] + CARD + 90.0, n.pos[1])).unwrap_or(pos2(0.0, 0.0));
                 self.snap();
-                self.g.resources.insert(file.clone(), sp.to_text().into_bytes());
+                self.g.resources.insert(file.clone(), std::sync::Arc::new(sp.to_text().into_bytes()));
                 let id = self.add_node_at("path_stroke", None, at);
                 if let Some(n) = self.g.nodes.get_mut(&id) {
                     n.strs.insert("file".into(), file.clone());
@@ -120,7 +120,7 @@ impl App {
         };
         if created {
             self.snap();
-            self.g.resources.insert(file.clone(), sp.to_text().into_bytes());
+            self.g.resources.insert(file.clone(), std::sync::Arc::new(sp.to_text().into_bytes()));
             if let Some(n) = self.g.nodes.get_mut(&node) {
                 n.strs.insert("file".into(), file.clone());
             }
@@ -146,7 +146,7 @@ impl App {
                 let stem: String = stem.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
                 let file = self.spl_unique_name(&stem);
                 self.snap();
-                self.g.resources.insert(file.clone(), sp.to_text().into_bytes());
+                self.g.resources.insert(file.clone(), std::sync::Arc::new(sp.to_text().into_bytes()));
                 if let Some(n) = self.g.nodes.get_mut(&node) {
                     n.strs.insert("file".into(), file.clone());
                 }
@@ -159,7 +159,7 @@ impl App {
 
     fn spl_write(&mut self, e: &mut SplEdit) {
         let t = e.sp.to_text();
-        self.g.resources.insert(e.file.clone(), t.clone().into_bytes());
+        self.g.resources.insert(e.file.clone(), std::sync::Arc::new(t.clone().into_bytes()));
         e.last = t;
         self.dirty = true;
         self.modified = true;

@@ -156,6 +156,9 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                 // legacy zoom blur
                 let (amount, rad) = (f("amount", 0.1).clamp(0.0, 1.0), f("radius", 0.5).clamp(0.01, 0.5));
                 let taps = 24;
+                if let Some(g) = crate::gpu::radial_blur(t, 1, taps as u32, cx, cy, amount, rad) {
+                    return Ok(Some(g));
+                }
                 Tex::from_fn(t.w, t.h, |u, v| {
                     let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
                     let r = (dx * dx + dy * dy).sqrt();
@@ -174,6 +177,9 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
                 // spin blur, `samples` taps along an arc of `angle` turns around the centre
                 let n = f("samples", 64.0).round().clamp(1.0, 128.0) as usize;
                 let arc = f("angle", 0.125).clamp(0.0, 0.5) * TAU;
+                if let Some(g) = crate::gpu::radial_blur(t, 0, n as u32, cx, cy, arc, 0.0) {
+                    return Ok(Some(g));
+                }
                 Tex::from_fn(t.w, t.h, |u, v| {
                     let (dx, dy) = (ops::wrapd(u - cx), ops::wrapd(v - cy));
                     // the blur fades out towards the image border so the result still tiles
@@ -194,8 +200,10 @@ pub fn compute(kind: &str, id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, s
         "anisotropic_blur" => {
             let t = need("in")?;
             let (inten, an) = (f("intensity", 8.0).clamp(0.0, 64.0), f("anisotropy", 0.8).clamp(0.0, 1.0));
-            let a = ops::blur(t, inten * (1.0 - an) * rs);
-            ops::directional_blur(&a, f("angle", 0.0), inten * an * 4.0 / 512.0)
+            let sg = inten * (1.0 - an) * rs;
+            let a = crate::gpu::blur(t, sg).unwrap_or_else(|| ops::blur(t, sg));
+            let (ang, len) = (f("angle", 0.0), inten * an * 4.0 / 512.0);
+            crate::gpu::directional_blur(&a, ang, len).unwrap_or_else(|| ops::directional_blur(&a, ang, len))
         }
         // ------------------------------------------------ transforms
         "symmetry" => {
