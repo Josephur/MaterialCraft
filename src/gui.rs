@@ -190,6 +190,7 @@ enum Act {
     ImportBitmap,
     Export,
     Bake,
+    Resources,
     Undo,
     Redo,
     Copy,
@@ -277,6 +278,8 @@ struct EvalResult {
     gpu: Option<gpu3d::GpuMaps>,
     /// resolution this pass was computed at
     size: usize,
+    /// a full pass (every node evaluated, thumbnails and 3D maps produced) rather than the cheap interactive pass
+    full: bool,
 }
 
 /// The 2D view image of the selected node, sent as soon as that node is done (before the rest of the graph).
@@ -339,6 +342,10 @@ struct App {
     prev_size: usize,
     /// a quick low-resolution result was just shown; compute the full-size one next
     refine: bool,
+    /// when the input has settled enough to run the full pass (thumbnails + 3D); reset on every change
+    settle_at: Option<std::time::Instant>,
+    /// the full (settled) pass has already been run for the current graph state
+    settled: bool,
     /// resolution of the pass being computed, and the next (bigger) one to run when it finishes
     job_size: usize,
     refine_size: Option<usize>,
@@ -347,6 +354,8 @@ struct App {
     pass_size: usize,
     tile_preview: bool,
     thumbs: HashMap<u32, egui::TextureHandle>,
+    /// pixels behind each thumbnail texture (an unchanged thumbnail is not uploaded again)
+    thumb_px: HashMap<u32, Vec<u8>>,
     node_err: HashMap<u32, String>,
     tex2d: Option<egui::TextureHandle>,
     tex2d_size: (usize, usize),
@@ -375,6 +384,8 @@ struct App {
     text_focus: bool,
     export: ExportUi,
     bake: BakeUi,
+    res: ResUi,
+    res_dirs: Vec<PathBuf>,
     show_about: bool,
     link_pick: Option<(PathBuf, Vec<String>)>,
     screen: Screen,
@@ -460,12 +471,15 @@ impl App {
             file: None,
             prev_size: 0,
             refine: false,
+            settle_at: None,
+            settled: false,
             job_size: 0,
             refine_size: None,
             node_sizes: HashMap::new(),
             pass_size: 0,
             tile_preview: false,
             thumbs: HashMap::new(),
+            thumb_px: HashMap::new(),
             node_err: HashMap::new(),
             tex2d: None,
             tex2d_size: (0, 0),
@@ -492,6 +506,8 @@ impl App {
             text_focus: false,
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new(), space: 0 },
             bake: BakeUi::new(),
+            res: ResUi::new(),
+            res_dirs: Vec::new(),
             show_about: false,
             link_pick: None,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
@@ -814,6 +830,7 @@ impl App {
         self.modified = p.modified;
         self.clear_history();
         self.thumbs.clear();
+        self.thumb_px.clear();
         self.screen = Screen::Editor;
         self.fit_view();
         self.active = self.g.nodes.keys().next().copied();
@@ -1322,6 +1339,7 @@ impl App {
         self.maps.clear();
         self.tex2d = None;
         self.thumbs.clear();
+        self.thumb_px.clear();
         self.node_err.clear();
         self.dirty3d = true;
         self.gpu_maps_dirty = true;
@@ -1488,7 +1506,7 @@ impl App {
     }
 
     fn import_bitmap(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft::imgio::EXTENSIONS).pick_file() else { return };
         let pos = self.view_center_world();
         let id = self.add_node_at("bitmap", None, pos);
         if let Some(n) = self.g.nodes.get_mut(&id) {
@@ -1579,13 +1597,16 @@ impl App {
         }
     }
 
-    fn spawn_eval(&mut self, size: usize) {
+    /// `full`: evaluate every node and rebuild thumbnails + 3D maps (the settled, idle pass). When false, only the
+    /// viewed node and the material outputs are evaluated and the 3D maps are left untouched — the pass run while a
+    /// value is being dragged, so interaction stays responsive on a large or heavy graph.
+    fn spawn_eval(&mut self, size: usize, full: bool) {
         let g = match self.g.preview_host() {
             Some((h, _)) => h,
             None => self.g.clone(),
         };
-        let full = self.preview_full();
-        let size = size.clamp(16, full.max(16));
+        let prev_full = self.preview_full();
+        let size = size.clamp(16, prev_full.max(16));
         self.job_size = size;
         self.refine_size = None;
         let mut keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
@@ -1610,23 +1631,28 @@ impl App {
                     }
                 }
             };
-            let r = g.evaluate_all_cached(size, &keep, gen, &cache, active, &mut on_first);
+            let r = g.evaluate_all_cached(size, &keep, gen, &cache, active, full, &mut on_first);
             if tex::stale(gen) {
                 return; // superseded: nobody waits for this result
             }
             tex::set_job(gen);
             let outputs: Vec<(String, u32)> = g.output_nodes().into_iter().map(|(u, _, id)| (u, id)).collect();
-            let named = |n: &str| outputs.iter().find(|o| o.0 == n).and_then(|o| r.kept.get(&o.1)).map(|a| a.as_ref());
-            let inv_gloss = named("glossiness").map(ops::invert);
-            let gpu = gpu3d::prepare(&MapInputs {
-                base: named("basecolor").or_else(|| named("out")).or_else(|| named("diffuse")),
-                normal: named("normal"),
-                rough: named("roughness").or(inv_gloss.as_ref()),
-                metal: named("metallic"),
-                ao: named("ambient_occlusion"),
-                emissive: named("emissive"),
-                height: named("height"),
-            });
+            // the GPU material maps are prepared only on the settled pass; a drag leaves the 3D view on its last maps
+            let gpu = if full {
+                let named = |n: &str| outputs.iter().find(|o| o.0 == n).and_then(|o| r.kept.get(&o.1)).map(|a| a.as_ref());
+                let inv_gloss = named("glossiness").map(ops::invert);
+                Some(gpu3d::prepare(&MapInputs {
+                    base: named("basecolor").or_else(|| named("out")).or_else(|| named("diffuse")),
+                    normal: named("normal"),
+                    rough: named("roughness").or(inv_gloss.as_ref()),
+                    metal: named("metallic"),
+                    ao: named("ambient_occlusion"),
+                    emissive: named("emissive"),
+                    height: named("height"),
+                }))
+            } else {
+                None
+            };
             let img2d = active.and_then(|a| r.kept.get(&a)).map(|a| qimg(a));
             tex::set_job(0);
             if tex::stale(gen) {
@@ -1641,8 +1667,9 @@ impl App {
                 sizes: r.sizes,
                 img2d,
                 img_for: active,
-                gpu: Some(gpu),
+                gpu,
                 size,
+                full,
             });
         });
     }
@@ -1697,14 +1724,23 @@ impl App {
                     wrap_mode: egui::TextureWrapMode::Repeat,
                     mipmap_mode: Some(egui::TextureFilter::Linear),
                 };
-                self.thumbs.retain(|id, _| r.thumbs.contains_key(id));
-                for (id, bytes) in &r.thumbs {
-                    let img = ColorImage::from_rgba_unmultiplied([THUMB, THUMB], bytes);
-                    match self.thumbs.get_mut(id) {
-                        Some(h) => h.set(img, egui::TextureOptions::LINEAR),
-                        None => {
-                            self.thumbs.insert(*id, ctx.load_texture(format!("thumb{id}"), img, egui::TextureOptions::LINEAR));
+                // thumbnails are produced only by the full (settled) pass; an interactive pass keeps the ones on screen
+                if r.full {
+                    self.thumbs.retain(|id, _| r.thumbs.contains_key(id));
+                    self.thumb_px.retain(|id, _| r.thumbs.contains_key(id));
+                    for (id, bytes) in r.thumbs {
+                        // most cards are unchanged after an edit: only a thumbnail whose pixels differ is uploaded again
+                        if self.thumbs.contains_key(&id) && self.thumb_px.get(&id) == Some(&bytes) {
+                            continue;
                         }
+                        let img = ColorImage::from_rgba_unmultiplied([THUMB, THUMB], &bytes);
+                        match self.thumbs.get_mut(&id) {
+                            Some(h) => h.set(img, egui::TextureOptions::LINEAR),
+                            None => {
+                                self.thumbs.insert(id, ctx.load_texture(format!("thumb{id}"), img, egui::TextureOptions::LINEAR));
+                            }
+                        }
+                        self.thumb_px.insert(id, bytes);
                     }
                 }
                 if self.g.graph_kind() != "texture" {
@@ -1712,8 +1748,14 @@ impl App {
                         self.status(format!("{}: {e}", if self.g.graph_kind() == "function" { "function" } else { "pattern program" }), false);
                     }
                 }
-                self.node_err = r.errors;
-                self.node_sizes = r.sizes;
+                // the full pass gives the complete picture; an interactive pass only refreshes the nodes it touched
+                if r.full {
+                    self.node_err = r.errors;
+                    self.node_sizes = r.sizes;
+                } else {
+                    self.node_err.extend(r.errors);
+                    self.node_sizes.extend(r.sizes);
+                }
                 self.pass_size = r.size;
                 self.tex2d_range = self.view_node().and_then(|a| r.kept.get(&a)).map(|t| {
                     t.px.iter().fold((f32::MAX, f32::MIN), |m, p| (m.0.min(p[0]).min(p[1]).min(p[2]), m.1.max(p[0]).max(p[1]).max(p[2])))
@@ -1731,25 +1773,28 @@ impl App {
                 } else {
                     self.tex2d = None;
                 }
-                self.maps.clear();
-                for (name, id) in &r.outputs {
-                    if let Some(t) = r.kept.get(id) {
-                        self.maps.insert(name.clone(), t.clone());
+                // the material outputs and the 3D view are updated only by the settled pass; a drag leaves 3D as it was
+                if r.full {
+                    self.maps.clear();
+                    for (name, id) in &r.outputs {
+                        if let Some(t) = r.kept.get(id) {
+                            self.maps.insert(name.clone(), t.clone());
+                        }
                     }
-                }
-                if !self.maps.contains_key("basecolor") {
-                    if let Some(t) = self.maps.get("out").cloned() {
-                        self.maps.insert("basecolor".into(), t);
+                    if !self.maps.contains_key("basecolor") {
+                        if let Some(t) = self.maps.get("out").cloned() {
+                            self.maps.insert("basecolor".into(), t);
+                        }
                     }
-                }
-                self.dirty3d = true;
-                if let Some(m) = r.gpu {
-                    if let Ok(mut g) = self.gpu.lock() {
-                        g.set_maps(m);
+                    self.dirty3d = true;
+                    if let Some(m) = r.gpu {
+                        if let Ok(mut g) = self.gpu.lock() {
+                            g.set_maps(m);
+                        }
+                        self.gpu_maps_dirty = false;
+                    } else {
+                        self.gpu_maps_dirty = true;
                     }
-                    self.gpu_maps_dirty = false;
-                } else {
-                    self.gpu_maps_dirty = true;
                 }
             }
             Err(TryRecvError::Empty) => {}
@@ -1881,6 +1926,7 @@ fn apply_theme(ctx: &egui::Context) {
 include!("gui_params.rs");
 include!("gui_spline.rs");
 include!("gui_bake.rs");
+include!("gui_res.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");
 include!("gui_view3d.rs");

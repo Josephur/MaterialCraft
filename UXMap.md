@@ -302,11 +302,18 @@
   - Made by File > Publish package
   - Made by `materialcraft publish`
   - Opens like `.mcg`
-- `.png`
+- `.png`, `.jpg`, `.tif`, `.exr`, `.hdr`, `.webp`, `.dds`, `.tga`, `.bmp`
   - Import bitmap
   - File > Import bitmap...
-  - Bitmap node Browse PNG...
-  - Reads 8-bit and 16-bit
+  - Bitmap node Browse image...
+  - Dropping the file onto the graph adds a Bitmap node
+  - Format recognised from the contents
+  - Reads 8-bit, 16-bit and floating point data
+- `.cube`, `.3dl`
+  - Colour lookup table for the Color LUT node
+  - Dropping the file onto the graph adds a Color LUT node
+- `.ttf`, `.otf`, `.ttc`, `.woff`
+  - Font for the Text node
 - `.svg`
   - Vector image for the SVG node
   - Subset of the format
@@ -624,7 +631,7 @@
 - "Dependencies..."
   - Opens the Package dependencies window
 - "Import bitmap..."
-  - PNG picker
+  - Image picker (all supported formats)
   - Adds a Bitmap node
 - "Export textures..."
   - Opens the Export window
@@ -1307,8 +1314,12 @@
 - Input node
   - Name, type, default
 - Bitmap node
-  - Button "Browse PNG..."
-  - File type "PNG image"
+  - Button "Browse image..."
+  - File type "Images" (every supported extension)
+- Color LUT node
+  - Text "(no lookup table)" or the file name
+  - Button "Browse lookup table..."
+  - File type "Colour lookup table" (`.cube`, `.3dl`, or an image)
 - SVG node
   - Text "(no file)" or the file name
   - Button "Browse SVG..."
@@ -2281,6 +2292,25 @@
       - Default: 0
       - Range: -360..360
     - Value
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Wrap width (0 = off)
+      - Control: slider
+      - Default: 0
+      - Range: 0..2
+    - Coloured text
+      - Control: checkbox
+      - Default: off
+    - Colour R
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Colour G
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
+    - Colour B
       - Control: slider
       - Default: 1
       - Range: 0..1
@@ -6711,6 +6741,18 @@
       - Control: int
       - Default: 0
       - Range: 0..7
+- Color LUT (`color_lut`)
+  - Library: Filters > Adjustments
+  - Tooltip: colour grade through a lookup table file (.cube, .3dl, or a strip / Hald image)
+  - Inputs: in
+    - in
+      - Left-edge socket
+  - Outputs: output
+  - Properties:
+    - Intensity
+      - Control: slider
+      - Default: 1
+      - Range: 0..1
 - Lookup Table (`lookup_table`)
   - Library: Filters > Adjustments
   - Tooltip: recolour through a lookup image
@@ -8318,7 +8360,7 @@
       - Range: -1000..1000
 - Bitmap (`bitmap`)
   - Library: Structure
-  - Tooltip: flip_x flip_y gray; imported PNG bitmap
+  - Tooltip: flip_x flip_y gray; imported bitmap (PNG, JPEG, TIFF, EXR, HDR, WebP, DDS, TGA, BMP)
   - Inputs: none
   - Outputs: output
   - Properties:
@@ -9543,3 +9585,16 @@
 - Menu "Channel": lit, base colour, roughness, metallic, normal, height, AO, emissive, opacity
 - Scene menu: scene kind (single, floor, look-dev, pedestal), load custom mesh
 - Render menu: path tracer on / off with sample count, Save picture, turntable export
+
+### 8.6.2 Resources window (Milestone 6)
+
+Tools > Resources. Lists every file the graph depends on.
+
+- Header: count, "N missing" in red, buttons "Embed all linked", "Collect into project folder", "Update from source files", "Remove unused"; filter box; last message
+- Left list: grouped by kind (Bitmap, Vector art, Font, Lookup table, Spline, Baked maps); each row shows a thumbnail, the file name, a badge (embedded, linked, MISSING), size and a description such as "WebP 512x512" or "3D LUT, 33x33x33"
+- Right pane for the selected row: name, badge, kind, description, large thumbnail, where it came from or where it is linked, whether the source file changed
+  - Buttons: "Embed", "Extract to folder...", "Relink...", "Replace contents...", "Update from source", "Delete" (only when unused)
+  - Rename box and "Rename" button for embedded resources
+  - "Used by N node(s)": a link per node; clicking selects and centres the node (subgraph nodes open the subgraph)
+- Relative links are searched for next to the project file and in its `resources` folder
+- Command line: `materialcraft resources <graph> [--embed] [--update] [--collect] [--prune] [--extract <dir>] [--relink <old> <new>] [--out <file>]`

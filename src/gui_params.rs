@@ -620,6 +620,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         "text" => vec![
             pf("size", "Size", 0.2, 0.02, 1.5), pf("x", "Offset X", 0.0, -1.0, 1.0), pf("y", "Offset Y", 0.0, -1.0, 1.0), pe("align", "Align", 1, &["Left", "Centre", "Right"]),
             pf("spacing", "Letter spacing", 0.0, -0.3, 1.0), pf("line_spacing", "Line spacing", 1.0, 0.3, 3.0), pf("rotation", "Rotation (deg)", 0.0, -360.0, 360.0), pf("value", "Value", 1.0, 0.0, 1.0),
+            pf("wrap", "Wrap width (0 = off)", 0.0, 0.0, 2.0), pb("use_color", "Coloured text", false), pf("color_r", "Colour R", 1.0, 0.0, 1.0), pf("color_g", "Colour G", 1.0, 0.0, 1.0), pf("color_b", "Colour B", 1.0, 0.0, 1.0),
         ],
         "channel_shuffle" => vec![
             pe("src_r", "Red from", 0, CH_SRC), pe("src_g", "Green from", 1, CH_SRC), pe("src_b", "Blue from", 2, CH_SRC), pe("src_a", "Alpha from", 3, CH_SRC),
@@ -627,6 +628,7 @@ fn pdefs_base(kind: &str) -> Vec<PD> {
         ],
         "baked_map" => vec![pb("flip_y", "Flip green (DirectX / OpenGL)", false), pb("invert", "Invert", false), pb("gray", "Convert to grayscale", false)],
         "mesh_weathering" => vec![pf("wear", "Edge wear", 0.5, 0.0, 1.0), pf("dirt", "Cavity dirt", 0.5, 0.0, 1.0), pf("dust", "Dust on top", 0.5, 0.0, 1.0), pf("up_angle", "Up direction tilt (degrees)", 0.0, -180.0, 180.0), pf("up_spread", "Dust spread (degrees)", 60.0, 1.0, 179.0), pf("breakup", "Breakup", 0.5, 0.0, 1.0), pi("scale", "Breakup scale", 8, 1, 64), p_seed(), p_con(), p_inv()],
+        "color_lut" => vec![pf("intensity", "Intensity", 1.0, 0.0, 1.0)],
         "bitmap" => vec![pb("flip_x", "Flip horizontally", false), pb("flip_y", "Flip vertically", false), pb("gray", "Convert to grayscale", false)],
         "sobel" => vec![pf("intensity", "Intensity", 1.0, 0.0, 16.0)],
         "glow" => vec![pf("width", "Glow size", 8.0, 0.0, 128.0), pf("intensity", "Glow amount", 1.0, 0.0, 8.0), pf("clear", "Clear amount", 0.0, 0.0, 1.0), pf("glow_r", "Glow color R", 1.0, 0.0, 1.0), pf("glow_g", "Glow color G", 1.0, 0.0, 1.0), pf("glow_b", "Glow color B", 1.0, 0.0, 1.0)],
@@ -1463,6 +1465,15 @@ impl App {
                         }
                     });
                 }
+                "color_lut" => {
+                    let file = node.strs.get("file").cloned().unwrap_or_default();
+                    ui.label(if file.is_empty() { "(no lookup table)".to_string() } else { file });
+                    if ui.button("Browse lookup table...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Colour lookup table", &["cube", "3dl", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "tga", "webp"]).pick_file() {
+                            strs.push(("file".into(), Some(p.to_string_lossy().to_string())));
+                        }
+                    }
+                }
                 "svg" => {
                     let file = node.strs.get("file").cloned().unwrap_or_default();
                     ui.label(if file.is_empty() { "(no file)".to_string() } else { file });
@@ -1519,8 +1530,8 @@ impl App {
                 "bitmap" => {
                     let file = node.strs.get("file").cloned().unwrap_or_default();
                     ui.label(if file.is_empty() { "(no file)".to_string() } else { file });
-                    if ui.button("Browse PNG...").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).pick_file() {
+                    if ui.button("Browse image...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft::imgio::EXTENSIONS).pick_file() {
                             strs.push(("file".into(), Some(p.to_string_lossy().to_string())));
                         }
                     }

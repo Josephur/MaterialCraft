@@ -17,6 +17,8 @@ USAGE:
   materialcraft render3d <graph.mcg|.mca> <out.png> [options]       3D picture / turntable (raster or path traced), see: materialcraft render3d --help
   materialcraft publish <graph.mcg> <out.mca>       embed bitmaps + flatten into a distributable package
   materialcraft params  <graph.mcg|.mca>            list exposed parameters
+  materialcraft resources <graph.mcg> [--embed] [--update] [--collect] [--prune] [--extract <dir>] [--relink <old> <new>] [--out <file.mcg>]
+                  list the files the graph uses (embedded, linked, missing); the options change them and save the graph
   materialcraft check   <graph.mcg>
   materialcraft bake    --low <mesh>... --high <mesh>... --out <dir> [options]    mesh map baker, see: materialcraft bake --help
   materialcraft trace   <graph.mcg> <node id> <out.spl> [--size N] [--threshold T] [--tolerance X]   outline the light areas of a node as a spline
@@ -35,6 +37,9 @@ fn write_png(path: &Path, t: &Tex, depth: u8) -> Result<(), String> {
 
 fn load(path: &str) -> Result<Graph, String> {
     // live links are read relative to the file; a link that cannot be read is reported and the graph still loads
+    if let Some(dir) = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()) {
+        materialcraft::resources::set_search_dirs(vec![dir.to_path_buf(), dir.join("resources")]);
+    }
     let (g, issues) = Graph::load_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
     for i in &issues {
         eprintln!("warning: {i}");
@@ -190,6 +195,110 @@ fn bake_cli(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn resources_cli(args: &[String]) -> Result<(), String> {
+    use materialcraft::resources::{human_size, ResKind, Status};
+    let path = args.first().ok_or("usage: materialcraft resources <graph.mcg> [--embed] [--update] [--collect] [--prune] [--extract <dir>] [--relink <old> <new>] [--out <file.mcg>]")?;
+    let mut g = load(path)?;
+    let (mut embed, mut update, mut collect, mut prune) = (false, false, false, false);
+    let mut extract: Option<String> = None;
+    let mut relinks: Vec<(String, String)> = Vec::new();
+    let mut out: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--embed" => embed = true,
+            "--update" => update = true,
+            "--collect" => collect = true,
+            "--prune" => prune = true,
+            "--extract" => {
+                i += 1;
+                extract = Some(args.get(i).ok_or("--extract needs a folder")?.clone());
+            }
+            "--relink" => {
+                let (a, b) = (args.get(i + 1).ok_or("--relink needs <old> <new>")?, args.get(i + 2).ok_or("--relink needs <old> <new>")?);
+                relinks.push((a.clone(), b.clone()));
+                i += 2;
+            }
+            "--out" => {
+                i += 1;
+                out = Some(args.get(i).ok_or("--out needs a file")?.clone());
+            }
+            o => return Err(format!("unknown option '{o}'")),
+        }
+        i += 1;
+    }
+    let mut changed = false;
+    for (a, b) in &relinks {
+        let n = g.relink_file(a, b)?;
+        println!("relinked {n} reference(s): {a} -> {b}");
+        changed = true;
+    }
+    if update {
+        let done = g.update_all();
+        println!("updated {} resource(s) from their source files{}", done.len(), if done.is_empty() { String::new() } else { format!(": {}", done.join(", ")) });
+        changed |= !done.is_empty();
+    }
+    if embed {
+        let (n, problems) = g.embed_all();
+        println!("embedded {n} file(s)");
+        for p in &problems {
+            eprintln!("warning: {p}");
+        }
+        changed |= n > 0;
+    }
+    if let Some(dir) = &extract {
+        let names: Vec<String> = g.resources.keys().filter(|k| !k.starts_with("bake/")).cloned().collect();
+        for n in names {
+            let p = g.extract(&n, Path::new(dir))?;
+            println!("extracted {}", p.display());
+            changed = true;
+        }
+    }
+    if collect {
+        let base = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+        let (n, problems) = g.collect_files(&base, "resources");
+        println!("copied {n} file(s) into {}", base.join("resources").display());
+        for p in &problems {
+            eprintln!("warning: {p}");
+        }
+        changed |= n > 0;
+    }
+    if prune {
+        let gone = g.remove_unused();
+        println!("removed {} unused resource(s){}", gone.len(), if gone.is_empty() { String::new() } else { format!(": {}", gone.join(", ")) });
+        changed |= !gone.is_empty();
+    }
+    if changed {
+        let dest = out.clone().unwrap_or_else(|| path.clone());
+        materialcraft::safeio::write_file(Path::new(&dest), g.to_text().as_bytes()).map_err(|e| format!("{dest}: {e}"))?;
+        println!("saved {dest}");
+    }
+    let es = g.resource_entries();
+    if es.is_empty() {
+        println!("no resources");
+    }
+    let mut bad = 0;
+    for e in &es {
+        let st = match e.status {
+            Status::Embedded => "embedded",
+            Status::Linked => "linked  ",
+            Status::Missing => {
+                bad += 1;
+                "MISSING "
+            }
+        };
+        let info = g.resource_info(e).summary;
+        println!("{st} {:<12} {:>9}  {}  [{}]  used by {} node(s)", e.kind.label(), e.size.map(human_size).unwrap_or_default(), e.name, info, e.uses.len());
+        if e.kind == ResKind::Baked {
+            continue;
+        }
+    }
+    if bad > 0 {
+        return Err(format!("{bad} file(s) missing"));
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("nodes") => {
@@ -239,6 +348,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("resources") => resources_cli(&args[1..]),
         Some("publish") => {
             let (i, o) = (args.get(1).ok_or("usage: materialcraft publish <in.mcg> <out.mca>")?, args.get(2).ok_or("missing <out.mca>")?);
             let g = load(i)?;

@@ -1,6 +1,6 @@
 # MaterialCraft node reference
 
-216 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
+217 texture node types, 84 function-graph node types and 5 pattern-program node types. This page is generated from the node definitions in `src/graph.rs` (`materialcraft nodes` prints the same data). Parameters are listed after the colon; every parameter has a default, and the editor's Properties panel shows ranges and units.
 
 Common to most nodes: **Output Size** (relative to input, relative to parent or absolute, with a power-of-two modifier), **Output format** (graph default, 8 / 16-bit integer, 16-bit float or 32-bit float; the graph default is set under Node Precision and is 32-bit float unless changed), `seed`, `contrast`, `invert` on generators, and the shared **disorder** group (`disorder`, `disorder_speed`, `anisotropy`, `anisotropy_angle`) and **tile offset** (`tile_x`, `tile_y`) on noises. Every node tiles seamlessly and works on non-square graphs; the cell-based generators (`perlin`, `fbm`, `clouds`, `voronoi`, `cells`, `tile_sampler`, `tile_generator`) also take `square_cells=1` to keep their cells square when the graph is not.
 
@@ -51,7 +51,7 @@ Nodes with several outputs: `path_sample` (position, width, height, side); `shap
 | `gradient_reflected` |  | gradient that goes 0-1-0: count angle contrast invert |
 | `fx_map` | in, in2, in3, in4 | run a pattern program: program="name" depth seed blend (0 max 1 add 2 over 3 min 4 multiply) color bg bg_r bg_g bg_b |
 | `svg` |  | vector image: file="art.svg" fit (0 contain 1 stretch 2 cover) scale x y |
-| `text` |  | text: text="..." font="face.ttf" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value |
+| `text` |  | text: text="..." font="face.ttf" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value wrap(width as a fraction of the image, 0 off) use_color color_r color_g color_b |
 | `value_processor` | in, in2, in3, in4 | run fn="function" once; the result (float, float3 or float4) fills the image. The function can read image statistics |
 | `blue_noise` |  | evenly spread grain with little low-frequency content: scale seed tightness contrast invert |
 | `fibers` |  | random curved hair-like strands: count length thickness angle angle_variation curl taper brightness_variation seed contrast invert |
@@ -95,7 +95,7 @@ Nodes with several outputs: `path_sample` (position, width, height, side); `shap
 
 | Node | Inputs | Description and parameters |
 |---|---|---|
-| `bitmap` |  | flip_x flip_y gray; imported PNG bitmap: file="path.png" |
+| `bitmap` |  | flip_x flip_y gray; imported bitmap (PNG, JPEG, TIFF, EXR, HDR, WebP, DDS, TGA, BMP): file="image.png" |
 | `baked_map` |  | map baked from meshes and stored in the package: set="name" map="normal" flip_y invert gray; see the mesh baker |
 | `input` |  | subgraph input: idx |
 | `subgraph` | in0, in1, in2, in3 | instance of a reusable subgraph: graph="name" |
@@ -184,6 +184,7 @@ Nodes with several outputs: `path_sample` (position, width, height, side); `shap
 | `min_max` | a, b | per-channel minimum or maximum of two images: mode(0 min,1 max) |
 | `morphology` | in | grow or shrink bright areas: mode(0 dilate,1 erode,2 open,3 close) radius |
 | `multi_switch` | a, b, c, d, e, f, g, h | pass one of up to eight inputs: index |
+| `color_lut` | in | colour grade through a lookup table file (.cube, .3dl, or a strip / Hald image): file="grade.cube" intensity |
 | `lookup_table` | in, lut | recolour through a lookup image: mode(0 per channel,1 by luminance) row |
 | `frequency_split` | in | split into a blurred low band and a high band centred on gray (outputs: low, high): radius |
 | `frequency_merge` | low, high | recombine the bands of frequency_split: gain |
