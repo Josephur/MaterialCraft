@@ -77,7 +77,7 @@ pub const SPECS: &[Spec] = &[
     s!("fx_map", [], ["in", "in2", "in3", "in4"], "run a pattern program: program=\"name\" depth seed blend (0 max 1 add 2 over 3 min 4 multiply) color bg bg_r bg_g bg_b"),
     s!("curve", ["in"], [], "tone curves: points (master), points_r points_g points_b points_a as \"x:y,x:y\" lists"),
     s!("svg", [], [], "vector image: file=\"art.svg\" fit (0 contain 1 stretch 2 cover) scale x y"),
-    s!("text", [], [], "text: text=\"...\" font=\"face.ttf\" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value"),
+    s!("text", [], [], "text: text=\"...\" font=\"face.ttf\" (optional) size x y align (0 left 1 centre 2 right) spacing line_spacing rotation value wrap(width as a fraction of the image, 0 off) use_color color_r color_g color_b"),
     s!("channel_shuffle", ["in"], ["in2"], "rebuild channels: src_r src_g src_b src_a (0-3 channels of in, 4-7 channels of in2, 8 zero, 9 one), inv_r inv_g inv_b inv_a"),
     s!("input_value", [], [], "graph parameter read by functions: name, type (0 float, 1 int, 2 bool, 3 float2, 4 float3, 5 float4, 6 int2, 7 int3, 8 int4, 9 string), v / x y z w, min max, label"),
     s!("pixel_processor", [], ["in", "in2", "in3", "in4"], "per-pixel expr / expr_g / expr_b / expr_a (string params), or fn=\"function\" to run a function graph per pixel"),
@@ -86,7 +86,7 @@ pub const SPECS: &[Spec] = &[
     s!("sdf_op", ["a", "b"], [], "combine SDFs: op(0 union,1 subtract,2 intersect) smooth range"),
     s!("sdf_mask", ["in"], [], "SDF -> mask: offset softness"),
     s!("sdf_form", [], [], "procedural 3D SDF form as height: shape(0 sphere,1 box,2 torus,3 cylinder) size repeat round scatter seed height"),
-    s!("bitmap", [], [], "flip_x flip_y gray; imported PNG bitmap: file=\"path.png\""),
+    s!("bitmap", [], [], "flip_x flip_y gray; imported bitmap (PNG, JPEG, TIFF, EXR, HDR, WebP, DDS, TGA, BMP): file=\"image.png\""),
     s!("baked_map", [], [], "map baked from meshes and stored in the package: set=\"name\" map=\"normal\" flip_y invert gray; see the mesh baker"),
     s!("mesh_weathering", ["curvature"], ["ao", "normal", "noise"], "wear, dirt and dust masks from baked maps: wear dirt dust up_angle(degrees) up_spread breakup scale contrast invert seed"),
     s!("input", [], [], "subgraph input: idx"),
@@ -207,6 +207,7 @@ pub const SPECS: &[Spec] = &[
     s!("min_max", ["a", "b"], [], "per-channel minimum or maximum of two images: mode(0 min,1 max)"),
     s!("morphology", ["in"], [], "grow or shrink bright areas: mode(0 dilate,1 erode,2 open,3 close) radius"),
     s!("multi_switch", [], ["a", "b", "c", "d", "e", "f", "g", "h"], "pass one of up to eight inputs: index"),
+    s!("color_lut", ["in"], [], "colour grade through a lookup table file (.cube, .3dl, or a strip / Hald image): file=\"grade.cube\" intensity"),
     s!("lookup_table", ["in", "lut"], [], "recolour through a lookup image: mode(0 per channel,1 by luminance) row"),
     s!("frequency_split", ["in"], [], "split into a blurred low band and a high band centred on gray (outputs: low, high): radius"),
     s!("frequency_merge", ["low", "high"], [], "recombine the bands of frequency_split: gain"),
@@ -448,6 +449,7 @@ pub fn demo_graph_for(kind: &str) -> Option<String> {
     match kind {
         "fx_map" => return Some("size 64\nsubgraph dots\nmeta kind \"fxmap\"\nnode 1 fxm_marker\nnode 2 fxm_iterate body=@1 grid_x=4 grid_y=4\nnode 3 fxm_out in=@2\nend\nnode 1 fx_map program=\"dots\"\noutput o 1\n".into()),
         "value_processor" => return Some("size 64\nsubgraph avg\nmeta kind \"function\"\nnode 1 f_image_avg\nnode 2 f_out in=@1\nend\nnode 100 fbm scale=4 seed=2\nnode 1 value_processor fn=\"avg\" in=@100\noutput o 1\n".into()),
+        "color_lut" => return Some("size 64\nresource grade.cube VElUTEUgImRlbW8iCkxVVF8zRF9TSVpFIDIKMCAwIDAKMSAwIDAKMCAxIDAKMSAxIDAKMCAwIDEKMSAwIDEKMCAxIDEKMSAxIDEK\nnode 2 color r=0.8 g=0.4 b=0.1\nnode 3 color_lut in=@2 file=\"grade.cube\"\noutput o 3\n".into()),
         "svg" => return Some("size 64\nresource art.svg PHN2ZyB2aWV3Qm94PSIwIDAgMTAgMTAiPjxjaXJjbGUgY3g9IjUiIGN5PSI1IiByPSI0IiBmaWxsPSIjZmZmIi8+PC9zdmc+\nnode 1 svg file=\"art.svg\"\noutput o 1\n".into()),
         _ => {}
     }
@@ -1018,6 +1020,9 @@ impl Graph {
             if n.kind == "bitmap" && !n.strs.contains_key("file") {
                 return Err(Error::BadParam(*id, "bitmap needs file=\"path.png\"".into()));
             }
+            if n.kind == "color_lut" && n.strs.get("file").map(|f| f.is_empty()).unwrap_or(true) {
+                return Err(Error::BadParam(*id, "color_lut needs file=\"grade.cube\"".into()));
+            }
         }
         Ok(())
     }
@@ -1121,28 +1126,27 @@ impl Graph {
         fn embed(g: &mut Graph, res: &mut BTreeMap<String, Arc<Vec<u8>>>, seen: &mut HashMap<String, String>, own: &BTreeMap<String, Arc<Vec<u8>>>) -> Result<(), Error> {
             for (id, n) in g.nodes.iter_mut() {
                 n.pos = [0.0, 0.0];
-                if n.kind != "bitmap" {
-                    continue;
+                for key in crate::resources::file_keys(&n.kind) {
+                    let Some(f) = n.strs.get(*key).cloned().filter(|f| !f.is_empty()) else { continue };
+                    if let Some(k) = seen.get(&f) {
+                        n.strs.insert(key.to_string(), k.clone());
+                        continue;
+                    }
+                    let bytes = match res.get(&f).or_else(|| own.get(&f)) {
+                        Some(b) => b.clone(),
+                        None => Arc::new(crate::resources::read_file(&f).map_err(|e| Error::BadParam(*id, format!("cannot embed '{f}': {e}")))?),
+                    };
+                    let base = crate::resources::sanitize(&f);
+                    let mut k2 = base.clone();
+                    let mut c = 1;
+                    while res.contains_key(&k2) && res.get(&k2) != Some(&bytes) {
+                        k2 = format!("{c}_{base}");
+                        c += 1;
+                    }
+                    res.insert(k2.clone(), bytes);
+                    seen.insert(f, k2.clone());
+                    n.strs.insert(key.to_string(), k2);
                 }
-                let Some(f) = n.strs.get("file").cloned() else { continue };
-                if let Some(k) = seen.get(&f) {
-                    n.strs.insert("file".into(), k.clone());
-                    continue;
-                }
-                let bytes = match res.get(&f).or_else(|| own.get(&f)) {
-                    Some(b) => b.clone(),
-                    None => Arc::new(std::fs::read(&f).map_err(|e| Error::BadParam(*id, format!("cannot embed '{f}': {e}")))?),
-                };
-                let base = std::path::Path::new(&f).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "bitmap.png".into());
-                let mut key = base.clone();
-                let mut c = 1;
-                while res.contains_key(&key) && res.get(&key) != Some(&bytes) {
-                    key = format!("{c}_{base}");
-                    c += 1;
-                }
-                res.insert(key.clone(), bytes);
-                seen.insert(f, key.clone());
-                n.strs.insert("file".into(), key);
             }
             Ok(())
         }
@@ -1152,6 +1156,10 @@ impl Graph {
             embed(sub, &mut res, &mut seen, &own)?;
         }
         g.resources = res;
+        g.meta.retain(|k, _| !k.starts_with("origin:"));
+        for sub in g.subgraphs.values_mut() {
+            sub.meta.retain(|k, _| !k.starts_with("origin:"));
+        }
         Ok(format!("# MaterialCraft published asset\n{}", g.to_text()))
     }
 
@@ -1825,11 +1833,11 @@ fn hash_graph(g: &Graph, ctx: &Ctx) -> HashMap<u32, u64> {
                 }
             }
         }
-        if matches!(n.kind.as_str(), "bitmap" | "svg" | "text") || n.kind.starts_with("path_") {
+        if matches!(n.kind.as_str(), "bitmap" | "svg" | "text" | "color_lut") || n.kind.starts_with("path_") {
             // a file on disk can change under us: its size and modification time are part of the identity
             for f in [n.strs.get("file"), n.strs.get("file2"), n.strs.get("file3"), n.strs.get("file4"), n.strs.get("font")].into_iter().flatten() {
                 if !ctx.res.contains_key(f) {
-                    if let Ok(m) = std::fs::metadata(f).or_else(|_| std::fs::metadata(f.replace('\\', "/"))) {
+                    if let Some(m) = crate::resources::resolve(f).and_then(|p| std::fs::metadata(p).ok()) {
                         h.u64(m.len());
                         h.u64(m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64).unwrap_or(0));
                     }
@@ -2209,7 +2217,7 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
     match kind {
         // always colour
         "colorize" | "flood_fill_color" => Pin::Color,
-        "tint" | "hsl" | "channel_mixer" | "merge" | "replace_color" | "chrominance_extract" | "normal" | "normal_blend" | "normal_combine"
+        "color_lut" | "tint" | "hsl" | "channel_mixer" | "merge" | "replace_color" | "chrominance_extract" | "normal" | "normal_blend" | "normal_combine"
         | "normal_invert" | "normal_normalize" | "normal_vector_rotation" | "alpha_merge" | "vector_warp_color" | "height_normal_blend" | "height_to_normal_world" | "normal_transform" => Pin::Color,
         "bent_normal" => match out {
             Some("ao") => Pin::Gray,
@@ -2236,6 +2244,7 @@ pub fn output_pin(kind: &str, out: Option<&str>, any_color_in: bool, n: &Node) -
             }
         }
         "palette_extract" | "palette_apply" => Pin::Color,
+        "text" if flag("use_color") => Pin::Color,
         "normal_facing" | "normal_sobel" => Pin::Gray,
         "color" | "bitmap" => {
             if flag("gray") {
@@ -2427,9 +2436,7 @@ fn bind_functions(id: u32, n: &Node, ctx: &Ctx) -> Result<Node, Error> {
 fn read_resource(id: u32, file: &str, ctx: &Ctx) -> Result<Vec<u8>, Error> {
     match ctx.res.get(file) {
         Some(b) => Ok(b.as_ref().clone()),
-        None => std::fs::read(file)
-            .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
-            .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}"))),
+        None => crate::resources::read_file(file).map_err(|e| Error::BadParam(id, e)),
     }
 }
 
@@ -3181,6 +3188,13 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let (m, r, g, b, a) = (get("points")?, get("points_r")?, get("points_g")?, get("points_b")?, get("points_a")?);
             crate::curve::apply(tex("in")?, &m, [&r, &g, &b, &a])
         }
+        "color_lut" => {
+            let file = n.strs.get("file").filter(|f| !f.is_empty()).ok_or_else(|| Error::BadParam(id, "color_lut needs file=\"grade.cube\"".into()))?;
+            let bytes = read_resource(id, file, ctx)?;
+            let lut = crate::lut::Lut::load(file, &bytes).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?;
+            let src = ins.get("in").ok_or_else(|| Error::MissingInput(id, "in".into()))?;
+            lut.apply_tex(src, f("intensity", 1.0).clamp(0.0, 1.0))
+        }
         "svg" => {
             let file = n.strs.get("file").ok_or_else(|| Error::BadParam(id, "svg needs file=\"art.svg\"".into()))?;
             let bytes = read_resource(id, file, ctx)?;
@@ -3192,15 +3206,21 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
                 Some(file) => crate::font::Font::load(&read_resource(id, file, ctx)?).map_err(|m| Error::BadParam(id, format!("'{file}': {m}")))?,
                 None => crate::font::Font::Builtin,
             };
-            let text = n.strs.get("text").cloned().unwrap_or_default();
+            let mut text = n.strs.get("text").cloned().unwrap_or_default();
+            let size_px = f("size", 0.2).max(0.001) * hs as f32;
+            let wrap = f("wrap", 0.0);
+            if wrap > 0.001 {
+                text = font.wrap(&text, wrap * s as f32 / size_px, f("spacing", 0.0));
+            }
             let xf = crate::vector::Xf::rotate(f("rotation", 0.0).to_radians()).then(crate::vector::Xf::translate((0.5 + f("x", 0.0)) * s as f32, (0.5 + f("y", 0.0)) * hs as f32));
             let polys = font.layout(&text, f("size", 0.2).max(0.001) * hs as f32, f("align", 1.0) as u32, f("spacing", 0.0), f("line_spacing", 1.0), &xf);
             let mask = crate::vector::fill(&polys, s, hs, false);
             let v = f("value", 1.0);
+            let col = if f("use_color", 0.0) > 0.5 { [f("color_r", 1.0), f("color_g", 1.0), f("color_b", 1.0)] } else { [1.0; 3] };
             let mut t = Tex::solid(s, hs, [0.0, 0.0, 0.0, 1.0]);
             for (p, c) in t.px.iter_mut().zip(&mask.a) {
                 let g = c * v;
-                *p = [g, g, g, 1.0];
+                *p = [g * col[0], g * col[1], g * col[2], 1.0];
             }
             t
         }
@@ -3289,13 +3309,9 @@ fn compute(id: u32, n: &Node, ins: &BTreeMap<String, Rc<Tex>>, ctx: &Ctx) -> Res
             let bytes = match ctx.res.get(file) {
                 Some(b) => b.clone(),
                 // graphs written on Windows use backslashes; accept them on every platform
-                None => Arc::new(
-                    std::fs::read(file)
-                        .or_else(|e| if file.contains('\\') { std::fs::read(file.replace('\\', "/")) } else { Err(e) })
-                        .map_err(|e| Error::BadParam(id, format!("cannot read '{file}': {e}")))?,
-                ),
+                None => Arc::new(crate::resources::read_file(file).map_err(|e| Error::BadParam(id, e))?),
             };
-            let mut t = png::decode(&bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?;
+            let mut t = crate::imgio::decode(file, &bytes).map_err(|e| Error::BadParam(id, format!("'{file}': {e}")))?;
             if f("flip_x", 0.0) > 0.5 || f("flip_y", 0.0) > 0.5 {
                 let (fx, fy) = (f("flip_x", 0.0) > 0.5, f("flip_y", 0.0) > 0.5);
                 let src = t.clone();

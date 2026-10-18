@@ -351,16 +351,19 @@ pub fn load_bytes(name: &str, bytes: &[u8]) -> Result<Tex, String> {
         decode_hdr(bytes)
     } else if bytes.starts_with(&[0x76, 0x2f, 0x31, 0x01]) || lower.ends_with(".exr") {
         decode_exr(bytes)
-    } else if bytes.starts_with(b"\x89PNG") {
-        let mut t = crate::png::decode(bytes)?;
-        for p in t.px.iter_mut() {
-            for c in p.iter_mut().take(3) {
-                *c = c.max(0.0).powf(2.2);
+    } else if crate::imgio::sniff(name, bytes).is_some() {
+        let d = crate::imgio::decode_full(name, bytes)?;
+        let mut t = d.tex;
+        if !d.float {
+            for p in t.px.iter_mut() {
+                for c in p.iter_mut().take(3) {
+                    *c = c.max(0.0).powf(2.2);
+                }
             }
         }
         Ok(t)
     } else {
-        Err(format!("{name}: unsupported environment format (use .hdr, .exr or .png)"))
+        Err(format!("{name}: unsupported environment format (use .hdr, .exr, .png, .jpg, .tif, .webp, .dds)"))
     }
 }
 

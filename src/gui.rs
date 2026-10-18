@@ -190,6 +190,7 @@ enum Act {
     ImportBitmap,
     Export,
     Bake,
+    Resources,
     Undo,
     Redo,
     Copy,
@@ -375,6 +376,8 @@ struct App {
     text_focus: bool,
     export: ExportUi,
     bake: BakeUi,
+    res: ResUi,
+    res_dirs: Vec<PathBuf>,
     show_about: bool,
     link_pick: Option<(PathBuf, Vec<String>)>,
     screen: Screen,
@@ -492,6 +495,8 @@ impl App {
             text_focus: false,
             export: ExportUi { open: false, dir: None, prefix: String::new(), sizes: [false, true, false, false, false, false], depth16: false, depth32: false, fmt: Format::Png, quality: 92, skip: BTreeSet::new(), space: 0 },
             bake: BakeUi::new(),
+            res: ResUi::new(),
+            res_dirs: Vec::new(),
             show_about: false,
             link_pick: None,
             screen: if skip_home { Screen::Editor } else { Screen::Home },
@@ -1488,7 +1493,7 @@ impl App {
     }
 
     fn import_bitmap(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft::imgio::EXTENSIONS).pick_file() else { return };
         let pos = self.view_center_world();
         let id = self.add_node_at("bitmap", None, pos);
         if let Some(n) = self.g.nodes.get_mut(&id) {
@@ -1881,6 +1886,7 @@ fn apply_theme(ctx: &egui::Context) {
 include!("gui_params.rs");
 include!("gui_spline.rs");
 include!("gui_bake.rs");
+include!("gui_res.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");
 include!("gui_view3d.rs");

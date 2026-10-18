@@ -152,7 +152,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Package context menu: Rename, Save As, Duplicate, Reveal in file explorer, Delete; graph context menu: Rename, Duplicate, Delete, Close Graph
 - [ ] Several graph tabs open at once (one graph is shown at a time today)
 - [ ] Imported graphs are embedded copies; no live link or "update from source" when the package file changes
-- [ ] Size/format caption (e.g. 2048x2048 - C8) on graph nodes
+- [x] Size caption on graph nodes (shown under a node whose Output Size differs from the graph; outputs show size and bit depth)
 - [x] Function graphs: about 85 `f_*` value nodes (variables, math, vectors, comparisons, logic, if / sequence, random, image sampling and statistics, inputs, casts, calls), a type checker, function-driven parameters (`fn.<param>`), pixel processor and value processor driven by a function
 - [x] Pattern programs (our FX-Map): `fx_map` node running a graph of quadrant / iterate / switch / marker nodes with random seeds, depth limit, blend modes and tileable output
 - [x] Pin (`f_pin`) and Input Value (`input_value`) nodes
@@ -177,15 +177,17 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 
 ### 3D and rendering
 - Custom light rigs (several lights, HDR environment images), a true seamless-edge check in the 3D view
-- [ ] HDRI and image-based lighting (only an analytic studio light today)
+- [x] HDRI and image-based lighting
 - [x] Load custom meshes and 3D scenes into the viewport (Milestone 5; path-traced mode, HDRI, light rigs, post chain and `render3d` CLI also done)
-- [ ] Path-traced rendering and post-processing (bloom, DOF, SSAO)
+- [x] Path-traced rendering and post-processing (bloom, DOF, SSAO)
 - [ ] GPU tessellation (displacement is per vertex on a pre-built mesh today)
-- [ ] Camera and light presets, turntable rendering
+- [x] Camera and light presets, turntable rendering
 
 ### Import and color
-- [x] SVG import (own rasteriser: shapes, paths, transforms, solid fill and stroke), TrueType font import and text nodes (own reader and a built-in face). Not supported: SVG gradients / clipping / filters, CFF (.otf) fonts, kerning and complex-script shaping
-- [ ] Bitmap import for JPEG, TIFF, EXR (only PNG today)
+- [x] SVG import (own rasteriser: shapes, paths, transforms, solid fill and stroke), font import (TrueType, OpenType/CFF, .ttc, WOFF; own reader) and a text node with wrap width and colour. Not supported: SVG gradients / clipping / filters, WOFF2, kerning and complex-script shaping
+- [x] Bitmap import (Milestone 6): PNG, JPEG (baseline / progressive), TIFF, EXR, HDR, WebP, DDS (BC1-BC7), TGA, BMP, all in own code and recognised by content; drag-and-drop of image, SVG and lookup-table files onto the graph
+- [x] Colour lookup tables: `.cube` (1D / 3D), `.3dl`, strip and Hald images, Color LUT node
+- [x] Resource manager (Tools > Resources, `materialcraft resources`): embedded / linked / missing, thumbnails and metadata, embed, extract, relink, replace, update from source, rename, collect into the project folder, remove unused; publishing embeds every kind of file
 - [ ] AxF material import
 - [x] ICC-based output colour spaces for colour maps on export (built-in profiles, `craft-cms`)
 - [ ] OCIO config support, per-bitmap input colour space, ICC profile import, colour-managed 2D / 3D views
@@ -204,7 +206,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Visual check of the 2D/3D splitter and the export window
 - [ ] Run and verify on Windows and macOS
 - [ ] Test the GPU viewport on real GPUs (NVIDIA, AMD, Intel, Apple)
-- [ ] CPU fallback renderer still uses the old plain environment (roughness/metallic look flatter than on the GPU viewport)
+- [x] CPU fallback renderer lights with the same environment as the GPU viewport
 - [ ] GPU viewport: wireframe at mesh resolution 256+ renders as a solid blob; map preparation runs on the main thread
 
 ---
@@ -265,10 +267,10 @@ We have 216 texture node types. Missing, by area (described by function; `NODES.
 - Still open: HDRI tool nodes (blackbody, exposure, HDR merge, physical sun / sky, area lights, panorama tools), area-light shapes, real-GPU testing, tessellation shaders, user-assembled multi-mesh scenes
 
 ### Import, export, colour, automation
-- JPEG, TIFF, EXR, HDR bitmap import; SVG gradients; OpenType (CFF) fonts
+- SVG gradients; WOFF2 fonts; DDS cube maps / volumes; CMYK-free colour handling of imported bitmaps (see colour management)
 - OCIO and ICC colour management
 - Scripting API and batch automation, engine output templates (Unreal / Unity packing), UDIM, texture atlases, user asset folders
-- Editor extras: dependency / resource manager, user library folders, navigator minimap, customizable shortcuts, language packs
+- Editor extras: user library folders, navigator minimap, customizable shortcuts, language packs
 
 ### Engine
 - Evaluation is multi-threaded CPU, with an optional GPU compute path (`--features gpu`, Tools > GPU acceleration; Metal on macOS, DX12/Vulkan on Windows, Vulkan on Linux through wgpu) at 512 x 512 and up. GPU kernels: Perlin / fractal / directional noise (without disorder), blur, directional blur, anisotropic blur, radial (spin and zoom) blur, bilateral blur, slope blur, levels, blend, normal-from-height, bent normal / horizon AO, shape extrude (96 dependent passes in one submission), and the warp / directional warp / vector warp family (bilinear, nearest and bicubic). The mesh baker traces its rays on the GPU too (BVH in storage buffers; `device` setting Auto / GPU / CPU, `bake --device`). Results match the CPU within rounding (tests/gpu.rs, 17 tests). Everything else runs on the multi-threaded CPU. Each node still uploads its inputs and reads its result back; keeping chains resident on the GPU and the remaining kernels (Voronoi, distance, FX-Maps, quantize, curvature, edge detect) are Milestone 10. Not yet checked on real GPUs, only on a software Vulkan adapter

@@ -587,6 +587,7 @@ impl App {
             Act::ImportBitmap => self.import_bitmap(),
             Act::Export => self.export.open = true,
             Act::Bake => self.bake.open = true,
+            Act::Resources => self.res.open = true,
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
             Act::Copy => self.copy(),
@@ -902,6 +903,9 @@ impl App {
         }
         if self.bake.open {
             self.bake_window(ctx);
+        }
+        if self.res.open {
+            self.resources_window(ctx);
         }
         if self.show_deps {
             let mut open = true;

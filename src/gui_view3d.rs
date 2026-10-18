@@ -263,7 +263,7 @@ impl App {
             }
         });
         if ui.button("Load an HDRI image (.hdr, .exr, .png)...").clicked() {
-            if let Some(p) = rfd::FileDialog::new().add_filter("Environment images", &["hdr", "exr", "png"]).pick_file() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Environment images", materialcraft::imgio::EXTENSIONS).pick_file() {
                 self.view3d.env.file = Some(p.to_string_lossy().to_string());
                 *ch = true;
             }

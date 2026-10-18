@@ -440,7 +440,7 @@ fn lib_group(kind: &str) -> (&'static str, &'static str) {
         "color" | "gradient" | "gradient_axial" | "gradient_circular" | "checker" | "bricks" | "stripes" | "weave" | "weave_generator" | "tile_sampler" | "tile_generator" | "splatter" | "splatter_circular" | "pixel_processor" => ("Generators", "Patterns"),
         "shape" | "circle" | "rect" | "polygon" | "star" | "volume_mask" | "gradient_3d" => ("Generators", "Shapes"),
         "sdf_shape" | "sdf_op" | "sdf_mask" | "sdf_form" => ("Generators", "SDF"),
-        "levels" | "adjust" | "invert" | "threshold" | "histogram_scan" | "histogram_range" | "quantize" | "quantize_color" | "clamp" | "hsl" | "colorize" | "tint" | "to_gray" | "rgba_split" | "alpha_split" | "channel" | "merge" | "switch" | "color_match" | "highpass" | "auto_levels" | "channel_mixer" | "alpha_merge" | "color_to_mask" | "replace_color" | "pow" | "histogram_shift" | "grayscale_conversion" | "chrominance_extract" | "contrast_luminosity" | "srgb_to_linear" | "linear_to_srgb" | "premultiply" | "histogram_equalize" | "min_max" | "morphology" | "multi_switch" | "lookup_table" | "frequency_split" | "frequency_merge" | "palette_extract" | "palette_apply" => ("Filters", "Adjustments"),
+        "levels" | "adjust" | "invert" | "threshold" | "histogram_scan" | "histogram_range" | "quantize" | "quantize_color" | "clamp" | "hsl" | "colorize" | "tint" | "to_gray" | "rgba_split" | "alpha_split" | "channel" | "merge" | "switch" | "color_match" | "highpass" | "auto_levels" | "channel_mixer" | "alpha_merge" | "color_to_mask" | "replace_color" | "pow" | "histogram_shift" | "grayscale_conversion" | "chrominance_extract" | "contrast_luminosity" | "srgb_to_linear" | "linear_to_srgb" | "premultiply" | "histogram_equalize" | "min_max" | "morphology" | "multi_switch" | "lookup_table" | "color_lut" | "frequency_split" | "frequency_merge" | "palette_extract" | "palette_apply" => ("Filters", "Adjustments"),
         "blur" | "blur_hq" | "bilateral_blur" | "directional_blur" | "sharpen" | "warp" | "directional_warp" | "vector_warp" | "vector_morph" | "slope_blur" | "swirl" | "non_uniform_blur" | "radial_blur" | "anisotropic_blur" | "non_uniform_directional_warp" | "multi_directional_warp" => ("Filters", "Blur and warp"),
         "transform" | "mirror" | "make_it_tile_photo" | "make_it_tile_patch" | "symmetry" | "skew" | "auto_crop" | "polar_convert" | "clone_patch" | "noise_upscale" | "safe_transform" | "symmetry_slice" | "quad_transform" | "trapezoid_transform" | "make_it_tile_mirror" => ("Filters", "Transform"),
         "glow" | "mosaic" | "halftone" | "reaction_diffusion" | "fxaa" | "shape_drop_shadow" | "shape_stroke" | "shape_glow" | "sobel" | "shape_extrude" | "cross_section" | "uber_emboss" | "diffusion" | "summed_area_table" => ("Filters", "Effects"),
@@ -1263,13 +1263,24 @@ impl App {
                         }
                         if is_active {
                             let root = self.parents.first().map(|p| &p.0).unwrap_or(&self.g);
-                            let mut files: BTreeSet<String> = root.nodes.values().filter(|n| n.kind == "bitmap").filter_map(|n| n.strs.get("file")).map(|f| std::path::Path::new(f).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| f.clone())).collect();
-                            files.extend(root.resources.keys().filter(|k| k.ends_with(".spl")).cloned());
-                            if !files.is_empty() {
+                            // listing checks the disk for linked files, so it is refreshed once a second, not every frame
+                            if self.res.cache.as_ref().map(|(t, _)| t.elapsed().as_secs_f32() > 1.0).unwrap_or(true) {
+                                self.res.cache = Some((std::time::Instant::now(), root.resource_entries()));
+                            }
+                            let entries = self.res.cache.as_ref().map(|c| c.1.clone()).unwrap_or_default();
+                            if !entries.is_empty() {
                                 ui.add_space(4.0);
-                                ui.small("Resources");
-                                for f in files {
-                                    ui.label(format!("      {f}"));
+                                ui.horizontal(|ui| {
+                                    ui.small("Resources");
+                                    if ui.small_button("manage...").clicked() {
+                                        self.acts.push(Act::Resources);
+                                    }
+                                });
+                                for e in entries {
+                                    let base = e.name.rsplit(['/', '\\']).next().unwrap_or(&e.name).to_string();
+                                    let missing = e.status == materialcraft::resources::Status::Missing;
+                                    let text = egui::RichText::new(format!("      {base}{}", if missing { "  (missing)" } else { "" }));
+                                    ui.label(if missing { text.color(Color32::from_rgb(235, 110, 100)) } else { text });
                                 }
                             }
                         }
@@ -1924,6 +1935,10 @@ impl App {
                         acts.push(Act::Bake);
                         ui.close();
                     }
+                    if ui.button("Resources...").on_hover_text("Bitmaps, vector art, fonts, lookup tables and splines used by the graph").clicked() {
+                        acts.push(Act::Resources);
+                        ui.close();
+                    }
                     if ui.button("Frame all   F").clicked() {
                         acts.push(Act::FrameAll);
                         ui.close();
@@ -2261,10 +2276,33 @@ impl eframe::App for App {
             self.acts.push(Act::RefreshLinks);
         }
         self.was_focused = focused;
+        self.sync_search_dirs();
         // graph files dropped from the OS onto the window: import as a node (editor) or open (home screen)
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for p in dropped {
-            if !matches!(p.extension().and_then(|e| e.to_str()), Some("mcg" | "mca")) {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            if self.screen == Screen::Editor {
+                let kind = if ext == "svg" {
+                    Some("svg")
+                } else if ext == "cube" || ext == "3dl" {
+                    Some("color_lut")
+                } else if materialcraft::imgio::has_image_extension(&format!("x.{ext}")) {
+                    Some("bitmap")
+                } else {
+                    None
+                };
+                if let Some(kind) = kind {
+                    let at = ctx.input(|i| i.pointer.latest_pos()).filter(|q| self.canvas_rect.contains(*q));
+                    let pos = at.map(|q| self.screen_to_world(q)).unwrap_or_else(|| self.view_center_world());
+                    let id = self.add_node_at(kind, None, pos);
+                    if let Some(n) = self.g.nodes.get_mut(&id) {
+                        n.strs.insert("file".into(), p.to_string_lossy().to_string());
+                    }
+                    self.dirty = true;
+                    continue;
+                }
+            }
+            if !matches!(ext.as_str(), "mcg" | "mca") {
                 continue;
             }
             if self.screen == Screen::Editor {
