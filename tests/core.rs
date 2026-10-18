@@ -701,13 +701,13 @@ fn node_cache_reuses_unchanged_nodes_and_matches_a_fresh_run() {
     let keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
     let cache = Arc::new(NodeCache::new(512));
     let mut first_seen = 0;
-    let r1 = g.evaluate_all_cached(128, &keep, 0, &cache, Some(9), &mut |_| first_seen += 1);
+    let r1 = g.evaluate_all_cached(128, &keep, 0, &cache, Some(9), true, &mut |_| first_seen += 1);
     assert_eq!(first_seen, 1, "the selected node must be reported once");
     let (h0, m0) = cache.stats();
     let _ = h0;
     assert!(m0 >= 11, "every node computed on the first run ({m0})");
     // nothing changed: everything is reused and the pixels are identical
-    let r2 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let r2 = g.evaluate_all_cached(128, &keep, 0, &cache, None, true, &mut |_| {});
     let (h1, m1) = cache.stats();
     assert_eq!(m1, m0, "no node may be recomputed");
     assert!(h1 >= 11 + h0);
@@ -717,7 +717,7 @@ fn node_cache_reuses_unchanged_nodes_and_matches_a_fresh_run() {
     assert_eq!(r1.thumbs.len(), r2.thumbs.len(), "thumbnails come back from the cache");
     // change the normal node (6): only that node is recomputed, and the result equals an uncached evaluation
     g.nodes.get_mut(&6).unwrap().nums.insert("strength".into(), 7.0);
-    let r3 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let r3 = g.evaluate_all_cached(128, &keep, 0, &cache, None, true, &mut |_| {});
     let (_, m2) = cache.stats();
     assert_eq!(m2 - m1, 1, "only the edited node should be recomputed, got {}", m2 - m1);
     let fresh = g.evaluate_all(128, &keep);
@@ -727,7 +727,7 @@ fn node_cache_reuses_unchanged_nodes_and_matches_a_fresh_run() {
     // change a node near the start (2): everything downstream of it is recomputed, the rest is reused
     g.nodes.get_mut(&2).unwrap().nums.insert("scale".into(), 5.0);
     let before = cache.stats().1;
-    let r4 = g.evaluate_all_cached(128, &keep, 0, &cache, None, &mut |_| {});
+    let r4 = g.evaluate_all_cached(128, &keep, 0, &cache, None, true, &mut |_| {});
     let redone = cache.stats().1 - before;
     assert!((5..=9).contains(&redone), "recomputed {redone} nodes");
     let fresh = g.evaluate_all(128, &keep);
@@ -736,12 +736,46 @@ fn node_cache_reuses_unchanged_nodes_and_matches_a_fresh_run() {
     }
     // a different size is a different result
     let m = cache.stats().1;
-    g.evaluate_all_cached(64, &keep, 0, &cache, None, &mut |_| {});
+    g.evaluate_all_cached(64, &keep, 0, &cache, None, true, &mut |_| {});
     assert!(cache.stats().1 > m);
     // a tiny budget evicts old entries instead of growing without bound
     let small = Arc::new(NodeCache::new(16));
-    g.evaluate_all_cached(512, &keep, 0, &small, None, &mut |_| {});
+    g.evaluate_all_cached(512, &keep, 0, &small, None, true, &mut |_| {});
     assert!(small.bytes() <= (16 << 20) + 512 * 512 * 16, "cache holds {} bytes", small.bytes());
+}
+
+#[test]
+fn interactive_pass_skips_offscreen_nodes_and_thumbnails() {
+    use materialcraft::graph::NodeCache;
+    use std::sync::Arc;
+    let mut g = Graph::parse(EXAMPLE).unwrap();
+    g.size = 64;
+    // a node nothing reads (an off-screen experiment); a unique extra parameter makes its content hash distinct so
+    // the content cache cannot dedupe it against the node it was cloned from
+    let mut lone = g.nodes.get(&2).unwrap().clone();
+    lone.nums.insert("_offscreen_marker".into(), 123.0);
+    let free_id = g.nodes.keys().max().unwrap() + 1;
+    g.nodes.insert(free_id, lone);
+    let keep: Vec<u32> = g.output_nodes().iter().map(|o| o.2).collect();
+
+    // the interactive pass evaluates only the subgraph feeding the outputs and takes no thumbnails
+    let c1 = Arc::new(NodeCache::new(256));
+    let ri = g.evaluate_all_cached(64, &keep, 0, &c1, None, false, &mut |_| {});
+    assert!(ri.thumbs.is_empty(), "interactive pass takes no thumbnails");
+    assert!(!ri.kept.is_empty());
+    let interactive_misses = c1.stats().1;
+
+    // the full pass evaluates every node (including the off-screen one) and takes thumbnails
+    let c2 = Arc::new(NodeCache::new(256));
+    let rf = g.evaluate_all_cached(64, &keep, 0, &c2, None, true, &mut |_| {});
+    assert!(!rf.thumbs.is_empty(), "full pass takes thumbnails");
+    let full_misses = c2.stats().1;
+
+    assert!(full_misses > interactive_misses, "full pass computes the off-screen node too ({full_misses} vs {interactive_misses})");
+    // the visible outputs are identical whichever pass produced them
+    for id in &keep {
+        assert_eq!(ri.kept[id].px, rf.kept[id].px, "output {id} differs between passes");
+    }
 }
 
 #[test]

@@ -73,6 +73,19 @@ pub fn sniff(name: &str, b: &[u8]) -> Option<Format> {
     }
 }
 
+/// Largest picture the readers accept (width x height). A damaged header must not make a reader ask for gigabytes.
+pub const MAX_PIXELS: usize = 100_000_000;
+
+pub fn check_size(w: usize, h: usize) -> Result<(), String> {
+    if w == 0 || h == 0 {
+        return Err("image has no pixels".into());
+    }
+    match w.checked_mul(h) {
+        Some(n) if n <= MAX_PIXELS => Ok(()),
+        _ => Err(format!("image of {w}x{h} pixels is too large (limit {} million pixels)", MAX_PIXELS / 1_000_000)),
+    }
+}
+
 pub struct Decoded {
     pub format: Format,
     pub tex: Tex,

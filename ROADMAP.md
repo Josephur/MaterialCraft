@@ -113,6 +113,7 @@ Status note: everything has been built and tested on Linux only (CI for Windows,
 - The node shown in the 2D view is evaluated first and put on screen as soon as it is done, before the outputs, the 3D maps and the other thumbnails
 - Faster kernels (cold run of the 2048 brick example: 3.9 s to about 1.4 s on 2 cores): Fractal Noise builds its gradient lattices once (about 1.8x faster, identical values); grayscale blurs run on one channel and the vertical pass needs no transpose (Ambient Occlusion about 4x faster); Normal From Height, Levels and Blend run on all cores (Normal about 6x, Levels about 4x faster); Slope Blur uses grayscale planes; Directional Noise samples the streak less densely (2x faster, mean difference below 0.01); bilinear and bicubic sampling skip the wrap arithmetic inside the image; the editor shares the kept output textures instead of copying them
 - Responsive previews: editing cancels the running evaluation (it stops within a few rows, even inside a heavy node) and starts the new one immediately; previews are progressive (256, 512, 1024 ... up to the preview size) so a change shows in a fraction of a second; the 2D image and GPU textures are prepared on the worker thread, so the editor never stalls; switching or entering a graph clears the old previews at once
+- Interactive vs settled passes: while a value is being dragged the editor evaluates only the subgraph feeding the 2D view and the material outputs — off-screen branches, disconnected experiments, thumbnails and the 3D maps cost nothing until the input stops moving. About 110 ms after the last change one full pass rebuilds every thumbnail and the 3D view. So a change on a large graph with many unrelated nodes stays responsive, and the GPU material maps are prepared on the worker thread instead of the main thread
 - Memory: intermediate textures are freed as soon as every node that reads them has finished, so large graphs at 4K fit
 
 ### Quality checks
@@ -207,7 +208,7 @@ The full plan (milestones, settings, order, risks) is in `RELEASE_PLAN.md`.
 - [ ] Run and verify on Windows and macOS
 - [ ] Test the GPU viewport on real GPUs (NVIDIA, AMD, Intel, Apple)
 - [x] CPU fallback renderer lights with the same environment as the GPU viewport
-- [ ] GPU viewport: wireframe at mesh resolution 256+ renders as a solid blob; map preparation runs on the main thread
+- [ ] GPU viewport: wireframe at mesh resolution 256+ renders as a solid blob
 
 ---
 

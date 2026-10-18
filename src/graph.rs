@@ -1536,18 +1536,21 @@ impl Graph {
 
     /// Editor evaluation: reuses every node result whose settings and inputs are unchanged (`cache` outlives the call),
     /// evaluates `first` (the node shown in the 2D view) before anything else and hands it to `on_first` at once.
-    pub fn evaluate_all_cached(&self, size: usize, keep: &[u32], job: u64, cache: &Arc<NodeCache>, first: Option<u32>, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
+    /// `full`: evaluate every node and take thumbnails (the idle pass). When false, only the nodes that feed `first`
+    /// and `keep` are evaluated and no thumbnails are taken — the cheap pass run while a value is being dragged, so a
+    /// large graph's off-screen branches and disconnected nodes cost nothing until the input settles.
+    pub fn evaluate_all_cached(&self, size: usize, keep: &[u32], job: u64, cache: &Arc<NodeCache>, first: Option<u32>, full: bool, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
         crate::tex::set_job(job);
-        let r = self.evaluate_all_impl(size, keep, Some(cache.clone()), first, on_first);
+        let r = self.evaluate_all_impl(size, keep, Some(cache.clone()), first, full, on_first);
         crate::tex::set_job(0);
         r
     }
 
     pub fn evaluate_all(&self, size: usize, keep: &[u32]) -> EvalAll {
-        self.evaluate_all_impl(size, keep, None, None, &mut |_| {})
+        self.evaluate_all_impl(size, keep, None, None, true, &mut |_| {})
     }
 
-    fn evaluate_all_impl(&self, size: usize, keep: &[u32], persist: Option<Arc<NodeCache>>, first: Option<u32>, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
+    fn evaluate_all_impl(&self, size: usize, keep: &[u32], persist: Option<Arc<NodeCache>>, first: Option<u32>, full: bool, on_first: &mut dyn FnMut(&Tex)) -> EvalAll {
         let mut r = EvalAll { thumbs: HashMap::new(), errors: HashMap::new(), kept: HashMap::new(), sizes: HashMap::new() };
         if size == 0 || size > 8192 {
             r.errors.insert(0, Error::BadSize(size).to_string());
@@ -1561,16 +1564,18 @@ impl Graph {
         let ctx = Ctx { size, height: self.height_for(size), nominal: self.size, lib: &self.subgraphs, res: &self.resources, so: self.seed_offset, depth: 0, gin: &gin };
         // thumbnails are taken the moment a node finishes, so intermediate textures can be freed as soon as every
         // node that reads them is done (a big graph at 4K would not fit in memory otherwise)
-        let mut cache = Cache::for_graph(self, keep, true);
+        let mut cache = Cache::for_graph(self, keep, full);
         if let Some(p) = persist {
             cache.hashes = hash_graph(self, &ctx);
             cache.persist = Some(p);
         }
-        // the 2D-view node first, then the outputs (3D view), then everything else (thumbnails)
+        // the 2D-view node first, then the outputs (3D view), then everything else (thumbnails on the full pass only)
         let mut order: Vec<u32> = Vec::new();
         order.extend(first.filter(|f| self.nodes.contains_key(f)));
         order.extend(keep.iter().copied().filter(|k| self.nodes.contains_key(k)));
-        order.extend(self.nodes.keys().copied());
+        if full {
+            order.extend(self.nodes.keys().copied());
+        }
         let mut seen = HashSet::new();
         order.retain(|i| seen.insert(*i));
         for id in order {

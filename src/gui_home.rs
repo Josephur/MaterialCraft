@@ -2433,18 +2433,30 @@ impl eframe::App for App {
         for a in todo {
             self.do_act(a);
         }
+        let now = std::time::Instant::now();
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(110);
         if self.dirty {
+            // a value changed this frame: show it at once with a cheap pass over just the on-screen subgraph, and
+            // (re)arm the settle timer so the full-resolution pass runs only once the input stops moving
             self.dirty = false;
             self.refine = false;
+            self.settled = false;
+            self.settle_at = Some(now + SETTLE);
             let first = self.first_tier();
-            self.spawn_eval(first);
+            self.spawn_eval(first, false);
         } else if self.refine && self.job.is_none() {
+            // progressively sharpen the 2D preview while the user holds still
             self.refine = false;
             if let Some(sz) = self.refine_size {
-                self.spawn_eval(sz);
+                self.spawn_eval(sz, false);
             }
+        } else if !self.settled && self.job.is_none() && self.settle_at.map_or(false, |t| now >= t) {
+            // input has settled: one full pass rebuilds every thumbnail and the 3D view
+            self.settled = true;
+            self.settle_at = None;
+            self.spawn_eval(self.preview_full(), true);
         }
-        if self.job.is_some() {
+        if self.job.is_some() || self.settle_at.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
         self.text_focus = ctx.egui_wants_keyboard_input();
