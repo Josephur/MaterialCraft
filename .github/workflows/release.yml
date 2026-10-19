@@ -15,7 +15,11 @@ env:
 
 concurrency:
   group: release-latest
-  cancel-in-progress: false
+  # Supersede in-flight builds: only the newest commit on main can become
+  # `latest`, so spending runner minutes on an outdated one just delays the
+  # answer. Serialising instead would queue every push behind the last, which
+  # on a slow macOS runner means waiting minutes for a result nobody wants.
+  cancel-in-progress: true
 
 permissions:
   contents: write
