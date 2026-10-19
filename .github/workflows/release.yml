@@ -287,6 +287,38 @@ jobs:
             dist/*.AppImage
           if-no-files-found: error
 
+  # ===========================================================================
+  # TODO(1.0): switch from the rolling `latest` prerelease to real releases.
+  #
+  # Everything below publishes a single moving tag (`latest`), overwritten on
+  # every push to main and flagged `prerelease: true`. That is a development
+  # channel, not a release: it has no history, no stable download URL and no
+  # version in its name.
+  #
+  # When MaterialCraft hits 1.0, switch to proper semver releases tagged
+  # `materialcraft-v<version>`, matching how the rest of the Craft suite ships
+  # (see storytold/artcraft, which tags `artcraft-v0.41.0` and drives its build
+  # from push to a `release` branch rather than a tag).
+  #
+  # To do it:
+  #   1. Bump `version` in Cargo.toml to 1.0.0 -- this job already reads it and
+  #      passes it through as needs.version.outputs.version.
+  #   2. Change `on:` at the top of this file from `push: branches: [main]` to
+  #      `push: tags: ['materialcraft-v*']`, so a build happens per release
+  #      instead of per commit.
+  #   3. Delete the "Move the rolling tag" step entirely; a tag push already
+  #      points the tag at the right commit.
+  #   4. In the step below: `tag_name: ${{ needs.version.outputs.tag }}`,
+  #      `name: ${{ needs.version.outputs.version }}`, and drop `prerelease: true`.
+  #      Derive the full tag in the `version` job with
+  #      `echo "tag=materialcraft-v$v" >> "$GITHUB_OUTPUT"` and export it.
+  #   5. Consider renaming the archives to the suite's underscore style,
+  #      `MaterialCraft_<version>_<target>.<ext>`, so they sit alongside
+  #      `ArtCraft_0.41.0_x64-setup.exe` in the Craft launcher.
+  #
+  # Keep the rolling `latest` channel in place until 1.0 actually ships -- it is
+  # the only way for contributors to grab an unreleased build today.
+  # ===========================================================================
   publish:
     name: Publish rolling `latest` release
     needs: [version, build]
