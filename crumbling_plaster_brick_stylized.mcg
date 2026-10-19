@@ -1,0 +1,62 @@
+format 2
+size 1024
+meta identifier "Graph"
+node 1 bricks bevel=0.08 cols=4 lum_var=0.6 mortar=0.04 rows=8 seed=4
+node 2 colorize _x=170 _y=0 b0=0.13 b1=0.22 g0=0.17 g1=0.4 p0=0 p1=1 r0=0.3 r1=0.82 in=@1
+node 3 fbm _x=0 _y=130 contrast=1.4 octaves=4 scale=3 seed=2
+node 4 fbm _x=0 _y=260 octaves=5 scale=14 seed=8
+node 5 blend _x=170 _y=195 mode=1 opacity=0.3 bg=@3 fg=@4
+node 6 threshold _x=340 _y=195 softness=0.01 threshold=0.56 in=@5
+node 7 fbm _x=0 _y=390 octaves=4 scale=5 seed=7
+node 8 quantize _x=170 _y=390 steps=4 in=@7
+node 9 colorize _x=340 _y=390 b0=0.22 b1=0.47 g0=0.34 g1=0.66 p0=0 p1=1 r0=0.45 r1=0.78 in=@8
+node 10 blend _x=510 _y=195 bg=@2 fg=@9 mask=@6
+node 11 levels _x=170 _y=520 out_high=0.4 in=@1
+node 12 levels _x=340 _y=520 out_high=0.85 out_low=0.6 in=@8
+node 13 blur _x=510 _y=325 radius=5 in=@6
+node 14 blend _x=680 _y=455 bg=@11 fg=@12 mask=@13
+node 15 normal _x=850 _y=455 strength=5 in=@14
+node 16 ao _x=850 _y=585 mode=1 in=@14
+node 17 color _x=0 _y=715 a=1 b=0.88 g=0.88 r=0.88
+node 18 color _x=0 _y=845 a=1 b=0.65 g=0.65 r=0.65
+node 19 blend _x=680 _y=628.3333 bg=@18 fg=@17 mask=@13
+node 25 fbm _x=0 _y=975 octaves=3 scale=6 seed=21
+node 26 fbm _x=0 _y=1105 octaves=3 scale=12 seed=5
+node 27 warp _x=170 _y=747.5 intensity=0.01 in=@1 warp=@25
+node 28 warp _x=510 _y=650 intensity=0.012 in=@6 warp=@26
+node 29 quantize _x=340 _y=747.5 steps=6 in=@27
+node 30 colorize _x=510 _y=877.5 b0=0.13 b1=0.28 g0=0.11 g1=0.56 p0=0 p1=1 r0=0.28 r1=1 in=@29
+node 31 emboss _x=340 _y=877.5 in=@27
+node 32 blend _x=680 _y=877.5 mode=5 opacity=0.3 bg=@30 fg=@31
+node 33 fbm _x=0 _y=1235 octaves=3 scale=22 seed=14
+node 34 quantize _x=170 _y=1235 steps=3 in=@33
+node 35 blend _x=850 _y=1056.25 mode=5 opacity=0.3 bg=@32 fg=@34
+node 36 fbm _x=0 _y=1365 octaves=3 scale=10 seed=31
+node 37 quantize _x=170 _y=1365 steps=3 in=@36
+node 38 colorize _x=340 _y=1040 b0=0.32 b1=0.66 g0=0.42 g1=0.87 p0=0 p1=1 r0=0.58 r1=0.97 in=@8
+node 39 blend _x=510 _y=1202.5 mode=5 opacity=0.3 bg=@38 fg=@37
+node 40 voronoi _x=0 _y=1495 distortion=0.6 edge_thickness=0.03 invert=1 mode=2 scale=4 seed=3
+node 41 threshold _x=170 _y=1495 softness=0.05 threshold=0.5 in=@40
+node 42 blend _x=680 _y=1072.5 mode=3 opacity=0.6 bg=@41 fg=@28
+node 43 color _x=0 _y=1625 a=1 b=0.1 g=0.14 r=0.25
+node 44 blend _x=850 _y=1300 bg=@39 fg=@43 mask=@42
+node 45 morphology _x=680 _y=1300 mode=1 radius=3.5 in=@28
+node 46 blend _x=850 _y=1495 mode=2 bg=@28 fg=@45
+node 47 color _x=0 _y=1755 a=1 b=0.78 g=0.95 r=1
+node 48 blend _x=1020 _y=1516.6666 bg=@44 fg=@47 mask=@46
+node 49 morphology _x=680 _y=1430 radius=14 in=@28
+node 50 blend _x=850 _y=1690 mode=2 bg=@49 fg=@28
+node 51 blur _x=1020 _y=1690 radius=6 in=@50
+node 52 blend _x=1190 _y=1457.0834 opacity=0.75 bg=@35 fg=@43 mask=@51
+node 53 blend _x=1360 _y=1207.9166 bg=@52 fg=@48 mask=@28
+node 54 output _x=1530 _y=1207.9166 usage="basecolor" in=@53
+node 55 levels _x=340 _y=1267.5 out_high=0.4 in=@27
+node 56 blur _x=680 _y=1560 radius=4 in=@28
+node 57 blend _x=850 _y=1895.8334 bg=@55 fg=@12 mask=@56
+node 58 normal _x=1020 _y=1895.8334 strength=4 in=@57
+node 59 ao _x=1020 _y=2025.8334 mode=1 in=@57
+node 60 blend _x=850 _y=2080 bg=@18 fg=@17 mask=@56
+node 61 output _x=1020 _y=1895.8334 usage="height" in=@57
+node 62 output _x=1190 _y=1895.8334 usage="normal" in=@58
+node 63 output _x=1190 _y=2025.8334 usage="ambient_occlusion" in=@59
+node 64 output _x=1020 _y=2080 usage="roughness" in=@60

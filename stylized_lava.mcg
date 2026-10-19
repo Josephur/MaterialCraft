@@ -1,0 +1,45 @@
+format 2
+size 1024
+meta identifier "Graph"
+node 1 fbm octaves=4 scale=3 seed=7
+node 2 fbm _x=0 _y=130 octaves=3 scale=5 seed=21
+node 3 warp _x=170 _y=65 intensity=0.12 in=@1 warp=@2
+node 4 histogram_scan _x=340 _y=65 contrast=0.95 position=0.34 in=@3
+node 5 voronoi _x=0 _y=260 distortion=0.25 distortion_scale=6 mode=4 scale=9 seed=3
+node 6 histogram_scan _x=170 _y=260 contrast=0.9 position=0.12 in=@5
+node 7 blend _x=510 _y=162.5 mode=3 bg=@4 fg=@6
+node 8 blur_hq _x=510 _y=325 intensity=14 quality=2 in=@4
+node 9 invert _x=680 _y=325 in=@8
+node 10 levels _x=850 _y=325 gamma=0.6 high=1 low=0.5 in=@9
+node 11 fbm _x=0 _y=455 contrast=1.6 octaves=4 scale=6 seed=55
+node 12 blend _x=1020 _y=390 mode=5 opacity=0.75 bg=@10 fg=@11
+node 13 colorize _x=1190 _y=390 a0=1 a1=1 a2=1 a3=1 a4=1 b0=0 b1=0 b2=0.02 b3=0.05 b4=0.35 g0=0.01 g1=0.04 g2=0.12 g3=0.38 g4=0.75 interp=1 p0=0 p1=0.2 p2=0.5 p3=0.8 p4=1 r0=0.6 r1=0.9 r2=1 r3=1 r4=1 stops=5 in=@36
+node 14 voronoi _x=0 _y=585 distortion=0.25 distortion_scale=6 mode=1 scale=9 seed=3
+node 15 to_gray _x=170 _y=585 in=@14
+node 16 colorize _x=340 _y=585 a0=1 a1=1 b0=0.055 b1=0.15 g0=0.04 g1=0.12 p0=0 p1=1 r0=0.05 r1=0.15 stops=2 in=@15
+node 17 color _x=0 _y=715 a=1 b=0.02 g=0.02 r=0.22
+node 18 color _x=0 _y=845 a=1 b=0 g=0 r=0
+node 19 blend _x=510 _y=520 bg=@17 fg=@16 mask=@6
+node 20 blend _x=1360 _y=325 bg=@41 fg=@43 mask=@4
+node 21 blend _x=340 _y=736.6667 bg=@17 fg=@18 mask=@6
+node 22 blend _x=1360 _y=527.2223 bg=@13 fg=@21 mask=@4
+node 23 bevel _x=680 _y=162.5 corner=0 distance=0.018 smoothing=1 in=@7
+node 24 normal _x=850 _y=162.5 strength=1.2 in=@44
+node 25 levels _x=680 _y=552.5 out_high=0.92 out_low=0.45 in=@4
+node 26 output _x=1530 _y=325 usage="basecolor" in=@20
+node 27 output _x=1020 _y=162.5 usage="normal" in=@24
+node 28 output _x=850 _y=552.5 usage="roughness" in=@25
+node 31 voronoi _x=0 _y=975 distortion=0.6 distortion_scale=4 mode=4 scale=9 seed=91
+node 32 histogram_scan _x=170 _y=975 contrast=0.8 invert=1 position=0.08 in=@31
+node 33 fbm _x=0 _y=1105 octaves=3 scale=5 seed=12
+node 34 histogram_scan _x=170 _y=1105 contrast=0.7 position=0.45 in=@33
+node 35 blend _x=340 _y=1040 mode=3 bg=@34 fg=@32
+node 36 blend _x=1190 _y=715 mode=2 opacity=0.8 bg=@12 fg=@35
+node 37 levels _x=1530 _y=657.2223 gamma=0.8 out_high=0.4 in=@22
+node 38 output _x=1700 _y=657.2223 usage="emissive" in=@37
+node 39 levels _x=850 _y=682.5 out_high=0.6 out_low=0.4 in=@44
+node 40 output _x=1020 _y=682.5 usage="height" in=@39
+node 41 levels _x=1360 _y=650 out_high=0.4 in=@13
+node 42 levels _x=850 _y=812.5 high=0.6 out_low=0.45 in=@44
+node 43 blend _x=1020 _y=926.25 mode=3 bg=@19 fg=@42
+node 44 blur_hq _x=850 _y=942.5 intensity=3 quality=2 in=@23
