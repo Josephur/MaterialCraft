@@ -1937,4 +1937,5 @@ include!("gui_bake.rs");
 include!("gui_res.rs");
 include!("gui_ui.rs");
 include!("gui_home.rs");
+include!("gui_launcher.rs");
 include!("gui_view3d.rs");
