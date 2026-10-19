@@ -195,6 +195,22 @@ jobs:
           MaterialCraft builds PBR materials from a node graph, with a
           headless renderer, a visual editor and an AI control interface.
 
+          %prep
+
+          %build
+
+          # Without this section BUILDROOT stays empty and every entry under
+          # %files fails with "File not found". %{_appdir} is passed in with
+          # --define so this does not depend on rpmbuild's working directory.
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/applications
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
+          install -m 0755 %{_appdir}/usr/bin/materialcraft     %{buildroot}/usr/bin/materialcraft
+          install -m 0755 %{_appdir}/usr/bin/materialcraft-gui %{buildroot}/usr/bin/materialcraft-gui
+          install -m 0644 %{_appdir}/usr/share/applications/materialcraft.desktop %{buildroot}/usr/share/applications/materialcraft.desktop
+          install -m 0644 %{_appdir}/materialcraft.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/materialcraft.png
+
           %files
           /usr/bin/materialcraft
           /usr/bin/materialcraft-gui
@@ -202,7 +218,9 @@ jobs:
           /usr/share/icons/hicolor/256x256/apps/materialcraft.png
           EOF
 
-          rpmbuild --define "_topdir $PWD/rpmbuild" -bb rpmbuild/SPECS/materialcraft.spec
+          rpmbuild --define "_topdir $PWD/rpmbuild" \
+                   --define "_appdir $PWD/AppDir" \
+                   -bb rpmbuild/SPECS/materialcraft.spec
           cp "rpmbuild/RPMS/%{_arch}/materialcraft-$VERSION-1"*.rpm "dist/$name.rpm"
 
       - name: Package tarball (Linux)
