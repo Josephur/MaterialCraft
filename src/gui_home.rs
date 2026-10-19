@@ -147,7 +147,7 @@ fn swatch(p: &egui::Painter, r: Rect, name: &str, alive: bool) {
     };
     let (h0, h1) = (next(), next());
     let dimf = if alive { 1.0 } else { 0.35 };
-    p.rect_filled(r, 8.0, hue(h0, 0.45 * dimf, 0.32));
+    p.rect_filled(r, 2.0, hue(h0, 0.45 * dimf, 0.32));
     for _ in 0..4 {
         let c = pos2(r.min.x + next() * r.width(), r.min.y + next() * r.height());
         p.circle_filled(c, 6.0 + next() * 18.0, hue((h1 + next() * 0.2).fract(), 0.5 * dimf, 0.45 + next() * 0.25).gamma_multiply(0.85));
@@ -211,13 +211,13 @@ fn spawn_library_thumbs() -> Receiver<HashMap<String, ColorImage>> {
             }
         }
         for a in materialcraft::library::assets() {
-            if let Ok(tex) = a.thumbnail(96) {
+            if let Ok(tex) = a.thumbnail(192) {
                 out.insert(format!("asset:{}", a.id), qimg(&tex));
             }
         }
         if let Ok(mut g) = Graph::parse(EXAMPLE) {
             g.migrate_outputs();
-            if let Ok(mut m) = g.evaluate(Some(96)) {
+            if let Ok(mut m) = g.evaluate(Some(192)) {
                 let t = ["basecolor", "output", "height"].iter().find_map(|k| m.remove(*k)).or_else(|| m.into_iter().next().map(|(_, t)| t));
                 if let Some(t) = t {
                     out.insert("asset:brick_wall".to_string(), qimg(&t));
@@ -664,316 +664,6 @@ impl App {
             if let Some(sg) = self.g.subgraphs.get_mut(&sub) {
                 sg.meta.insert("template".into(), a.id.to_string());
             }
-        }
-    }
-
-    // ------------------------------------------------------------ home screen
-    /// Start screen: a centred launch pad (big action cards, then recent files as a card grid) with a slim top bar
-    /// and a footer strip. Recent files get a small generated swatch derived from their name.
-    fn home_ui(&mut self, root: &mut egui::Ui) {
-        let bg = Color32::from_rgb(21, 23, 26);
-        let card = Color32::from_rgb(31, 34, 39);
-        let card_hot = Color32::from_rgb(40, 45, 52);
-        let dim = Color32::from_gray(140);
-        egui::Panel::top("home_top").exact_size(46.0).frame(egui::Frame::NONE.fill(Color32::from_rgb(26, 28, 32)).inner_margin(egui::Margin::symmetric(18, 0))).show(root, |ui| {
-            ui.horizontal_centered(|ui| {
-                if let Some(t) = &self.logo {
-                    let sz = t.size_vec2();
-                    let hgt = 28.0;
-                    ui.add(egui::Image::new((t.id(), vec2(hgt * sz.x / sz.y.max(1.0), hgt))));
-                }
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("MaterialCraft").size(15.0).strong().color(Color32::from_gray(225)));
-                ui.add_space(24.0);
-                for (i, label) in ["Start", "Templates", "Learn"].iter().enumerate() {
-                    let sel = self.home_page == i as u8;
-                    let txt = egui::RichText::new(*label).size(13.0).color(if sel { ACCENT } else { Color32::from_gray(170) });
-                    let r = ui.add(egui::Button::new(txt).frame(false).min_size(vec2(56.0, 30.0)));
-                    if sel {
-                        let y = r.rect.bottom() - 1.0;
-                        ui.painter().line_segment([pos2(r.rect.left() + 8.0, y), pos2(r.rect.right() - 8.0, y)], Stroke::new(2.0_f32, ACCENT));
-                    }
-                    if r.clicked() {
-                        self.home_page = i as u8;
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).size(11.0).color(Color32::from_gray(110)));
-                });
-            });
-        });
-        egui::Panel::bottom("home_foot").exact_size(38.0).frame(egui::Frame::NONE.fill(Color32::from_rgb(26, 28, 32)).inner_margin(egui::Margin::symmetric(18, 0))).show(root, |ui| {
-            ui.horizontal_centered(|ui| {
-                if ui.checkbox(&mut self.skip_home, "Skip this screen on startup").changed() {
-                    self.save_settings();
-                }
-                ui.add_space(10.0);
-                if ui.add(egui::Button::new("Keyboard shortcuts").frame(false)).clicked() {
-                    self.show_about = true;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(egui::RichText::new("Go to editor").color(Color32::BLACK).strong()).fill(ACCENT).corner_radius(6.0).min_size(vec2(110.0, 24.0))).clicked() {
-                        self.screen = Screen::Editor;
-                    }
-                });
-            });
-        });
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg).inner_margin(egui::Margin::symmetric(24, 0))).show(root, |ui| {
-            egui::ScrollArea::vertical().id_salt("home_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                let full = ui.available_width();
-                let col_w = full.min(1020.0);
-                ui.add_space(30.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(((full - col_w) * 0.5).max(0.0));
-                    ui.vertical(|ui| {
-                        ui.set_width(col_w);
-                        if self.home_page == 2 {
-                            self.learn_page(ui);
-                            return;
-                        }
-                        if self.home_page == 1 {
-                        // ---- templates / examples
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Templates").size(18.0).strong().color(Color32::from_gray(235)));
-                            ui.add_space(10.0);
-                            for (i, label) in ["All", "Materials", "Generators", "Filters"].iter().enumerate() {
-                                let sel = self.home_tpl == i as u8;
-                                let txt = egui::RichText::new(*label).size(12.5).color(if sel { ACCENT } else { Color32::from_gray(170) });
-                                if ui.add(egui::Button::new(txt).frame(false)).clicked() {
-                                    self.home_tpl = i as u8;
-                                }
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.add(egui::TextEdit::singleline(&mut self.home_tpl_filter).hint_text("Search templates").desired_width(230.0));
-                            });
-                        });
-                        ui.label(egui::RichText::new("Click a template to open it as an example in its own tab. Examples are not part of your project - use File > Package > Add template (or the Add to project button in the example tab) to copy one in.").size(11.5).color(dim));
-                        ui.add_space(8.0);
-                        {
-                            use materialcraft::library::AssetKind;
-                            let kind_filter = match self.home_tpl {
-                                1 => Some(AssetKind::Material),
-                                2 => Some(AssetKind::Generator),
-                                3 => Some(AssetKind::Filter),
-                                _ => None,
-                            };
-                            let mut cards: Vec<(String, String, String, String)> = Vec::new();
-                            if matches!(self.home_tpl, 0 | 1) {
-                                cards.push(("brick_wall".into(), "Brick wall".into(), "Example".into(), "A finished brick wall material built from tiles, noise and height blending.".into()));
-                            }
-                            for a in materialcraft::library::search(&self.home_tpl_filter, kind_filter) {
-                                cards.push((a.id.to_string(), a.name.to_string(), format!("{} - {}", a.kind.label(), a.category), a.description.to_string()));
-                            }
-                            if !self.home_tpl_filter.trim().is_empty() {
-                                let f = self.home_tpl_filter.to_lowercase();
-                                cards.retain(|c| c.0 != "brick_wall" || c.1.to_lowercase().contains(&f));
-                            }
-                            if cards.is_empty() {
-                                ui.label(egui::RichText::new("No templates match.").color(dim));
-                            }
-                            let (tw, th) = (150.0_f32, 142.0_f32);
-                            let tcols = (((col_w + 12.0) / (tw + 12.0)).floor() as usize).max(1);
-                            let mut open_tpl: Option<String> = None;
-                            for chunk in cards.chunks(tcols) {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                    for (id, name, sub, desc) in chunk {
-                                        let (rect, resp) = ui.allocate_exact_size(vec2(tw, th), Sense::click());
-                                        let hot = resp.hovered();
-                                        let pr = ui.painter();
-                                        pr.rect_filled(rect, 8.0, if hot { card_hot } else { card });
-                                        pr.rect_stroke(rect, 8.0, Stroke::new(if hot { 1.5_f32 } else { 1.0_f32 }, if hot { ACCENT } else { Color32::from_rgb(44, 48, 55) }), egui::StrokeKind::Inside);
-                                        let tr = Rect::from_min_size(rect.min + vec2(9.0, 9.0), vec2(tw - 18.0, tw - 18.0 - 38.0));
-                                        match self.lib_thumbs.get(&format!("asset:{id}")) {
-                                            Some(t) => {
-                                                pr.image(t.id(), tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                                            }
-                                            None => swatch(pr, tr, name, true),
-                                        }
-                                        let clipped = pr.with_clip_rect(rect.shrink(4.0));
-                                        clipped.text(pos2(rect.min.x + 10.0, tr.max.y + 6.0), Align2::LEFT_TOP, name, FontId::proportional(13.0), Color32::from_gray(232));
-                                        clipped.text(pos2(rect.min.x + 10.0, tr.max.y + 23.0), Align2::LEFT_TOP, sub, FontId::proportional(10.5), dim);
-                                        let resp = resp.on_hover_text(format!("{name}\n{desc}\nClick to open it as an example"));
-                                        if resp.clicked() {
-                                            open_tpl = Some(id.clone());
-                                        }
-                                    }
-                                });
-                                ui.add_space(12.0);
-                            }
-                            if let Some(id) = open_tpl {
-                                self.open_template(&id);
-                            }
-                        }
-                        ui.add_space(14.0);
-
-                            return;
-                        }
-                        ui.label(egui::RichText::new("What will you make today?").size(28.0).strong().color(Color32::from_gray(238)));
-                        ui.add_space(2.0);
-                        ui.label(egui::RichText::new("Seamless materials, patterns and filters from nodes - every result tiles.").size(13.5).color(dim));
-                        ui.add_space(22.0);
-
-                        // ---- action cards
-                        let actions: [(&str, &str, Ic); 3] = [
-                            ("New graph", "Start from an empty graph", Ic::New),
-                            ("Open package", "Load a .mcg or .mca file", Ic::Open),
-                            ("Mesh map baker", "Bake maps from meshes into the package", Ic::Sphere),
-                        ];
-                        let gap = 14.0;
-                        let per_row = (((col_w + gap) / (230.0 + gap)).floor() as usize).clamp(1, 4);
-                        let cw = (col_w - gap * (per_row as f32 - 1.0)) / per_row as f32;
-                        let mut chosen: Option<usize> = None;
-                        for row in actions.chunks(per_row).enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = gap;
-                                for (k, (title, sub, ic)) in row.1.iter().enumerate() {
-                                    let (rect, resp) = ui.allocate_exact_size(vec2(cw, 84.0), Sense::click());
-                                    let hot = resp.hovered();
-                                    let pr = ui.painter();
-                                    pr.rect_filled(rect, 10.0, if hot { card_hot } else { card });
-                                    pr.rect_stroke(rect, 10.0, Stroke::new(if hot { 1.5_f32 } else { 1.0_f32 }, if hot { ACCENT } else { Color32::from_rgb(48, 52, 59) }), egui::StrokeKind::Inside);
-                                    let badge = Rect::from_min_size(rect.left_top() + vec2(16.0, 18.0), vec2(48.0, 48.0));
-                                    pr.rect_filled(badge, 12.0, ACCENT.gamma_multiply(if hot { 0.34 } else { 0.2 }));
-                                    draw_icon(pr, badge.center(), *ic, ACCENT);
-                                    pr.text(rect.left_top() + vec2(78.0, 24.0), Align2::LEFT_TOP, *title, FontId::proportional(14.5), Color32::from_gray(238));
-                                    pr.text(rect.left_top() + vec2(78.0, 46.0), Align2::LEFT_TOP, *sub, FontId::proportional(11.5), dim);
-                                    if resp.clicked() {
-                                        chosen = Some(row.0 * per_row + k);
-                                    }
-                                }
-                            });
-                            ui.add_space(gap);
-                        }
-                        match chosen {
-                            Some(0) => self.new_dlg.open = true,
-                            Some(1) => self.open_file(),
-                            Some(2) => {
-                                self.screen = Screen::Editor;
-                                self.bake.open = true;
-                            }
-                            _ => {}
-                        }
-
-                        // ---- tip strip
-                        if !self.hide_suggestions {
-                            ui.add_space(4.0);
-                            egui::Frame::NONE.fill(Color32::from_rgb(27, 36, 38)).stroke(Stroke::new(1.0_f32, Color32::from_rgb(40, 66, 66))).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 9)).show(ui, |ui| {
-                                ui.set_width(col_w - 30.0);
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("Tip").strong().color(ACCENT));
-                                    ui.label(egui::RichText::new("Press Tab in the graph to add a node at the cursor, or drag a link into empty space to add one and connect it.").color(Color32::from_gray(200)));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.add(egui::Button::new("Hide").frame(false)).clicked() {
-                                            self.hide_suggestions = true;
-                                            self.save_settings();
-                                        }
-                                    });
-                                });
-                            });
-                        } else if ui.add(egui::Button::new(egui::RichText::new("Show tip").color(dim)).frame(false)).clicked() {
-                            self.hide_suggestions = false;
-                            self.save_settings();
-                        }
-                        ui.add_space(20.0);
-
-                        // ---- recent files
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Recent").size(18.0).strong().color(Color32::from_gray(235)));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.add(egui::TextEdit::singleline(&mut self.home_filter).hint_text("Search recent files").desired_width(230.0));
-                            });
-                        });
-                        ui.add_space(10.0);
-                        let f = self.home_filter.to_lowercase();
-                        let mut open: Option<PathBuf> = None;
-                        let mut remove: Option<PathBuf> = None;
-                        let files: Vec<PathBuf> = self.recent.iter().filter(|p| f.is_empty() || p.file_name().map(|s| s.to_string_lossy().to_lowercase().contains(&f)).unwrap_or(false)).cloned().collect();
-                        if files.is_empty() {
-                            ui.add_space(8.0);
-                            ui.label(egui::RichText::new(if self.recent.is_empty() { "Nothing here yet - create a graph or open a package and it will show up here." } else { "No recent files match the search." }).color(dim));
-                        }
-                        let rw = 330.0;
-                        let rcols = (((col_w + gap) / (rw + gap)).floor() as usize).clamp(1, 6);
-                        let rcw = (col_w - gap * (rcols as f32 - 1.0)) / rcols as f32;
-                        for chunk in files.chunks(rcols) {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = gap;
-                                for p in chunk {
-                                    let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                                    let folder = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-                                    let meta = std::fs::metadata(p).ok();
-                                    let (rect, resp) = ui.allocate_exact_size(vec2(rcw, 76.0), Sense::click());
-                                    let hot = resp.hovered();
-                                    let pr = ui.painter();
-                                    pr.rect_filled(rect, 10.0, if hot { card_hot } else { card });
-                                    pr.rect_stroke(rect, 10.0, Stroke::new(1.0_f32, if hot && meta.is_some() { ACCENT } else { Color32::from_rgb(44, 48, 55) }), egui::StrokeKind::Inside);
-                                    let sw = Rect::from_min_size(rect.left_top() + vec2(10.0, 10.0), vec2(56.0, 56.0));
-                                    swatch(&pr.with_clip_rect(sw), sw, &name, meta.is_some());
-                                    let col = if meta.is_some() { Color32::from_gray(228) } else { Color32::from_gray(110) };
-                                    let tx = rect.min.x + 78.0;
-                                    let clipped = pr.with_clip_rect(Rect::from_min_max(pos2(tx, rect.min.y), pos2(rect.max.x - 8.0, rect.max.y)));
-                                    clipped.text(pos2(tx, rect.min.y + 12.0), Align2::LEFT_TOP, &name, FontId::proportional(13.5), col);
-                                    clipped.text(pos2(tx, rect.min.y + 32.0), Align2::LEFT_TOP, &folder, FontId::proportional(10.5), Color32::from_gray(110));
-                                    let line = match &meta {
-                                        Some(m) => format!("{}  -  {}", m.modified().map(fmt_time).unwrap_or_default(), fmt_size(m.len())),
-                                        None => "file not found".to_string(),
-                                    };
-                                    clipped.text(pos2(tx, rect.min.y + 50.0), Align2::LEFT_TOP, line, FontId::proportional(10.5), dim);
-                                    let resp = resp.on_hover_text(p.display().to_string());
-                                    if resp.clicked() && meta.is_some() {
-                                        open = Some(p.clone());
-                                    }
-                                    resp.context_menu(|ui| {
-                                        if ui.button("Remove from recent").clicked() {
-                                            remove = Some(p.clone());
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                            });
-                            ui.add_space(gap);
-                        }
-                        if let Some(p) = remove {
-                            self.recent.retain(|r| *r != p);
-                            let files: Vec<String> = self.recent.iter().map(|r| r.to_string_lossy().to_string()).collect();
-                            self.prefs.update(|v| v.recent.files = files);
-                        }
-                        if let Some(p) = open {
-                            self.open_path(p);
-                        }
-                    });
-                });
-                ui.add_space(24.0);
-            });
-        });
-    }
-
-    fn learn_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Learn").size(19.0).strong().color(Color32::from_gray(235)));
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(14.0);
-        ui.label(egui::RichText::new("Getting started").size(15.0).strong());
-        for t in [
-            "Create a graph from the 'New graph...' button and pick a template (Metallic Roughness gives you all PBR outputs).",
-            "Press Tab over the graph to add a node at the cursor, or drag a link into empty space to add one and connect it.",
-            "Drag nodes from the Library onto the graph. Right-click a library item to favorite it. Ready-made generators and filters drag in as one node; right-click that node and choose Edit template to change it.",
-            "Templates on this screen open as examples in their own tab. They are not part of your project until you use File > Package > Add template.",
-            "Select nodes and use Edit > Create subgraph to build reusable pieces. Double-click a subgraph to edit it.",
-            "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mca asset.",
-            "Tools > Mesh map baker bakes maps from OBJ, glTF, PLY and STL meshes into the package. Baked Map nodes read them.",
-        ] {
-            ui.label(format!("  -  {t}"));
-            ui.add_space(3.0);
-        }
-        ui.add_space(14.0);
-        if ui.button("Open the brick wall example").clicked() {
-            self.open_template("brick_wall");
-        }
-        ui.add_space(8.0);
-        if ui.button("Show keyboard shortcuts").clicked() {
-            self.show_about = true;
         }
     }
 
@@ -2328,8 +2018,12 @@ impl eframe::App for App {
         }
         if let Some(rx) = &self.lib_rx {
             if let Ok(m) = rx.try_recv() {
+                // template previews are large and also drawn small in the library: mipmaps keep them clean when shrunk
+                let mut mip = egui::TextureOptions::LINEAR;
+                mip.mipmap_mode = Some(egui::TextureFilter::Linear);
                 for (k, img) in m {
-                    self.lib_thumbs.insert(k.clone(), ctx.load_texture(format!("lib_{k}"), img, egui::TextureOptions::LINEAR));
+                    let o = if k.starts_with("asset:") { mip } else { egui::TextureOptions::LINEAR };
+                    self.lib_thumbs.insert(k.clone(), ctx.load_texture(format!("lib_{k}"), img, o));
                 }
                 self.lib_rx = None;
             }
@@ -2350,6 +2044,14 @@ impl eframe::App for App {
         self.poll_control(ctx);
         self.ai_window(ctx);
         if self.screen == Screen::Home {
+            if !self.text_focus && !self.new_dlg.open {
+                let (newg, open) = ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::N), i.consume_key(Modifiers::COMMAND, Key::O)));
+                if newg {
+                    self.new_dlg.open = true;
+                } else if open {
+                    self.open_file();
+                }
+            }
             self.home_ui(root);
             self.new_dialog(ctx);
             self.windows(ctx);
@@ -2357,6 +2059,11 @@ impl eframe::App for App {
                 ctx.request_repaint();
             }
             self.text_focus = ctx.egui_wants_keyboard_input();
+            // settings changed here (recent files, skip / tip options) are saved shortly after, like in the editor
+            let tick = self.prefs.tick(std::time::Instant::now());
+            if let Some(deadline) = tick.next_deadline {
+                ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
+            }
             return;
         }
 

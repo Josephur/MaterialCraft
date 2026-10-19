@@ -475,98 +475,94 @@
 
 ## 6. Home screen
 
+- Same look as the editor: neutral greys, accent colour, square corners (2 px), 1 px hairline borders
+- Labels, tabs and buttons in small monospace capitals
+- Tabs, the remove buttons and widget colours use craft-ui (`tabs::Tab`, `buttons::IconButton`, `theme::WidgetPalette`)
+- Shortcuts on this screen
+  - Ctrl+N (Cmd+N on macOS) opens the New Material Graph dialog
+  - Ctrl+O (Cmd+O) opens a file picker
+
 ### 6.1 Top bar
 
 - Logo image
-- Text "MaterialCraft"
-- Tab "Start"
-  - Click to show the start page
-  - Selected: accent colour, underline
-- Tab "Templates"
-  - Click to show the templates page
-  - Selected: accent colour, underline
-- Tab "Learn"
-  - Click to show the learn page
-  - Selected: accent colour, underline
-- Version text at right, for example `v0.1.0`
+- Word mark "Material" + "Craft" (Craft in the accent colour)
+- Tabs "START", "TEMPLATES", "LEARN"
+  - Selected: light chip with dark text
+  - Hover: grey chip
+  - Keyboard: Tab focuses a tab (accent outline), Enter / Space selects it
+- Right side
+  - "AI CONTROL ON" in the accent colour while Tools > AI control is listening
+  - Version text, for example `V0.1.0`
+- Hairline along the bottom edge
 
 ### 6.2 Start page
 
+- Small label "GET STARTED"
 - Title "What will you make today?"
 - Sub-title "Seamless materials, patterns and filters from nodes - every result tiles."
-- Action cards
-  - Card "New graph"
-    - Sub-text "Start from an empty graph"
-    - Icon: new
+- Action strip: one outlined strip divided into three cells (one per row on narrow windows)
+  - "New graph"
+    - Sub-text "Start from an empty graph or a workflow template"
+    - Icon: new; shortcut hint "CTRL+N" in the bottom-right corner
     - Click opens the New Material Graph dialog
-  - Card "Open package"
-    - Sub-text "Load a .mcg or .mca file"
-    - Icon: open
+  - "Open package"
+    - Sub-text "Load a .mcg or .mca file from disk"
+    - Icon: open; shortcut hint "CTRL+O"
     - Click opens a file picker
-  - Card "Mesh map baker"
-    - Sub-text "Bake maps from meshes into the package"
+  - "Mesh map baker"
+    - Sub-text "Bake normal, AO and curvature maps from meshes"
     - Icon: sphere
     - Click opens the Editor and the baker window
-  - Cards wrap to fewer columns on narrow windows
-  - Hover: card brightens, border turns accent
+  - Hover: cell brightens, accent bar along its top edge
 - Tip strip
-  - Label "Tip"
+  - Accent chip "TIP"
   - Text "Press Tab in the graph to add a node at the cursor, or drag a link into empty space to add one and connect it."
-  - Button "Hide"
-    - Hides the strip
-  - When hidden: button "Show tip"
-- Recent section
-  - Title "Recent"
-  - Search box
-    - Hint "Search recent files"
-    - Filters by file name
-  - File cards
+  - Link "HIDE" hides the strip; then link "SHOW TIP"
+- Recent files
+  - Heading "RECENT FILES" with the count, search box "Search recent files" on the right (filters by file name)
+  - File cards (up to 20, newest first)
     - Swatch picture, colour from the file name
-    - File name
-    - Folder path
-    - Date and size, for example `2026-10-16 12:00  -  41 KB`
-    - Click opens the file
-    - Hover shows the full path
-    - Right-click > "Remove from recent"
-    - Missing file: dimmed, text "file not found", click does nothing
+    - File name, folder path
+    - Date and size in small capitals, for example `2026-10-16 12:00 · 41 KB`
+    - Small × in the top-right corner
+      - Removes the file from the list (the file itself is kept); saved within half a second
+      - Faint until the card is under the pointer; tooltip "Remove from recent files (the file itself is kept)"
+    - Click opens the file; hover shows the full path
+    - Right-click > "Remove from recent files"
+    - Missing file: dimmed, "FILE NOT FOUND" in orange, click does nothing (× still removes it)
   - Empty text "Nothing here yet - create a graph or open a package and it will show up here."
   - No match text "No recent files match the search."
 
 ### 6.2b Templates page
 
-- Title "Templates"
-  - Filter links "All", "Materials", "Generators", "Filters" and a search box "Search templates"
-  - Note "Click a template to open it as an example in its own tab. Examples are not part of your project - ..."
-  - Tile grid: brick wall example plus every built-in ready-made graph, each with a preview, name and "kind - category"
-  - Click opens the template as an example in its own tab (named "<name> (example)")
-    - Clicking the same template again switches to the open example tab instead of making another one
-    - The example is not part of any package: not saved, not in recent files, gone when its tab is closed
-    - Example tab shows a bar "Example - not part of your project" with "Add to project" and "Save as..."
-    - "Add to project" copies it as a new graph into the selected package (or a new unsaved package)
+- Small label "TEMPLATES", title "Start from a finished graph"
+- Sub-title "Click one to open it as an example in its own tab. Examples are not part of your project - use File > Package > Add template to copy one in."
+- Segmented filter with counts: "ALL", "MATERIALS", "GENERATORS", "FILTERS"; search box "Search templates" on the right
+- Square tiles that fill the column (at least about 150 px)
+  - Preview rendered at 192 px, never stretched
+  - Name, then "KIND · CATEGORY" in small capitals (cut short with … when too long)
+  - Brick wall carries an accent "EXAMPLE" chip
+  - Hover: accent border; tooltip with the description
+- Click opens the template as an example in its own tab (named "<name> (example)")
+  - Clicking the same template again switches to the open example tab instead of making another one
+  - The example is not part of any package: not saved, not in recent files, gone when its tab is closed
+  - Example tab shows a bar "Example - not part of your project" with "Add to project" and "Save as..."
+  - "Add to project" copies it as a new graph into the selected package (or a new unsaved package)
 
 ### 6.3 Learn page
 
-- Title "Learn"
-- Heading "Getting started"
-- Tips list
-  - "Create a graph from the 'New graph...' button and pick a template (Metallic Roughness gives you all PBR outputs)."
-  - "Press Tab over the graph to add a node at the cursor, or drag a link into empty space to add one and connect it."
-  - "Drag nodes from the Library onto the graph. Right-click a library item to favorite it."
-  - "Select nodes and use Edit > Create subgraph to build reusable pieces. Double-click a subgraph to edit it."
-  - "Click the 'P' button next to a parameter to publish it, then use File > Publish package to produce a .mca asset."
-  - "Tools > Mesh map baker bakes maps from OBJ, glTF, PLY and STL meshes into the package. Baked Map nodes read them."
-- Button "Open the brick wall example"
-- Button "Show keyboard shortcuts"
+- Small label "LEARN", title "Getting started", sub-title "The few things worth knowing before your first graph."
+- Numbered list (01-08) in one outlined box
+  - New graph and templates; Tab to add nodes; Library drag and favorites; examples vs. project; subgraphs; publishing; mesh baker; AI control
+- Buttons "OPEN THE BRICK WALL EXAMPLE" (light) and "KEYBOARD SHORTCUTS" (outlined)
 
 ### 6.4 Footer
 
-- Checkbox "Skip this screen on startup"
-  - Saves at once
-- Button "Keyboard shortcuts"
-  - Opens the shortcuts window
-- Button "Go to editor"
-  - Accent fill
-  - Opens the Editor with the current graph
+- Checkbox "Skip this screen on startup" (saved within half a second)
+- Status in small capitals, for example "4 RECENT · 45 TEMPLATES"
+- Link "KEYBOARD SHORTCUTS" opens the shortcuts window
+- Button "GO TO EDITOR" (light fill, dark text) opens the Editor with the current graph
+- Hairline along the top edge
 
 ## 7. Editor screen
 
