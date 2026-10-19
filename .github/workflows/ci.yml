@@ -27,4 +27,4 @@ jobs:
       - name: Tests
         run: cargo test --release
       - name: CLI smoke test
-        run: cargo run --release --bin materialcraft -- example
+        run: cargo run --release --bin materialcraft -- example smoke
