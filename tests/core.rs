@@ -1056,21 +1056,17 @@ fn phase3_scatter_nodes_keep_old_output_and_gain_properties() {
     cp.pos_rand = 0.5;
     cp.seed = 4;
     let new = scatter::splatter_circular(64, 64, &scatter::Patterns { inputs: vec![], builtin: 0, fallback: 2, distribution: 0 }, &cp);
-    if std::env::var_os("MC_SPLATTER_DIAG").is_some() {
-        let n = old.px.len();
-        let d: Vec<f32> = old.px.iter().zip(&new.px).map(|(p, q)| (p[0] - q[0]).abs()).collect();
-        let sum: f32 = d.iter().sum();
-        let far = d.iter().filter(|v| **v > 1e-4).count();
-        println!(
-            "SPLATTER_DIAG max={:.9} mean={:.9} over1e-4={}/{} over1e-6={}",
-            diff(&old, &new),
-            sum / n as f32,
-            far,
-            n,
-            d.iter().filter(|v| **v > 1e-6).count()
-        );
-    }
-    assert!(diff(&old, &new) < 1e-6, "splatter circular changed");
+    let n = old.px.len();
+    let d: Vec<f32> = old.px.iter().zip(&new.px).map(|(p, q)| (p[0] - q[0]).abs()).collect();
+    let diag = format!(
+        "max={:.9} mean={:.9} over1e-4={} over1e-6={} of {} px",
+        diff(&old, &new),
+        d.iter().sum::<f32>() / n as f32,
+        d.iter().filter(|v| **v > 1e-4).count(),
+        d.iter().filter(|v| **v > 1e-6).count(),
+        n
+    );
+    assert!(diff(&old, &new) < 1e-6, "splatter circular changed: {diag}");
 
     // 2. built-in patterns, offsets, masks, blending, reverse order
     let base = run("node 1 tile_sampler x_amount=4 y_amount=4 size=0.9\noutput a 1\n");
