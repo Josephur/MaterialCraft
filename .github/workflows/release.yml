@@ -296,16 +296,26 @@ jobs:
   # version in its name.
   #
   # When MaterialCraft hits 1.0, switch to proper semver releases tagged
-  # `materialcraft-v<version>`, matching how the rest of the Craft suite ships
-  # (see storytold/artcraft, which tags `artcraft-v0.41.0` and drives its build
-  # from push to a `release` branch rather than a tag).
+  # `materialcraft-v<version>`.
+  #
+  # MaterialCraft is destined to join the ArtCraft suite, so `artcraft-v<version>`
+  # is the target convention (see storytold/artcraft, currently `artcraft-v0.41.0`).
+  # Until then this repo has used bare semver -- `0.2.0`, `0.3.0` -- plus a
+  # `beta` release that has gone stale. Both schemes will coexist in the tag
+  # history after the switch; that is fine, GitHub does not care, and it records
+  # the transition honestly rather than pretending the bare tags never existed.
   #
   # To do it:
   #   1. Bump `version` in Cargo.toml to 1.0.0 -- this job already reads it and
   #      passes it through as needs.version.outputs.version.
   #   2. Change `on:` at the top of this file from `push: branches: [main]` to
-  #      `push: tags: ['materialcraft-v*']`, so a build happens per release
-  #      instead of per commit.
+  #      either `push: tags: ['materialcraft-v*']` (build per release) or a
+  #      dedicated `release` branch. Note that ArtCraft itself triggers on
+  #      pushes to `release` / `artcraft-release` and cuts the tag by hand, so
+  #      mirroring that is the more faithful choice if the two are to share a
+  #      release process. If MaterialCraft is eventually built by ArtCraft's own
+  #      publish workflows, this file may be retired outright rather than
+  #      converted.
   #   3. Delete the "Move the rolling tag" step entirely; a tag push already
   #      points the tag at the right commit.
   #   4. In the step below: `tag_name: ${{ needs.version.outputs.tag }}`,
