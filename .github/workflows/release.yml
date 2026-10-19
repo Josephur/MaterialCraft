@@ -240,7 +240,11 @@ jobs:
           rpmbuild --define "_topdir $PWD/rpmbuild" \
                    --define "_appdir $PWD/AppDir" \
                    -bb rpmbuild/SPECS/materialcraft.spec
-          cp "rpmbuild/RPMS/%{_arch}/materialcraft-$VERSION-1"*.rpm "dist/$name.rpm"
+          # Locate the built rpm rather than guessing the arch directory. %{_arch} is an
+# rpm spec macro and is NOT expanded by the shell, so it cannot be used here.
+rpm=$(find rpmbuild/RPMS -name "materialcraft-$VERSION-*.rpm" | head -1)
+[ -n "$rpm" ] || { echo "rpmbuild produced no rpm under rpmbuild/RPMS"; exit 1; }
+cp "$rpm" "dist/$name.rpm"
 
       - name: Package tarball (Linux)
         if: runner.os == 'Linux'
