@@ -98,7 +98,7 @@ jobs:
           set -euo pipefail
           A=AppDir
           rm -rf "$A"
-          mkdir -p "$A/usr/bin" "$A/usr/share/applications" "$A/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "$A/usr/bin" "$A/usr/share/applications" "$A/usr/share/icons/hicolor/256x256/apps" dist
 
           install -m 0755 "target/$TARGET/release/materialcraft"     "$A/usr/bin/materialcraft"
           install -m 0755 "target/$TARGET/release/materialcraft-gui" "$A/usr/bin/materialcraft-gui"
@@ -227,8 +227,9 @@ jobs:
           $rel     = "target/${{ matrix.target }}/release"
           $stage   = "stage/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "$rel/materialcraft.exe", "$stage/materialcraft.exe"
-          Copy-Item "$rel/materialcraft-gui.exe", "$stage/materialcraft-gui.exe"
+          # -Path/-Destination must be explicit: "a", "b" binds both to -Path.
+          Copy-Item -Path "$rel/materialcraft.exe"     -Destination "$stage/materialcraft.exe"
+          Copy-Item -Path "$rel/materialcraft-gui.exe" -Destination "$stage/materialcraft-gui.exe"
           Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, README.md $stage
           Copy-Item library $stage -Recurse
           New-Item -ItemType Directory -Force -Path dist | Out-Null
