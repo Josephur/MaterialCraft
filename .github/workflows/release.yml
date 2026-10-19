@@ -176,7 +176,7 @@ jobs:
           LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$LABEL"
+          name="MaterialCraft_${VERSION}_${LABEL}"
           # AppImageKit publishes only a moving `continuous` tag, from a repo
           # GitHub has since archived, so there is no immutable release to pin.
           # Verifying the sha256 at least means we execute a known binary: if
@@ -205,7 +205,7 @@ jobs:
           LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$LABEL"
+          name="MaterialCraft_${VERSION}_${LABEL}"
           pkg="dist/debmaterialcraft"
           rm -rf "$pkg"
           mkdir -p "$pkg/DEBIAN"
@@ -236,7 +236,7 @@ jobs:
           LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$LABEL"
+          name="MaterialCraft_${VERSION}_${LABEL}"
           mkdir -p rpmbuild/SPECS rpmbuild/BUILD
 
           cat > rpmbuild/SPECS/materialcraft.spec <<EOF
@@ -290,7 +290,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
+          name="MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
           stage="stage/$name"
           mkdir -p "$stage" dist
           install -m 0755 "target/${{ matrix.target }}/release/materialcraft" "$stage/materialcraft"
@@ -306,7 +306,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name    = "MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
+          $name    = "MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
           $rel     = "target/${{ matrix.target }}/release"
           $stage   = "stage/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -322,7 +322,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
+          name="MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
           stage="stage/dmg"
           app="$stage/MaterialCraft.app"
           rel="target/${{ matrix.target }}/release"
