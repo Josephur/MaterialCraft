@@ -1,0 +1,66 @@
+format 2
+size 1024
+meta identifier "Graph"
+node 1 voronoi aspect=0.77 distance_mode=3 distortion=0.15 distortion_scale=3 edge_thickness=0.08 invert=1 jitter=1 minkowski=1.4 mode=2 scale=8 seed=12
+node 2 voronoi _x=0 _y=130 aspect=0.77 distance_mode=3 distortion=0.15 distortion_scale=3 jitter=1 minkowski=1.4 mode=1 scale=8 seed=12
+node 3 fbm _x=0 _y=260 octaves=3 scale=24 seed=21
+node 4 threshold _x=170 _y=0 mode=2 softness=0.1 threshold=0.3 in=@1
+node 5 warp _x=340 _y=130 intensity=0.004 in=@4 warp=@3
+node 6 warp _x=170 _y=195 intensity=0.004 in=@2 warp=@3
+node 7 blur _x=510 _y=130 radius=1.5 in=@5
+node 8 levels _x=680 _y=130 out_high=0.5 in=@7
+node 9 levels _x=340 _y=325 out_high=0.45 in=@6
+node 10 blend _x=850 _y=227.5 mode=1 bg=@8 fg=@9
+node 11 blend _x=1020 _y=178.75 mode=3 bg=@10 fg=@7
+node 12 tile_sampler _x=0 _y=455 mask_random=0.35 pattern_type=3 position_random=0.7 scale_random=0.5 seed=5 size=0.4 x_amount=14 y_amount=14
+node 13 morphology _x=510 _y=260 mode=1 radius=14 in=@5
+node 14 blend _x=680 _y=357.5 mode=3 bg=@49 fg=@26
+node 15 blend _x=1190 _y=268.125 mode=1 opacity=0.4 bg=@11 fg=@14
+node 16 scratches _x=0 _y=585 angle=0.12 angle_variation=0.15 count=260 length=28 seed=4 thickness=1.6
+node 17 blend _x=1360 _y=426.5625 mode=2 opacity=0.04 bg=@15 fg=@16
+node 18 normal _x=1530 _y=426.5625 strength=4 in=@17
+node 19 ao _x=1530 _y=556.5625 mode=1 in=@17
+node 20 fbm _x=0 _y=715 octaves=4 scale=6 seed=3
+node 21 quantize _x=170 _y=715 steps=4 in=@20
+node 22 colorize _x=340 _y=715 b0=0.5 b1=0.84 g0=0.3 g1=0.64 p0=0 p1=1 r0=0.27 r1=0.6 in=@21
+node 23 colorize _x=340 _y=455 b0=0.58 b1=1 g0=0.5 g1=0.85 p0=0 p1=1 r0=0.62 r1=0.8 in=@6
+node 24 blend _x=510 _y=585 mode=5 opacity=0.45 bg=@22 fg=@23
+node 25 blend _x=680 _y=585 mode=4 opacity=0.5 bg=@53 fg=@16
+node 26 morphology _x=510 _y=390 mode=1 radius=3 in=@5
+node 27 blend _x=680 _y=780 mode=2 bg=@5 fg=@26
+node 28 color _x=0 _y=910 a=1 b=0.32 g=0.4 r=0.62
+node 29 blend _x=850 _y=758.3333 opacity=0.5 bg=@25 fg=@28 mask=@27
+node 30 colorize _x=850 _y=357.5 b0=0.48 b1=0.8 g0=0.32 g1=0.63 p0=0 p1=1 r0=0.3 r1=0.6 in=@14
+node 31 threshold _x=850 _y=487.5 softness=0.1 threshold=0.12 in=@14
+node 32 blend _x=1020 _y=534.4444 bg=@29 fg=@30 mask=@31
+node 33 fbm _x=0 _y=1040 octaves=3 scale=20 seed=9
+node 34 quantize _x=170 _y=1040 steps=3 in=@33
+node 35 colorize _x=340 _y=1040 b0=0.08 b1=0.2 g0=0.13 g1=0.37 p0=0 p1=1 r0=0.28 r1=0.64 in=@34
+node 36 blend _x=1190 _y=568.14813 bg=@35 fg=@32 mask=@5
+node 37 blend _x=1700 _y=562.35535 mode=3 opacity=0.6 bg=@64 fg=@19
+node 38 levels _x=510 _y=780 out_high=0.3 in=@5
+node 39 levels _x=340 _y=1170 out_high=0.9 out_low=0.4 in=@34
+node 40 output _x=1870 _y=562.35535 usage="basecolor" in=@37
+node 41 output _x=1700 _y=426.5625 usage="normal" in=@18
+node 43 output _x=680 _y=780 usage="metallic" in=@38
+node 44 output _x=1530 _y=426.5625 usage="height" in=@17
+node 45 output _x=1700 _y=556.5625 usage="ambient_occlusion" in=@19
+node 46 morphology _x=510 _y=910 mode=1 radius=7 in=@5
+node 47 morphology _x=510 _y=1040 mode=1 radius=15 in=@5
+node 48 blend _x=680 _y=975 mode=2 bg=@46 fg=@47
+node 49 tile_sampler _x=850 _y=975 mask_random=0.3 mask_threshold=0.5 offset=0.5 offset_mode=1 pattern_type=3 position_random=0.3 seed=8 size=0.6 x_amount=22 y_amount=22 mask=@48
+node 50 fbm _x=0 _y=1300 octaves=4 scale=5 seed=77
+node 51 levels _x=170 _y=1300 high=0.72 low=0.5 in=@50
+node 52 color _x=0 _y=1430 a=1 b=0.5 g=0.46 r=0.62
+node 53 blend _x=680 _y=1105 opacity=0.35 bg=@24 fg=@52 mask=@51
+node 54 emboss _x=1530 _y=686.5625 in=@17
+node 55 blend _x=1700 _y=757.35535 mode=5 opacity=0.5 bg=@36 fg=@54
+node 56 color _x=0 _y=1560 a=1 b=0.55 g=0.55 r=0.55
+node 57 blend _x=510 _y=1343.3333 bg=@39 fg=@56 mask=@5
+node 58 output _x=680 _y=1343.3333 usage="roughness" in=@57
+node 59 transform _x=1360 _y=268.125 offset_x=0.006 offset_y=0.009 in=@15
+node 60 blend _x=1530 _y=268.125 mode=2 bg=@59 fg=@15
+node 61 levels _x=1700 _y=268.125 high=0.2 in=@60
+node 62 blur _x=1870 _y=268.125 radius=3 in=@61
+node 63 color _x=0 _y=1690 a=1 b=0.1 g=0.06 r=0.1
+node 64 blend _x=2040 _y=905.16016 opacity=0.7 bg=@55 fg=@63 mask=@62

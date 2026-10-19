@@ -1949,6 +1949,10 @@ impl App {
                         ui.close();
                     }
                     ui.separator();
+                    if ui.button("AI control...").on_hover_text("Let an AI assistant build and edit the open graph").clicked() {
+                        self.show_ai = true;
+                        ui.close();
+                    }
                     match materialcraft::gpu::adapter_name() {
                         Some(name) => {
                             if ui.checkbox(&mut self.gpu_eval, "GPU acceleration").on_hover_text(format!("Large noises, blurs and normal maps run on {name}. Results match the CPU path within rounding.")).changed() {
@@ -2340,6 +2344,11 @@ impl eframe::App for App {
             self.last_title = title;
         }
 
+        if let Some(port) = AUTO_CONTROL.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            self.ctl_start(ctx, port);
+        }
+        self.poll_control(ctx);
+        self.ai_window(ctx);
         if self.screen == Screen::Home {
             self.home_ui(root);
             self.new_dialog(ctx);
@@ -2628,11 +2637,19 @@ fn new_app(cc: &eframe::CreationContext<'_>) -> App {
     app
 }
 
+/// Port requested with `--control`, taken by the first frame.
+static AUTO_CONTROL: std::sync::Mutex<Option<u16>> = std::sync::Mutex::new(None);
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|a| a == "--dump-ux").unwrap_or(false) {
         dump_ux(&args[2..]);
         return Ok(());
+    }
+    // --control [PORT]: let assistants connect from the start (port 0 or none = any free port)
+    if let Some(i) = args.iter().position(|a| a == "--control") {
+        let port = args.get(i + 1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+        *AUTO_CONTROL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(port);
     }
     // 4x MSAA + depth buffer for the GPU viewport; fall back to no MSAA on drivers that cannot provide it.
     let make = |msaa: u16| eframe::NativeOptions {
