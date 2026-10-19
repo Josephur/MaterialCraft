@@ -1,0 +1,205 @@
+name: Release
+
+# Builds Linux / Windows / macOS binaries for every commit pushed to main and
+# publishes them two ways:
+#   1. as run artifacts (the Travis "build row" convention, kept 90 days)
+#   2. as a rolling GitHub Release on the `latest` tag, replaced each run
+# Tag pushes / pull requests are handled by ci.yml instead.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+          # macos-latest is Apple Silicon; macos-15-intel is the last x86_64
+          # GitHub-hosted image (retired after August 2027).
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            ext: dmg
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Linux system libraries for the editor
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev
+
+      - name: Build (core + editor)
+        run: cargo build --release --features gui --bins --target ${{ matrix.target }}
+
+      - name: Smoke test the CLI
+        run: cargo run --release --target ${{ matrix.target }} --bin materialcraft -- example
+
+      # ---------------------------------------------------------------- packaging
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          stage="stage/$name"
+          mkdir -p "$stage" dist
+          install -m 0755 "target/${{ matrix.target }}/release/materialcraft" "$stage/materialcraft"
+          install -m 0755 "target/${{ matrix.target }}/release/materialcraft-gui" "$stage/materialcraft-gui"
+          cp LICENSE-APACHE LICENSE-MIT NOTICE README.md "$stage/"
+          cp -r library "$stage/library"
+          tar -czf "dist/$name.tar.gz" -C stage "$name"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name    = "MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          $rel     = "target/${{ matrix.target }}/release"
+          $stage   = "stage/$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "$rel/materialcraft.exe", "$stage/materialcraft.exe"
+          Copy-Item "$rel/materialcraft-gui.exe", "$stage/materialcraft-gui.exe"
+          Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, README.md $stage
+          Copy-Item library $stage -Recurse
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "stage/$name" -DestinationPath "dist/$name.zip"
+
+      - name: Package (macOS .app bundle + .dmg)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          stage="stage/dmg"
+          app="$stage/MaterialCraft.app"
+          rel="target/${{ matrix.target }}/release"
+
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
+          install -m 0755 "$rel/materialcraft-gui" "$app/Contents/MacOS/materialcraft-gui"
+          cp assets/MaterialCraftLogo.png "$app/Contents/Resources/"
+
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>MaterialCraft</string>
+            <key>CFBundleDisplayName</key><string>MaterialCraft</string>
+            <key>CFBundleExecutable</key><string>materialcraft-gui</string>
+            <key>CFBundleIdentifier</key><string>org.materialcraft.editor</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${{ needs.version.outputs.version }}</string>
+            <key>CFBundleVersion</key><string>${{ needs.version.outputs.version }}</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          # The headless CLI travels next to the bundle, uninstalled and ready.
+          install -m 0755 "$rel/materialcraft" "$stage/materialcraft"
+          cp LICENSE-APACHE LICENSE-MIT NOTICE README.md "$stage/"
+          cp -r library "$stage/library"
+          ln -s /Applications "$stage/Applications"
+
+          hdiutil create -volname MaterialCraft -srcfolder "$stage" -ov -format UDZO "dist/$name.dmg"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish rolling `latest` release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+
+      # Keep `latest` pointed at this commit, whether or not the tag existed yet.
+      - name: Move the rolling tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api "repos/$REPO/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$REPO/git/ref/tags/latest" -f sha="$GITHUB_SHA" -F force=true
+          else
+            gh api -X POST "repos/$REPO/git/refs" -f ref=refs/tags/latest -f sha="$GITHUB_SHA"
+          fi
+
+      - name: Create or update the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest (${{ needs.version.outputs.sha }})
+          prerelease: true
+          body: |
+            Rolling build of the most recent commit on `main`.
+
+            Rebuilt from scratch on every push, so these assets are replaced
+            each time. For a stable, dated release use a `v*` tag instead.
+
+          commit_creator: github-actions[bot]
+          overwrite_files: true
+          files: |
+            dist/*
