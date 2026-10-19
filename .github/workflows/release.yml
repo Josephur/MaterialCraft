@@ -72,20 +72,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `label` is what appears in the published file name. It mirrors the
+          # ArtCraft convention -- ArtCraft_0.41.0_x64-setup.exe -- where the
+          # version comes second and the platform is a short human label, not a
+          # Rust target triple. `gnu` vs `musl` matters to anyone running an
+          # Alpine-based system, so it stays on the tarball as a separate file
+          # if such a build is ever added.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            ext: tar.gz
+            label: x86_64-linux
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            ext: zip
+            label: x64-windows
           # macos-latest is Apple Silicon; macos-15-intel is the last x86_64
           # GitHub-hosted image (retired after August 2027).
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            ext: dmg
+            label: x64-macOS
           - os: macos-latest
             target: aarch64-apple-darwin
-            ext: dmg
+            label: arm64-macOS
     steps:
       - uses: actions/checkout@v4
 
@@ -130,6 +136,7 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           A=AppDir
@@ -166,9 +173,10 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$TARGET"
+          name="MaterialCraft-$VERSION-$LABEL"
           # AppImageKit publishes only a moving `continuous` tag, from a repo
           # GitHub has since archived, so there is no immutable release to pin.
           # Verifying the sha256 at least means we execute a known binary: if
@@ -194,9 +202,10 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$TARGET"
+          name="MaterialCraft-$VERSION-$LABEL"
           pkg="dist/debmaterialcraft"
           rm -rf "$pkg"
           mkdir -p "$pkg/DEBIAN"
@@ -224,9 +233,10 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
-          name="MaterialCraft-$VERSION-$TARGET"
+          name="MaterialCraft-$VERSION-$LABEL"
           mkdir -p rpmbuild/SPECS rpmbuild/BUILD
 
           cat > rpmbuild/SPECS/materialcraft.spec <<EOF
@@ -280,7 +290,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
           stage="stage/$name"
           mkdir -p "$stage" dist
           install -m 0755 "target/${{ matrix.target }}/release/materialcraft" "$stage/materialcraft"
@@ -296,7 +306,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name    = "MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          $name    = "MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
           $rel     = "target/${{ matrix.target }}/release"
           $stage   = "stage/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -312,7 +322,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          name="MaterialCraft-${{ needs.version.outputs.version }}-${{ matrix.label }}"
           stage="stage/dmg"
           app="$stage/MaterialCraft.app"
           rel="target/${{ matrix.target }}/release"
@@ -394,9 +404,10 @@ jobs:
   #      `name: ${{ needs.version.outputs.version }}`, and drop `prerelease: true`.
   #      Derive the full tag in the `version` job with
   #      `echo "tag=materialcraft-v$v" >> "$GITHUB_OUTPUT"` and export it.
-  #   5. Consider renaming the archives to the suite's underscore style,
-  #      `MaterialCraft_<version>_<target>.<ext>`, so they sit alongside
-  #      `ArtCraft_0.41.0_x64-setup.exe` in the Craft launcher.
+  #   5. Asset names already follow the suite style --
+  #      MaterialCraft_<version>_<platform>.<ext>, e.g.
+  #      MaterialCraft_0.1.0_x64-windows.zip against ArtCraft's
+  #      ArtCraft_0.41.0_x64-setup.exe. Nothing left to rename here.
   #
   # Keep the rolling `latest` channel in place until 1.0 actually ships -- it is
   # the only way for contributors to grab an unreleased build today.
