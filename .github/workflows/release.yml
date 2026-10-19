@@ -151,7 +151,7 @@ jobs:
           sudo apt-get install -y \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
             libxrandr-dev libxi-dev libgl1-mesa-dev \
-            rpm fakeroot dpkg-dev
+            rpm fakeroot dpkg-dev libxkbcommon-x11-0
 
       - name: Build (core + editor)
         run: |
@@ -216,11 +216,34 @@ jobs:
           install -m 0644 "$A/materialcraft.desktop" "$A/usr/share/applications/materialcraft.desktop"
           install -m 0644 assets/MaterialCraftLogo.png "$A/materialcraft.png"
 
+          # Libraries the editor dlopen()s that a minimal desktop may lack.
+          # The .deb and .rpm declare them as dependencies; an AppImage has no
+          # package manager, so it carries them. They live in lib/, OUTSIDE
+          # usr/, because the .deb copies AppDir/usr wholesale. Everything
+          # else it loads (libX11, xkbcommon, EGL/GL, Wayland) is present on
+          # any system that can show a window at all, and GL in particular
+          # must come from the host to match its driver.
+          mkdir -p "$A/lib"
+          for so in libxkbcommon-x11.so.0 libxcb-xkb.so.1; do
+            src=$(ldconfig -p | awk -v n="$so" '$1 == n && /x86-64/ {print $NF; exit}')
+            [ -n "$src" ] || { echo "$so not found on the build host"; exit 1; }
+            install -m 0644 "$(readlink -f "$src")" "$A/lib/$so"
+          done
+
           # The AppImage runtime launches $APPDIR/AppRun and nothing else.
           # appimagetool does NOT check for it -- it will happily package an
           # AppDir with no AppRun and report Success, producing an AppImage
           # that cannot start. The verify job launches the result to catch it.
-          ln -sf usr/bin/materialcraft-gui "$A/AppRun"
+          # A script rather than a symlink, to put lib/ on the search path.
+          # $APPDIR is only set by the runtime; derive it when AppRun is run
+          # from an --appimage-extract'ed tree.
+          cat > "$A/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+          export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/materialcraft-gui" "$@"
+          APPRUN
+          chmod 0755 "$A/AppRun"
 
       - name: Package .AppImage (Linux)
         if: runner.os == 'Linux'
