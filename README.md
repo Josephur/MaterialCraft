@@ -4,6 +4,13 @@ Donate Here: [Donation Button](https://www.paypal.com/donate/?hosted_button_id=D
 
 our discord is here: if you want to submit features or got any cool ideas! https://discord.gg/9KVCNatNvX
 
+### Examples:
+<img width="657" height="527" alt="image" src="https://github.com/user-attachments/assets/41096864-94b1-4831-9c0f-fac0b45f7dcb" />
+<img width="647" height="524" alt="image" src="https://github.com/user-attachments/assets/06a9e1bf-66f4-4a50-bc0c-33257d334d0d" />
+<img width="651" height="531" alt="image" src="https://github.com/user-attachments/assets/f41d3786-15ba-4205-9371-06089cf96587" />
+<img width="660" height="529" alt="image" src="https://github.com/user-attachments/assets/d92aed6e-ef2e-40e5-a1da-a1341e2d1a4e" />
+<img width="651" height="525" alt="image" src="https://github.com/user-attachments/assets/9eb1d9fd-df27-4576-a908-bc81c07bf571" />
+
 # MaterialCraft
 Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS).
 
