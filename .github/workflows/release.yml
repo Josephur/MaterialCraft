@@ -35,9 +35,28 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+  # Gate: a release must never be published from a commit whose tests fail.
+  # Runs on Linux only -- it is a gate, not coverage, and ci.yml is what covers
+  # the full OS matrix. Cheap enough (~25s) to run ahead of the four builds.
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system libraries for the editor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Tests
+        run: cargo test --release
+
   build:
     name: ${{ matrix.target }}
-    needs: version
+    needs: [version, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
