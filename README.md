@@ -16,7 +16,7 @@ Procedural, node-based material authoring in pure Rust (Windows / Linux / macOS)
 
 ## Download
 Every push to `main` is built, installed and launched on all three platforms, then published as the rolling
-[`latest` prerelease](https://github.com/Josephur/MaterialCraft/releases/tag/latest). It is a development build, replaced on every push.
+[`latest` prerelease](../../releases/tag/latest). It is a development build, replaced on every push.
 
 | Platform | File | Notes |
 |---|---|---|
@@ -29,7 +29,7 @@ Every push to `main` is built, installed and launched on all three platforms, th
 
 Linux builds need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
 `SHA256SUMS` lists every file's checksum, and each file carries a build provenance attestation:
-`gh attestation verify <file> -R Josephur/MaterialCraft`.
+`gh attestation verify <file> -R PiJellyPin/MaterialCraft`.
 
 ## Build & run
     cargo run --release --features gui --bin materialcraft-gui     # visual editor
