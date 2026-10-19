@@ -1,10 +1,18 @@
 name: Release
 
-# Builds Linux / Windows / macOS binaries for every commit pushed to main and
-# publishes them two ways:
-#   1. as run artifacts (the Travis "build row" convention, kept 90 days)
-#   2. as a rolling GitHub Release on the `latest` tag, replaced each run
-# Pull requests are handled by ci.yml instead; it tests but publishes nothing.
+# Builds Linux / Windows / macOS binaries for every commit pushed to main,
+# installs and launches every package it built, and uploads them as run
+# artifacts (the Travis "build row" convention, kept 90 days).
+#
+# Publishing the rolling `latest` GitHub Release is NOT done here: publish.yml
+# picks up a successful run of this workflow via `workflow_run`. That split is
+# what lets this workflow cancel superseded runs freely -- a cancellation here
+# can only ever kill a build, never a half-finished upload. See publish.yml.
+#
+# Pull requests are handled by ci.yml instead; it tests but packages nothing.
+#
+# Every third-party action is pinned to a full commit SHA, with the tag it was
+# resolved from in a trailing comment. Tags are mutable; SHAs are not.
 on:
   push:
     branches: [main]
@@ -14,11 +22,12 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: release-latest
-  # Supersede in-flight builds: only the newest commit on main can become
-  # `latest`, so spending runner minutes on an outdated one just delays the
-  # answer. Serialising instead would queue every push behind the last, which
-  # on a slow macOS runner means waiting minutes for a result nobody wants.
+  # Per ref, so a manual run from a feature branch cannot cancel main's build
+  # (or the other way round).
+  group: release-${{ github.ref }}
+  # Supersede in-flight builds: only the newest commit can become `latest`, so
+  # spending runner minutes on an outdated one just delays the answer. Safe now
+  # that nothing in this workflow writes to the release.
   cancel-in-progress: true
 
 permissions:
@@ -30,32 +39,38 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
-      sha: ${{ steps.meta.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: meta
         run: |
           set -euo pipefail
           # Must match Cargo.toml's `version` key exactly. A workspace
           # inheritance (`version.workspace = true`) or single quotes would
           # otherwise yield an empty string and produce files named
-          # "MaterialCraft--<target>".
+          # "MaterialCraft__<label>".
           v=$(grep -m1 -E '^version[[:space:]]*=[[:space:]]*"' Cargo.toml | cut -d'"' -f2)
           [ -n "$v" ] || { echo "could not read version from Cargo.toml"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-  # Gate: a release must never be published from a commit whose tests fail.
-  # Runs on Linux only -- it is a gate, not coverage, and ci.yml is what covers
-  # the full OS matrix. Cheap enough (~25s) to run ahead of the four builds.
+  # Gate: a release must never be published from a commit whose tests fail on
+  # ANY platform it ships for. Several numeric paths go through the platform
+  # libm, which differs between glibc, MSVC's CRT and Apple's libm, so a
+  # Linux-only gate would let a Windows- or macOS-only regression ship.
   test:
-    name: Tests
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Linux system libraries for the editor
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -65,9 +80,18 @@ jobs:
         run: cargo test --release
 
   build:
-    name: ${{ matrix.target }}
+    name: Build ${{ matrix.label }}
     needs: [version, test]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      # Build provenance: binds each published file to this workflow run and
+      # commit. Verify with `gh attestation verify <file> -R <owner>/<repo>`.
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -75,33 +99,50 @@ jobs:
           # `label` is what appears in the published file name. It mirrors the
           # ArtCraft convention -- ArtCraft_0.41.0_x64-setup.exe -- where the
           # version comes second and the platform is a short human label, not a
-          # Rust target triple. `gnu` vs `musl` matters to anyone running an
-          # Alpine-based system, so it stays on the tarball as a separate file
-          # if such a build is ever added.
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          # Rust target triple.
+          #
+          # Linux builds on the OLDEST supported Ubuntu image on purpose: the
+          # binaries link against the build host's glibc, and a 24.04 build
+          # (glibc 2.39) refuses to start on Debian 12 (2.36) or Ubuntu 22.04.
+          # 22.04 gives glibc 2.35, which every current distro meets.
+          - os: ubuntu-22.04
+            targets: x86_64-unknown-linux-gnu
+            out: target/x86_64-unknown-linux-gnu/release
             label: x86_64-linux
           - os: windows-latest
-            target: x86_64-pc-windows-msvc
+            targets: x86_64-pc-windows-msvc
+            out: target/x86_64-pc-windows-msvc/release
             label: x64-windows
-          # macos-latest is Apple Silicon; macos-15-intel is the last x86_64
-          # GitHub-hosted image (retired after August 2027).
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            label: x64-macOS
+          # One universal (arm64 + x86_64) build, as ArtCraft ships
+          # ArtCraft_<v>_universal.dmg. Both slices are compiled on the Apple
+          # Silicon runner and merged with lipo, which also removes any
+          # dependency on macos-15-intel -- the last x86_64 GitHub-hosted image,
+          # retired after August 2027. The x86_64 slice is still executed, under
+          # Rosetta, by the verify job.
           - os: macos-latest
-            target: aarch64-apple-darwin
-            label: arm64-macOS
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            out: target/universal-apple-darwin/release
+            label: universal-macOS
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      LABEL: ${{ matrix.label }}
+      TARGETS: ${{ matrix.targets }}
+      OUT: ${{ matrix.out }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: Comma-separated target list for the toolchain action
+        id: tc
+        run: echo "targets=${TARGETS// /,}" >> "$GITHUB_OUTPUT"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
-          key: ${{ matrix.target }}
+          toolchain: stable
+          targets: ${{ steps.tc.outputs.targets }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.label }}
 
       - name: Linux system libraries for the editor
         if: runner.os == 'Linux'
@@ -110,41 +151,54 @@ jobs:
           sudo apt-get install -y \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
             libxrandr-dev libxi-dev libgl1-mesa-dev \
-            rpm fakeroot
+            rpm fakeroot dpkg-dev
 
       - name: Build (core + editor)
-        run: cargo build --release --features gui --bins --target ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          args=()
+          for t in $TARGETS; do args+=(--target "$t"); done
+          cargo build --release --features gui --bins "${args[@]}"
+
+      - name: Merge the macOS slices into universal binaries
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          for b in materialcraft materialcraft-gui; do
+            lipo -create \
+              "target/aarch64-apple-darwin/release/$b" \
+              "target/x86_64-apple-darwin/release/$b" \
+              -output "$OUT/$b"
+            lipo "$OUT/$b" -verify_arch arm64 x86_64
+          done
 
       - name: Smoke test the CLI
-        # --features gui must match the build above. Without it cargo resolves a
-        # DIFFERENT feature set, rebuilds the materialcraft bin into the same
-        # target path and overwrites the binary every packaging step reads.
-        # gui implies craft, and src/safeio.rs switches from craft-atomic writes
-        # to plain std::fs::write when craft is off, so the shipped CLI would
-        # silently lose atomic saves. It would also cost a second full build.
-        run: cargo run --release --features gui --target ${{ matrix.target }} --bin materialcraft -- example smoke
+        # Runs the built binary directly rather than via `cargo run`, which
+        # would re-resolve features and could rebuild a different binary over
+        # the one every packaging step reads.
+        run: |
+          set -euo pipefail
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+          "$OUT/materialcraft$ext" example smoke
+          "$OUT/materialcraft$ext" render smoke/brick_wall.mcg smoke/out --size 64
+          compgen -G 'smoke/out/*.png' >/dev/null
 
-      # ---------------------------------------------------------------- packaging
-
-      # ---------------------------------------------------------------- Linux packages
-# The AppDir is the single source of truth for the Linux file layout: the .deb,
-# the .rpm and the AppImage are all derived from it. The plain tarball is built
-# separately, since it predates the AppDir and ships a flatter layout.
+      # ---------------------------------------------------------------- Linux
+      # The AppDir is the single source of truth for the Linux file layout: the
+      # .deb, the .rpm and the AppImage are all derived from it. The plain
+      # tarball ships a flatter layout.
 
       - name: Build the AppDir (Linux)
         if: runner.os == 'Linux'
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           A=AppDir
           rm -rf "$A"
           mkdir -p "$A/usr/bin" "$A/usr/share/applications" "$A/usr/share/icons/hicolor/256x256/apps" dist
 
-          install -m 0755 "target/$TARGET/release/materialcraft"     "$A/usr/bin/materialcraft"
-          install -m 0755 "target/$TARGET/release/materialcraft-gui" "$A/usr/bin/materialcraft-gui"
+          install -m 0755 "$OUT/materialcraft"     "$A/usr/bin/materialcraft"
+          install -m 0755 "$OUT/materialcraft-gui" "$A/usr/bin/materialcraft-gui"
           install -m 0644 assets/MaterialCraftLogo.png \
             "$A/usr/share/icons/hicolor/256x256/apps/materialcraft.png"
 
@@ -165,53 +219,67 @@ jobs:
           # The AppImage runtime launches $APPDIR/AppRun and nothing else.
           # appimagetool does NOT check for it -- it will happily package an
           # AppDir with no AppRun and report Success, producing an AppImage
-          # that cannot start. Point it at the editor.
+          # that cannot start. The verify job launches the result to catch it.
           ln -sf usr/bin/materialcraft-gui "$A/AppRun"
 
       - name: Package .AppImage (Linux)
         if: runner.os == 'Linux'
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           name="MaterialCraft_${VERSION}_${LABEL}"
-          # AppImageKit publishes only a moving `continuous` tag, from a repo
-          # GitHub has since archived, so there is no immutable release to pin.
-          # Verifying the sha256 at least means we execute a known binary: if
-          # upstream ever republishes, this fails loudly and the hash is
-          # re-pinned on purpose, rather than new code running unreviewed.
-          curl -sSfL -o dist/appimagetool \
-            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  dist/appimagetool" \
-            | sha256sum --check --strict
-          chmod +x dist/appimagetool
+          # Both pieces are pinned to immutable, versioned releases and their
+          # sha256 checked. appimagetool (the maintained successor of the
+          # archived AppImageKit) otherwise downloads the runtime itself at
+          # build time from a moving `continuous` tag; --runtime-file stops it.
+          # The type2 runtime is statically linked, so the AppImage needs no
+          # libfuse2 on the user's machine -- only a working fusermount.
+          curl -sSfL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl -sSfL -o "$RUNNER_TEMP/runtime-x86_64" \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          sha256sum --check --strict <<EOF
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  $RUNNER_TEMP/runtime-x86_64
+          EOF
+          chmod +x "$RUNNER_TEMP/appimagetool"
 
-          # APPIMAGE_EXTRACT_AND_RUN lets appimagetool run on a runner with no
-          # FUSE. It embeds the runtime ELF, builds the squashfs and patches the
-          # header itself -- do not try to assemble a type-2 AppImage by hand,
-          # the payload is gzip squashfs, not zstd, and the runtime is embedded
-          # by the tool rather than prepended.
-          APPIMAGE_EXTRACT_AND_RUN=1 ./dist/appimagetool --no-appstream \
+          # APPIMAGE_EXTRACT_AND_RUN lets appimagetool itself run without FUSE.
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$RUNNER_TEMP/appimagetool" --no-appstream \
+            --runtime-file "$RUNNER_TEMP/runtime-x86_64" \
             AppDir "dist/$name.AppImage"
-          rm -f dist/appimagetool
 
       - name: Package .deb (Linux)
         if: runner.os == 'Linux'
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           name="MaterialCraft_${VERSION}_${LABEL}"
-          pkg="dist/debmaterialcraft"
+          pkg="$RUNNER_TEMP/debmaterialcraft"
           rm -rf "$pkg"
           mkdir -p "$pkg/DEBIAN"
+          cp -r AppDir/usr "$pkg/usr"
 
-          # The graph library is compiled in via include_str!, so there is no
-          # data directory to relocate and no architecture-dependent assets.
+          # Depends has two halves. The libraries the binaries link directly
+          # (libc, libgcc, libm) are derived by dpkg-shlibdeps from the ELF
+          # headers. Everything the editor needs for a window -- X11, Wayland,
+          # xkbcommon, EGL/GL -- is loaded with dlopen at runtime by winit and
+          # glutin, is therefore invisible to ldd and shlibdeps, and has to be
+          # listed by hand. The list is what LD_DEBUG=files shows the editor
+          # loading under X11 and under Wayland; libvulkan1 (wgpu probes it but
+          # falls back without it) and the Mesa driver are only Recommends.
+          # The verify job installs this package into a bare
+          # Debian container and launches the editor, so a missing entry here
+          # fails the build instead of reaching a user.
+          mkdir -p "$RUNNER_TEMP/shlib/debian"
+          printf 'Source: materialcraft\n\nPackage: materialcraft\nArchitecture: any\n' \
+            > "$RUNNER_TEMP/shlib/debian/control"
+          linked=$(cd "$RUNNER_TEMP/shlib" && dpkg-shlibdeps -O \
+              "$pkg/usr/bin/materialcraft" "$pkg/usr/bin/materialcraft-gui" \
+            | sed -n 's/^shlibs:Depends=//p')
+          [ -n "$linked" ] || { echo "dpkg-shlibdeps found no dependencies"; exit 1; }
+          dlopened="libx11-6, libx11-xcb1, libxcursor1, libxi6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libegl1, libgl1"
+          echo "linked:    $linked"
+          echo "dlopened:  $dlopened"
+
           cat > "$pkg/DEBIAN/control" <<EOF
           Package: materialcraft
           Version: $VERSION
@@ -219,35 +287,47 @@ jobs:
           Priority: optional
           Architecture: $(dpkg --print-architecture)
           Maintainer: MaterialCraft <noreply@example.com>
-          Depends: libc6, libx11-6, libxkbcommon0, libgl1
+          Depends: $linked, $dlopened
+          Recommends: libgl1-mesa-dri, libvulkan1, xdg-desktop-portal
           Description: Procedural, node-based material authoring engine
            MaterialCraft builds PBR materials from a node graph, with a
            headless renderer, a visual editor and an AI control interface.
           EOF
 
-          cp -r AppDir/usr "$pkg/usr"
           dpkg-deb --root-owner-group --build "$pkg" "dist/$name.deb"
+          dpkg-deb --info "dist/$name.deb"
 
       - name: Package .rpm (Linux)
         if: runner.os == 'Linux'
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          LABEL: ${{ matrix.label }}
         run: |
           set -euo pipefail
           name="MaterialCraft_${VERSION}_${LABEL}"
-          mkdir -p rpmbuild/SPECS rpmbuild/BUILD
+          top="$RUNNER_TEMP/rpmbuild"
+          mkdir -p "$top/SPECS" "$top/BUILD"
 
-          cat > rpmbuild/SPECS/materialcraft.spec <<EOF
+          # rpmbuild's AutoReq (left on) derives the linked libraries -- glibc,
+          # libgcc -- from the ELF files. The Requires below are only the
+          # dlopen()ed ones it cannot see; see the .deb step for why. They are
+          # named by file (soname) rather than package so the spec works across
+          # Fedora, openSUSE and RHEL, whose package names differ.
+          cat > "$top/SPECS/materialcraft.spec" <<EOF
           Name:           materialcraft
           Version:        $VERSION
           Release:        1%{?dist}
           Summary:        Procedural, node-based material authoring engine
-          License:        MIT AND Apache-2.0
-          URL:            https://github.com/Josephur/MaterialCraft
+          License:        MIT OR Apache-2.0
+          URL:            https://github.com/${GITHUB_REPOSITORY}
           BuildArch:      x86_64
-          Requires:       glibc, libX11, libxkbcommon, mesa-libGL
+          Requires:       libX11.so.6()(64bit)
+          Requires:       libXcursor.so.1()(64bit)
+          Requires:       libXi.so.6()(64bit)
+          Requires:       libX11-xcb.so.1()(64bit)
+          Requires:       libxkbcommon.so.0()(64bit)
+          Requires:       libxkbcommon-x11.so.0()(64bit)
+          Requires:       libwayland-client.so.0()(64bit)
+          Requires:       libwayland-egl.so.1()(64bit)
+          Requires:       libEGL.so.1()(64bit)
+          Requires:       libGL.so.1()(64bit)
 
           %description
           MaterialCraft builds PBR materials from a node graph, with a
@@ -276,60 +356,71 @@ jobs:
           /usr/share/icons/hicolor/256x256/apps/materialcraft.png
           EOF
 
-          rpmbuild --define "_topdir $PWD/rpmbuild" \
+          rpmbuild --define "_topdir $top" \
                    --define "_appdir $PWD/AppDir" \
-                   -bb rpmbuild/SPECS/materialcraft.spec
+                   -bb "$top/SPECS/materialcraft.spec"
           # Locate the built rpm rather than guessing the arch directory. The
           # %{_arch} macro is expanded by rpm inside a spec file, NOT by the
           # shell, so it cannot be used on this command line.
-          rpm=$(find rpmbuild/RPMS -name "materialcraft-$VERSION-*.rpm" | head -1)
-          [ -n "$rpm" ] || { echo "rpmbuild produced no rpm under rpmbuild/RPMS"; exit 1; }
+          rpm=$(find "$top/RPMS" -name "materialcraft-$VERSION-*.rpm" | head -1)
+          [ -n "$rpm" ] || { echo "rpmbuild produced no rpm under $top/RPMS"; exit 1; }
           cp "$rpm" "dist/$name.rpm"
+          rpm -qpR "dist/$name.rpm"
 
       - name: Package tarball (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          name="MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
-          stage="stage/$name"
+          name="MaterialCraft_${VERSION}_${LABEL}"
+          stage="$RUNNER_TEMP/stage/$name"
           mkdir -p "$stage" dist
-          install -m 0755 "target/${{ matrix.target }}/release/materialcraft" "$stage/materialcraft"
-          install -m 0755 "target/${{ matrix.target }}/release/materialcraft-gui" "$stage/materialcraft-gui"
+          install -m 0755 "$OUT/materialcraft"     "$stage/materialcraft"
+          install -m 0755 "$OUT/materialcraft-gui" "$stage/materialcraft-gui"
           cp LICENSE-APACHE LICENSE-MIT NOTICE README.md "$stage/"
           # No library/ here: src/library.rs compiles every preset in with
-          # include_str!, so the binaries already carry them and a copy on
-          # disk would never be read.
-          tar -czf "dist/$name.tar.gz" -C stage "$name"
+          # include_str!, and nothing reads library/ from disk at runtime.
+          tar -czf "dist/$name.tar.gz" -C "$RUNNER_TEMP/stage" "$name"
+
+      # ---------------------------------------------------------------- Windows
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name    = "MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
-          $rel     = "target/${{ matrix.target }}/release"
-          $stage   = "stage/$name"
+          $name  = "MaterialCraft_$($env:VERSION)_$($env:LABEL)"
+          $stage = "$env:RUNNER_TEMP/stage/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           # -Path/-Destination must be explicit: "a", "b" binds both to -Path.
-          Copy-Item -Path "$rel/materialcraft.exe"     -Destination "$stage/materialcraft.exe"
-          Copy-Item -Path "$rel/materialcraft-gui.exe" -Destination "$stage/materialcraft-gui.exe"
+          Copy-Item -Path "$env:OUT/materialcraft.exe"     -Destination "$stage/materialcraft.exe"
+          Copy-Item -Path "$env:OUT/materialcraft-gui.exe" -Destination "$stage/materialcraft-gui.exe"
           Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, README.md $stage
           # Presets are compiled in via include_str!, so no library/ copy.
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path "stage/$name" -DestinationPath "dist/$name.zip"
+          Compress-Archive -Path $stage -DestinationPath "dist/$name.zip"
+
+      # ---------------------------------------------------------------- macOS
 
       - name: Package (macOS .app bundle + .dmg)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          name="MaterialCraft_${{ needs.version.outputs.version }}_${{ matrix.label }}"
-          stage="stage/dmg"
+          name="MaterialCraft_${VERSION}_${LABEL}"
+          stage="$RUNNER_TEMP/stage/dmg"
           app="$stage/MaterialCraft.app"
-          rel="target/${{ matrix.target }}/release"
 
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
-          install -m 0755 "$rel/materialcraft-gui" "$app/Contents/MacOS/materialcraft-gui"
-          cp assets/MaterialCraftLogo.png "$app/Contents/Resources/"
+          install -m 0755 "$OUT/materialcraft-gui" "$app/Contents/MacOS/materialcraft-gui"
+
+          # Finder only shows a bundle icon from an .icns named by
+          # CFBundleIconFile; a bare PNG in Resources is ignored.
+          set_="$RUNNER_TEMP/MaterialCraft.iconset"
+          mkdir -p "$set_"
+          for s in 16 32 128 256; do
+            sips -z $s $s           assets/MaterialCraftLogo.png --out "$set_/icon_${s}x${s}.png"    >/dev/null
+            sips -z $((s*2)) $((s*2)) assets/MaterialCraftLogo.png --out "$set_/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$set_" -o "$app/Contents/Resources/MaterialCraft.icns"
 
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -339,27 +430,52 @@ jobs:
             <key>CFBundleName</key><string>MaterialCraft</string>
             <key>CFBundleDisplayName</key><string>MaterialCraft</string>
             <key>CFBundleExecutable</key><string>materialcraft-gui</string>
+            <key>CFBundleIconFile</key><string>MaterialCraft</string>
             <key>CFBundleIdentifier</key><string>org.materialcraft.editor</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${{ needs.version.outputs.version }}</string>
-            <key>CFBundleVersion</key><string>${{ needs.version.outputs.version }}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
           </plist>
           PLIST
+          plutil -lint "$app/Contents/Info.plist"
 
           # The headless CLI travels next to the bundle, uninstalled and ready.
-          install -m 0755 "$rel/materialcraft" "$stage/materialcraft"
+          install -m 0755 "$OUT/materialcraft" "$stage/materialcraft"
           cp LICENSE-APACHE LICENSE-MIT NOTICE README.md "$stage/"
-          ln -s /Applications "$stage/Applications"
 
+          # Ad-hoc signature (no Developer ID). lipo output and a bundle
+          # assembled by hand carry no valid bundle signature, and Gatekeeper
+          # reports an unsigned arm64 app as "damaged and can't be opened" --
+          # with no way past it for a normal user. Ad-hoc signed, a downloaded
+          # copy instead gets the ordinary "unidentified developer" prompt,
+          # which right-click > Open (or System Settings > Privacy & Security)
+          # clears. Real notarisation needs an Apple Developer ID; see README.
+          codesign --force --sign - "$stage/materialcraft"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          ln -s /Applications "$stage/Applications"
           hdiutil create -volname MaterialCraft -srcfolder "$stage" -ov -format UDZO "dist/$name.dmg"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          name: ${{ matrix.target }}
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.dmg
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.label }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -370,124 +486,180 @@ jobs:
           if-no-files-found: error
 
   # ===========================================================================
-  # TODO(1.0): switch from the rolling `latest` prerelease to real releases.
+  # Install and launch every artifact exactly as a user would get it.
   #
-  # Everything below publishes a single moving tag (`latest`), overwritten on
-  # every push to main and flagged `prerelease: true`. That is a development
-  # channel, not a release: it has no history, no stable download URL and no
-  # version in its name.
+  # The build job only proves the binaries in target/ work. Packaging can still
+  # break them -- a missing AppRun, a Depends that omits a dlopen()ed library,
+  # a bundle macOS refuses to open -- and none of that shows until something
+  # actually installs and starts the package. Each Linux package is installed
+  # into a bare distro container rather than on the runner, because the runner
+  # image already has nearly every library and would hide a missing dependency.
   #
-  # When MaterialCraft hits 1.0, switch to proper semver releases tagged
-  # `materialcraft-v<version>`.
-  #
-  # MaterialCraft is destined to join the ArtCraft suite, so `artcraft-v<version>`
-  # is the target convention (see storytold/artcraft, currently `artcraft-v0.41.0`).
-  # Until then this repo has used bare semver -- `0.2.0`, `0.3.0` -- plus a
-  # `beta` release that has gone stale. Both schemes will coexist in the tag
-  # history after the switch; that is fine, GitHub does not care, and it records
-  # the transition honestly rather than pretending the bare tags never existed.
-  #
-  # To do it:
-  #   1. Bump `version` in Cargo.toml to 1.0.0 -- this job already reads it and
-  #      passes it through as needs.version.outputs.version.
-  #   2. Change `on:` at the top of this file from `push: branches: [main]` to
-  #      either `push: tags: ['materialcraft-v*']` (build per release) or a
-  #      dedicated `release` branch. Note that ArtCraft itself triggers on
-  #      pushes to `release` / `artcraft-release` and cuts the tag by hand, so
-  #      mirroring that is the more faithful choice if the two are to share a
-  #      release process. If MaterialCraft is eventually built by ArtCraft's own
-  #      publish workflows, this file may be retired outright rather than
-  #      converted.
-  #   3. Delete the "Move the rolling tag" step entirely; a tag push already
-  #      points the tag at the right commit.
-  #   4. In the step below: `tag_name: ${{ needs.version.outputs.tag }}`,
-  #      `name: ${{ needs.version.outputs.version }}`, and drop `prerelease: true`.
-  #      Derive the full tag in the `version` job with
-  #      `echo "tag=materialcraft-v$v" >> "$GITHUB_OUTPUT"` and export it.
-  #   5. Asset names already follow the suite style --
-  #      MaterialCraft_<version>_<platform>.<ext>, e.g.
-  #      MaterialCraft_0.1.0_x64-windows.zip against ArtCraft's
-  #      ArtCraft_0.41.0_x64-setup.exe. Nothing left to rename here.
-  #
-  # Keep the rolling `latest` channel in place until 1.0 actually ships -- it is
-  # the only way for contributors to grab an unreleased build today.
+  # "Launch the editor" means: start it on a virtual display, confirm it is
+  # still running after a few seconds, and (where the platform allows) that it
+  # has opened a window. A crash on startup, a missing shared library or a
+  # failed GL context all exit early and fail the step.
   # ===========================================================================
-  publish:
-    name: Publish rolling `latest` release
+  verify:
+    name: Verify ${{ matrix.check }}
     needs: [version, build]
-    runs-on: ubuntu-latest
-    # Only this job writes; nothing else needs token write access.
-    permissions:
-      contents: write
-    # workflow_dispatch also fires from a feature branch. Without this, a manual
-    # run from any branch would pass the gates and move `latest` off main.
-    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { check: deb,      os: ubuntu-latest,  artifact: x86_64-linux,    image: "debian:12" }
+          - { check: deb,      os: ubuntu-latest,  artifact: x86_64-linux,    image: "ubuntu:22.04" }
+          - { check: rpm,      os: ubuntu-latest,  artifact: x86_64-linux,    image: "fedora:latest" }
+          - { check: tarball,  os: ubuntu-latest,  artifact: x86_64-linux,    image: "ubuntu:24.04" }
+          - { check: appimage, os: ubuntu-latest,  artifact: x86_64-linux }
+          - { check: zip,      os: windows-latest, artifact: x64-windows }
+          - { check: dmg,      os: macos-latest,   artifact: universal-macOS }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARTIFACT: ${{ matrix.artifact }}
+      IMAGE: ${{ matrix.image }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact }}
           path: dist
-          merge-multiple: true
 
-      - name: Checksums
-        working-directory: dist
+      - name: Virtual display (Linux)
+        if: runner.os == 'Linux'
         run: |
-          rm -f SHA256SUMS
-          sha256sum * > SHA256SUMS
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool
+          # -ac: the containers below connect as root, a different user.
+          Xvfb :99 -screen 0 1600x1000x24 -nolisten tcp -ac &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
 
-      # Asset names carry the version, so overwrite_files only replaces files
-      # whose name is unchanged. After a version bump the old ones linger and
-      # SHA256SUMS -- which covers only the current build -- stops describing
-      # the release. Clear them out first.
-      - name: Drop assets left by earlier builds
+      # ------------------------------------------------ Linux distro packages
+      # --ipc host is required, not incidental: Mesa's software rasteriser
+      # hands frames to the X server through MIT-SHM, which fails with a
+      # Glutin BadValue across IPC namespaces and looks exactly like a broken
+      # package.
+      - name: Install into ${{ matrix.image }} and run
+        if: matrix.image != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+          CHECK: ${{ matrix.check }}
         run: |
-          if gh release view latest --repo "$REPO" >/dev/null 2>&1; then
-            gh release delete latest --repo "$REPO" --yes --cleanup-tag=false
+          set -euo pipefail
+          docker run -d --name app --ipc host \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/scripts:ro" \
+            -v /tmp/.X11-unix:/tmp/.X11-unix \
+            -e VERSION -e ARTIFACT -e CHECK -e DISPLAY -e XDG_RUNTIME_DIR=/tmp \
+            "$IMAGE" sleep infinity
+          docker exec app bash /scripts/verify-linux-package.sh
+          if [ "$CHECK" != tarball ]; then
+            bash .github/scripts/launch-gui.sh docker exec app materialcraft-gui
           fi
 
-      - name: Create or update the release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: latest (${{ needs.version.outputs.sha }})
-          prerelease: true
-          body: |
-            Rolling build of the most recent commit on `main`.
+      - name: Remove the container
+        if: always() && matrix.image != ''
+        run: docker rm -f app || true
 
-            Rebuilt from scratch on every push, so these assets are replaced
-            each time. This is a development channel, not a release.
-
-          overwrite_files: true
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.dmg
-            dist/*.deb
-            dist/*.rpm
-            dist/*.AppImage
-            dist/SHA256SUMS
-
-      # Deliberately LAST. cancel-in-progress above applies to this job too --
-      # a job-level concurrency block cannot shield it, because workflow-level
-      # cancellation kills the whole run. Ordering is what actually protects
-      # the tag: assets finish uploading before `latest` moves, so an
-      # interruption can leave assets half-replaced but never leaves the tag
-      # pointing at a commit whose binaries are not the ones published. That
-      # state is self-healing on the next push. Doing this first would invert
-      # it, and a cancelled run would strand `latest` on a commit whose
-      # release never completed.
-      - name: Move the rolling tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+      # ------------------------------------------------ AppImage
+      # GitHub's Ubuntu runners are full VMs with /dev/fuse, so the AppImage can
+      # be launched the normal way -- mounted through FUSE by its own runtime --
+      # which is the path users take. --appimage-extract is also exercised, as
+      # the fallback users without FUSE (containers, some locked-down hosts)
+      # are told to use.
+      - name: Launch the AppImage (FUSE and extracted)
+        if: matrix.check == 'appimage'
         run: |
-          # The REST API is asymmetric here: GET takes git/ref/{ref} but PATCH
-          # takes git/refs/{ref} (plural). Using the singular form for both
-          # makes the update 404 while the lookup succeeds.
-          if gh api "repos/$REPO/git/ref/tags/latest" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true
-          else
-            gh api -X POST "repos/$REPO/git/refs" -f ref=refs/tags/latest -f sha="$GITHUB_SHA"
+          set -euo pipefail
+          sudo apt-get install -y fuse3 libgl1-mesa-dri libegl1
+          ai="dist/MaterialCraft_${VERSION}_${ARTIFACT}.AppImage"
+          chmod +x "$ai"
+          bash .github/scripts/launch-gui.sh "$ai"
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$ai" --appimage-extract >/dev/null)
+          test -x "$RUNNER_TEMP/squashfs-root/AppRun"
+          bash .github/scripts/launch-gui.sh "$RUNNER_TEMP/squashfs-root/AppRun"
+
+      # ------------------------------------------------ Windows
+      - name: Extract the zip and run
+        if: matrix.check == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "MaterialCraft_$($env:VERSION)_$($env:ARTIFACT)"
+          Expand-Archive "dist/$name.zip" -DestinationPath "$env:RUNNER_TEMP/x"
+          $dir = "$env:RUNNER_TEMP/x/$name"
+          & "$dir/materialcraft.exe" example "$env:RUNNER_TEMP/smoke"
+          if ($LASTEXITCODE) { throw "example exited $LASTEXITCODE" }
+          & "$dir/materialcraft.exe" render "$env:RUNNER_TEMP/smoke/brick_wall.mcg" "$env:RUNNER_TEMP/smoke/out" --size 64
+          if ($LASTEXITCODE) { throw "render exited $LASTEXITCODE" }
+          if (-not (Get-ChildItem "$env:RUNNER_TEMP/smoke/out" -Filter *.png)) { throw "render wrote no PNG" }
+
+          # Windows Server runners have only the Basic Display Adapter, whose
+          # OpenGL 1.1 cannot host the editor's GL 3 context. Mesa's software
+          # rasteriser, dropped next to the exe in this TEST copy only, stands
+          # in for the GPU driver every real Windows desktop has. It is never
+          # shipped.
+          $mesa = "$env:RUNNER_TEMP/mesa.7z"
+          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z" -OutFile $mesa
+          $h = (Get-FileHash $mesa -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695') { throw "mesa sha256 mismatch: $h" }
+          7z x $mesa "-o$env:RUNNER_TEMP/mesa" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/mesa/x64/*.dll" $dir
+
+          $p = Start-Process -FilePath "$dir/materialcraft-gui.exe" -PassThru
+          Start-Sleep -Seconds 15
+          $p.Refresh()
+          if ($p.HasExited) { throw "materialcraft-gui exited early with code $($p.ExitCode)" }
+          if (-not $p.MainWindowTitle) { throw "materialcraft-gui is running but opened no window" }
+          Write-Host "editor running, window: $($p.MainWindowTitle)"
+          Stop-Process -Id $p.Id -Force
+
+      # ------------------------------------------------ macOS
+      - name: Mount the dmg and run both slices
+        if: matrix.check == 'dmg'
+        run: |
+          set -euo pipefail
+          dmg="dist/MaterialCraft_${VERSION}_${ARTIFACT}.dmg"
+          # No quarantine flag is simulated: an ad-hoc signed build is not
+          # notarised, so Gatekeeper would (correctly) refuse it and this job
+          # could never pass. What users do about that is in the README.
+          mnt="$RUNNER_TEMP/mnt"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          trap 'hdiutil detach "$mnt" -force >/dev/null || true' EXIT
+          app="$mnt/MaterialCraft.app"
+          test -f "$app/Contents/Resources/MaterialCraft.icns"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo "$app/Contents/MacOS/materialcraft-gui" -verify_arch arm64 x86_64
+          lipo "$mnt/materialcraft" -verify_arch arm64 x86_64
+
+          cd "$RUNNER_TEMP"
+          "$mnt/materialcraft" example smoke
+          "$mnt/materialcraft" render smoke/brick_wall.mcg smoke/out --size 64
+          compgen -G 'smoke/out/*.png' >/dev/null
+
+          # The x86_64 slice is what Intel Macs run. Execute it under Rosetta,
+          # installing Rosetta first if the image lacks it.
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
           fi
+          rm -rf smoke
+          arch -x86_64 "$mnt/materialcraft" example smoke
+          arch -x86_64 "$mnt/materialcraft" render smoke/brick_wall.mcg smoke/out --size 64
+          compgen -G 'smoke/out/*.png' >/dev/null
+
+          # Launch the editor from inside the bundle, both slices.
+          for a in arm64 x86_64; do
+            arch -$a "$app/Contents/MacOS/materialcraft-gui" &
+            pid=$!
+            sleep 15
+            if ! kill -0 "$pid" 2>/dev/null; then
+              rc=0; wait "$pid" || rc=$?
+              echo "::error::editor ($a) exited early with status $rc"; exit 1
+            fi
+            echo "editor ($a) running"
+            kill "$pid"; wait "$pid" || true
+          done
