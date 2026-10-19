@@ -472,8 +472,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          # The REST API is asymmetric here: GET takes git/ref/{ref} but PATCH
+          # takes git/refs/{ref} (plural). Using the singular form for both
+          # makes the update 404 while the lookup succeeds.
           if gh api "repos/$REPO/git/ref/tags/latest" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/ref/tags/latest" -f sha="$GITHUB_SHA" -F force=true
+            gh api -X PATCH "repos/$REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true
           else
             gh api -X POST "repos/$REPO/git/refs" -f ref=refs/tags/latest -f sha="$GITHUB_SHA"
           fi
